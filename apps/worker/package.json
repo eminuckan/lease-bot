@@ -1,0 +1,12 @@
+{
+  "name": "@lease-bot/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/worker.js",
+    "start": "node src/worker.js",
+    "build": "node -e \"console.log('worker build: no-op')\"",
+    "test": "node --test"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@lease-bot/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "build": "node -e \"console.log('api build: no-op')\"",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@lease-bot/auth": "0.1.0",
+    "better-auth": "^1.3.4"
+  }
+}

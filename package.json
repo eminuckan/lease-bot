@@ -1,0 +1,20 @@
+{
+  "name": "lease-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev:web",
+    "dev:web": "npm run dev -w @lease-bot/web",
+    "dev:api": "npm run dev -w @lease-bot/api",
+    "dev:worker": "npm run dev -w @lease-bot/worker",
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run build",
+    "start:api": "npm run start -w @lease-bot/api",
+    "start:worker": "npm run start -w @lease-bot/worker"
+  }
+}

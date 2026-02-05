@@ -1,0 +1,14 @@
+# bv (beads viewer) local config and caches
+.bv/
+
+# Beads local state
+.beads/
+
+# Node / monorepo artifacts
+node_modules/
+dist/
+.DS_Store
+
+# Local environment overrides
+.env
+.env.local
