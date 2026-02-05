@@ -5,8 +5,8 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "migrate": "node src/migrate.js",
-    "seed": "node src/seed.js",
+    "migrate": "node --env-file=../../.env src/migrate.js",
+    "seed": "node --env-file=../../.env src/seed.js",
     "db:setup": "npm run migrate && npm run seed"
   },
   "dependencies": {

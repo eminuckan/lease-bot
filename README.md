@@ -51,7 +51,7 @@ Optional DB UI:
 docker compose --profile tools up -d adminer
 ```
 
-Then run migrations and seed:
+Run migrations and seed data:
 
 ```bash
 npm run migrate -w @lease-bot/db
@@ -80,6 +80,7 @@ npm run test -w @lease-bot/worker
 ## Environment
 
 Copy `.env.example` to `.env` and adjust values for your environment.
+DB scripts (`npm run migrate -w @lease-bot/db` and `npm run seed -w @lease-bot/db`) load the root `.env` automatically via Node `--env-file`.
 
 Common variables:
 
