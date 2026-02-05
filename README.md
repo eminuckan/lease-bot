@@ -30,12 +30,30 @@ Open-source leasing inbox automation for property teams.
 - Node.js 20+
 - npm 10+
 - PostgreSQL 15+ (or compatible)
+- Docker (optional, for local Postgres)
 
 ## Quick start
 
 ```bash
 npm install
 cp .env.example .env
+```
+
+### Start Postgres with Docker Compose (recommended)
+
+```bash
+docker compose up -d postgres
+```
+
+Optional DB UI:
+
+```bash
+docker compose --profile tools up -d adminer
+```
+
+Then run migrations and seed:
+
+```bash
 npm run migrate -w @lease-bot/db
 npm run seed -w @lease-bot/db
 ```
@@ -69,6 +87,14 @@ Common variables:
 - `BETTER_AUTH_SECRET`
 - `VITE_API_BASE_URL`
 - `WORKER_POLL_INTERVAL_MS`
+
+Docker Compose variables:
+
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `POSTGRES_PORT`
+- `ADMINER_PORT`
 
 ## Important endpoints
 
