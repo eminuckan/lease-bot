@@ -16,9 +16,9 @@ export function AssignmentPanel() {
     <div className="p-6">
       <div className="mx-auto max-w-4xl space-y-8">
         {/* Stats */}
-        <div className="grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-3">
-          <div className="flex items-center gap-4 bg-card px-5 py-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+        <div className="grid gap-4 sm:grid-cols-3">
+          <div className="flex items-center gap-4 rounded-2xl bg-card px-5 py-5 shadow-card">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-muted">
               <Building2 className="h-5 w-5 text-muted-foreground" />
             </div>
             <div>
@@ -26,8 +26,8 @@ export function AssignmentPanel() {
               <p className="text-xs text-muted-foreground">Units</p>
             </div>
           </div>
-          <div className="flex items-center gap-4 bg-card px-5 py-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+          <div className="flex items-center gap-4 rounded-2xl bg-card px-5 py-5 shadow-card">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-muted">
               <List className="h-5 w-5 text-muted-foreground" />
             </div>
             <div>
@@ -35,8 +35,8 @@ export function AssignmentPanel() {
               <p className="text-xs text-muted-foreground">Listings</p>
             </div>
           </div>
-          <div className="flex items-center gap-4 bg-card px-5 py-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+          <div className="flex items-center gap-4 rounded-2xl bg-card px-5 py-5 shadow-card">
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-muted">
               <Users className="h-5 w-5 text-muted-foreground" />
             </div>
             <div>
@@ -50,21 +50,21 @@ export function AssignmentPanel() {
         <div>
           <h2 className="text-sm font-semibold">Assign unit</h2>
           <p className="mt-1 text-xs text-muted-foreground">Link a unit to a listing and agent for automated management.</p>
-          <div className="mt-4 rounded-xl border border-border bg-card">
+          <div className="mt-4 rounded-2xl bg-card shadow-card">
             {units.length === 0 || agents.length === 0 ? (
               <div className="px-5 py-8 text-center text-sm text-muted-foreground">
                 Loading required data...
               </div>
             ) : (
               <form onSubmit={handleSubmit}>
-                <div className="divide-y divide-border">
-                  <div className="flex items-center gap-4 px-5 py-4">
-                    <Label className="w-20 shrink-0 text-xs text-muted-foreground">Unit</Label>
+                <div className="space-y-1 p-5">
+                  <div className="rounded-xl bg-muted p-4">
+                    <Label className="text-xs text-muted-foreground">Unit</Label>
                     <Select
                       value={assignmentForm.unitId}
                       onChange={(e) => setAssignmentForm((c) => ({ ...c, unitId: e.target.value }))}
                       required
-                      className="h-9 text-sm"
+                      className="mt-1.5 h-9 bg-card text-sm"
                     >
                       <option value="">Select unit</option>
                       {units.map((item) => (
@@ -74,12 +74,12 @@ export function AssignmentPanel() {
                       ))}
                     </Select>
                   </div>
-                  <div className="flex items-center gap-4 px-5 py-4">
-                    <Label className="w-20 shrink-0 text-xs text-muted-foreground">Listing</Label>
+                  <div className="rounded-xl bg-muted p-4">
+                    <Label className="text-xs text-muted-foreground">Listing</Label>
                     <Select
                       value={assignmentForm.listingId}
                       onChange={(e) => setAssignmentForm((c) => ({ ...c, listingId: e.target.value }))}
-                      className="h-9 text-sm"
+                      className="mt-1.5 h-9 bg-card text-sm"
                     >
                       <option value="">Latest for unit</option>
                       {listings
@@ -91,12 +91,12 @@ export function AssignmentPanel() {
                         ))}
                     </Select>
                   </div>
-                  <div className="flex items-center gap-4 px-5 py-4">
-                    <Label className="w-20 shrink-0 text-xs text-muted-foreground">Agent</Label>
+                  <div className="rounded-xl bg-muted p-4">
+                    <Label className="text-xs text-muted-foreground">Agent</Label>
                     <Select
                       value={assignmentForm.agentId}
                       onChange={(e) => setAssignmentForm((c) => ({ ...c, agentId: e.target.value }))}
-                      className="h-9 text-sm"
+                      className="mt-1.5 h-9 bg-card text-sm"
                     >
                       <option value="">Unassign</option>
                       {agents.map((item) => (
@@ -107,7 +107,7 @@ export function AssignmentPanel() {
                     </Select>
                   </div>
                 </div>
-                <div className="border-t border-border px-5 py-4">
+                <div className="px-5 pb-5">
                   <Button type="submit" size="sm">
                     <Save className="mr-2 h-3.5 w-3.5" />
                     Save assignment

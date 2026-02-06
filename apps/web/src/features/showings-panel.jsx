@@ -51,12 +51,12 @@ export function ShowingsPanel() {
   function PaginationControls({ page, pageCount, setPage, testId }) {
     if (pageCount <= 1) return null;
     return (
-      <div className="flex items-center justify-between border-t border-border px-4 py-2" data-testid={testId}>
+      <div className="flex items-center justify-between px-4 py-2.5" data-testid={testId}>
         <span className="text-xs text-muted-foreground">{page} / {pageCount}</span>
         <div className="flex gap-1">
           <button
             type="button"
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
+            className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
             disabled={page <= 1}
             onClick={() => setPage((c) => Math.max(1, c - 1))}
           >
@@ -64,7 +64,7 @@ export function ShowingsPanel() {
           </button>
           <button
             type="button"
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
+            className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
             disabled={page >= pageCount}
             onClick={() => setPage((c) => Math.min(pageCount, c + 1))}
           >
@@ -85,7 +85,7 @@ export function ShowingsPanel() {
             <Select
               value={selectedUnitId}
               onChange={(e) => setSelectedUnitId(e.target.value)}
-              className="mt-1 h-9 text-sm"
+              className="mt-1.5 h-10 text-sm"
             >
               <option value="">Select unit</option>
               {units.map((item) => (
@@ -99,7 +99,7 @@ export function ShowingsPanel() {
             type="button"
             onClick={handleRefreshShowings}
             disabled={isRefreshing}
-            className="mb-px rounded-lg border border-border p-2.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+            className="mb-px rounded-xl bg-muted p-2.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
             title="Refresh"
           >
             <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
@@ -115,20 +115,20 @@ export function ShowingsPanel() {
                 <Repeat className="h-4 w-4 text-muted-foreground" />
                 <h3 className="text-sm font-semibold">Weekly rules</h3>
               </div>
-              <span className="text-xs tabular-nums text-muted-foreground">{weeklyRules.length}</span>
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">{weeklyRules.length}</span>
             </div>
-            <div className="overflow-hidden rounded-xl border border-border bg-card" data-testid="weekly-rules-card-list">
+            <div className="rounded-2xl bg-card shadow-card" data-testid="weekly-rules-card-list">
               {weeklyRules.length === 0 ? (
                 <div className="px-4 py-10 text-center text-sm text-muted-foreground">
                   No recurring rules
                 </div>
               ) : (
-                <div className="divide-y divide-border">
+                <div className="space-y-1 p-2">
                   {pagedWeeklyRules.map((item) => (
                     <div
                       key={item.ruleId}
                       data-testid="weekly-rule-row"
-                      className="px-4 py-3"
+                      className="rounded-xl bg-muted px-4 py-3"
                     >
                       <div className="flex items-center justify-between">
                         <span className="font-mono text-xs text-muted-foreground">{item.ruleId.slice(0, 8)}</span>
@@ -157,20 +157,20 @@ export function ShowingsPanel() {
                 <Clock className="h-4 w-4 text-muted-foreground" />
                 <h3 className="text-sm font-semibold">Availability</h3>
               </div>
-              <span className="text-xs tabular-nums text-muted-foreground">{availability.length}</span>
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">{availability.length}</span>
             </div>
-            <div className="overflow-hidden rounded-xl border border-border bg-card" data-testid="availability-card-list">
+            <div className="rounded-2xl bg-card shadow-card" data-testid="availability-card-list">
               {availability.length === 0 ? (
                 <div className="px-4 py-10 text-center text-sm text-muted-foreground">
                   No slots loaded
                 </div>
               ) : (
-                <div className="divide-y divide-border">
+                <div className="space-y-1 p-2">
                   {pagedAvailability.map((item) => (
                     <div
                       key={item.id}
                       data-testid="availability-row"
-                      className="px-4 py-3"
+                      className="rounded-xl bg-muted px-4 py-3"
                     >
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-medium">{item.source}</span>

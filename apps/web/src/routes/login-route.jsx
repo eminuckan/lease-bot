@@ -57,14 +57,14 @@ function LoginPage() {
           <div className="grid grid-cols-2 gap-2.5">
             <Button
               type="button"
-              variant={formMode === "login" ? "default" : "outline"}
+              variant={formMode === "login" ? "default" : "secondary"}
               onClick={() => setFormMode("login")}
             >
               Login
             </Button>
             <Button
               type="button"
-              variant={formMode === "register" ? "default" : "outline"}
+              variant={formMode === "register" ? "default" : "secondary"}
               onClick={() => setFormMode("register")}
             >
               Register

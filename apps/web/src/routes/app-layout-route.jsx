@@ -85,10 +85,10 @@ function AppLayout() {
                   type="button"
                   onClick={() => handleNavigate(item.to)}
                   className={cn(
-                    "flex w-full cursor-pointer items-center rounded-md text-sm font-medium transition-colors",
-                    showLabels ? "gap-2 px-2 py-2" : "justify-center p-2.5",
+                    "flex w-full cursor-pointer items-center rounded-xl text-sm font-medium transition-all",
+                    showLabels ? "gap-2.5 px-3 py-2.5" : "justify-center p-2.5",
                     isActive
-                      ? "bg-primary text-primary-foreground"
+                      ? "bg-primary text-primary-foreground shadow-card"
                       : "text-muted-foreground hover:bg-muted hover:text-foreground"
                   )}
                   title={showLabels ? undefined : item.label}
@@ -102,7 +102,7 @@ function AppLayout() {
         ) : null}
 
         {showAdminNav && showAgentNav ? (
-          <div className="my-2 border-t border-border" />
+          <div className="my-2.5 mx-2 h-px bg-muted" />
         ) : null}
 
         {showAgentNav ? (
@@ -121,10 +121,10 @@ function AppLayout() {
                   type="button"
                   onClick={() => handleNavigate(item.to)}
                   className={cn(
-                    "flex w-full cursor-pointer items-center rounded-md text-sm font-medium transition-colors",
-                    showLabels ? "gap-2 px-2 py-2" : "justify-center p-2.5",
+                    "flex w-full cursor-pointer items-center rounded-xl text-sm font-medium transition-all",
+                    showLabels ? "gap-2.5 px-3 py-2.5" : "justify-center p-2.5",
                     isActive
-                      ? "bg-primary text-primary-foreground"
+                      ? "bg-primary text-primary-foreground shadow-card"
                       : "text-muted-foreground hover:bg-muted hover:text-foreground"
                   )}
                   title={showLabels ? undefined : item.label}
@@ -142,15 +142,15 @@ function AppLayout() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
-      {/* Desktop sidebar - hidden on mobile */}
+      {/* Desktop sidebar */}
       <aside
         className={cn(
-          "hidden flex-col border-r border-border bg-card transition-all duration-200 md:flex",
+          "hidden flex-col bg-card transition-all duration-200 md:flex",
           sidebarOpen ? "w-56" : "w-14"
         )}
       >
         {/* Logo area */}
-        <div className="flex h-14 items-center gap-2 border-b border-border px-3">
+        <div className="flex h-14 items-center gap-2 px-3">
           <Button
             variant="ghost"
             size="icon"
@@ -171,8 +171,8 @@ function AppLayout() {
         </nav>
 
         {/* Bottom section */}
-        <div className="border-t border-border p-2">
-          <div className="flex items-center gap-1">
+        <div className="p-3">
+          <div className="flex items-center gap-2 rounded-xl bg-muted px-3 py-2">
             <div
               className={cn(
                 "h-2 w-2 shrink-0 rounded-full",
@@ -198,16 +198,16 @@ function AppLayout() {
       {/* Mobile drawer */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-border bg-card transition-transform duration-200 md:hidden",
+          "fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-card shadow-elevated transition-transform duration-200 md:hidden",
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
-        <div className="flex h-14 items-center justify-between border-b border-border px-4">
+        <div className="flex h-14 items-center justify-between px-4">
           <span className="text-sm font-semibold tracking-tight">Lease Bot</span>
           <button
             type="button"
             onClick={() => setMobileMenuOpen(false)}
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="rounded-xl p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <X className="h-5 w-5" />
           </button>
@@ -217,8 +217,8 @@ function AppLayout() {
           {renderNavItems(true)}
         </nav>
 
-        <div className="border-t border-border p-3">
-          <div className="flex items-center gap-2">
+        <div className="p-3">
+          <div className="flex items-center gap-2 rounded-xl bg-muted px-3 py-2">
             <div
               className={cn(
                 "h-2 w-2 shrink-0 rounded-full",
@@ -233,13 +233,13 @@ function AppLayout() {
       {/* Main content area */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top header bar */}
-        <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card/80 px-4 backdrop-blur">
+        <header className="flex h-14 shrink-0 items-center justify-between bg-card px-4 shadow-card">
           <div className="flex items-center gap-3">
             {/* Mobile hamburger */}
             <button
               type="button"
               onClick={() => setMobileMenuOpen(true)}
-              className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground md:hidden"
+              className="rounded-xl p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground md:hidden"
               aria-label="Open menu"
             >
               <Menu className="h-5 w-5" />
@@ -250,7 +250,7 @@ function AppLayout() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             <ThemeToggle />
             <Button
               variant="ghost"

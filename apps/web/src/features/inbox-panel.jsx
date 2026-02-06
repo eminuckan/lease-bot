@@ -60,14 +60,14 @@ export function InboxPanel() {
   return (
     <div className="flex h-[calc(100vh-3.5rem)] flex-col overflow-hidden">
       <div className="flex min-h-0 flex-1">
-        {/* Thread list sidebar - full width on mobile, fixed width on desktop */}
+        {/* Thread list sidebar */}
         <div className={cn(
-          "flex shrink-0 flex-col border-r border-border",
+          "flex shrink-0 flex-col bg-card",
           "w-full md:w-80",
           mobileShowDetail && "hidden md:flex"
         )}>
           {/* Thread list header */}
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div className="flex items-center gap-2 px-4 py-3">
             <Select
               value={selectedInboxStatus}
               onChange={(event) => setSelectedInboxStatus(event.target.value)}
@@ -83,7 +83,7 @@ export function InboxPanel() {
               type="button"
               onClick={handleRefreshInbox}
               disabled={isRefreshing}
-              className="ml-2 rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+              className="rounded-xl p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
               title="Refresh"
             >
               <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
@@ -91,17 +91,17 @@ export function InboxPanel() {
           </div>
 
           {/* Thread list */}
-          <div className="flex-1 overflow-y-auto" data-testid="inbox-card-list">
+          <div className="flex-1 overflow-y-auto px-2" data-testid="inbox-card-list">
             {pagedInboxItems.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 data-testid="inbox-row"
                 className={cn(
-                  "flex w-full cursor-pointer flex-col border-b border-border px-4 py-3 text-left transition-colors",
+                  "flex w-full cursor-pointer flex-col rounded-xl px-3 py-3 text-left transition-all mb-0.5",
                   selectedConversationId === item.id
-                    ? "bg-primary/5"
-                    : "hover:bg-muted/50"
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-muted"
                 )}
                 onClick={() => handleSelectConversation(item.id)}
               >
@@ -109,14 +109,25 @@ export function InboxPanel() {
                   <span className="truncate text-sm font-medium">
                     {item.leadName || item.externalThreadId || "Unknown lead"}
                   </span>
-                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                  <span className={cn(
+                    "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                    selectedConversationId === item.id
+                      ? "bg-primary-foreground/15 text-primary-foreground"
+                      : "bg-muted text-muted-foreground"
+                  )}>
                     {item.status}
                   </span>
                 </div>
-                <span className="mt-0.5 text-xs text-muted-foreground">
+                <span className={cn(
+                  "mt-0.5 text-xs",
+                  selectedConversationId === item.id ? "text-primary-foreground/70" : "text-muted-foreground"
+                )}>
                   {item.unit || "No unit"}
                 </span>
-                <span className="mt-1 line-clamp-1 text-xs text-muted-foreground/70">
+                <span className={cn(
+                  "mt-1 line-clamp-1 text-xs",
+                  selectedConversationId === item.id ? "text-primary-foreground/50" : "text-muted-foreground/70"
+                )}>
                   {item.latestMessage || "No messages yet"}
                 </span>
               </button>
@@ -131,14 +142,14 @@ export function InboxPanel() {
 
           {/* Pagination */}
           {inboxItems.length > INBOX_PAGE_SIZE ? (
-            <div className="flex items-center justify-between border-t border-border px-4 py-2" data-testid="inbox-pagination-summary">
+            <div className="flex items-center justify-between px-4 py-2" data-testid="inbox-pagination-summary">
               <span className="text-xs text-muted-foreground">
                 {inboxPage} / {inboxPageCount}
               </span>
               <div className="flex gap-1">
                 <button
                   type="button"
-                  className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
+                  className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
                   disabled={inboxPage <= 1}
                   onClick={() => setInboxPage((c) => Math.max(1, c - 1))}
                   aria-label="Previous page"
@@ -147,7 +158,7 @@ export function InboxPanel() {
                 </button>
                 <button
                   type="button"
-                  className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
+                  className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30"
                   disabled={inboxPage >= inboxPageCount}
                   onClick={() => setInboxPage((c) => Math.min(inboxPageCount, c + 1))}
                   aria-label="Next page"
@@ -159,20 +170,20 @@ export function InboxPanel() {
           ) : null}
         </div>
 
-        {/* Conversation detail - hidden on mobile when showing list */}
+        {/* Conversation detail */}
         <div className={cn(
-          "flex min-w-0 flex-1 flex-col",
+          "flex min-w-0 flex-1 flex-col bg-background",
           !mobileShowDetail && "hidden md:flex"
         )}>
           {conversationDetail ? (
             <>
               {/* Conversation header */}
-              <div className="flex items-center gap-3 border-b border-border px-4 py-3 md:gap-4 md:px-6 md:py-4">
+              <div className="flex items-center gap-3 bg-card px-4 py-3 shadow-card md:gap-4 md:px-6 md:py-4">
                 {/* Back button - mobile only */}
                 <button
                   type="button"
                   onClick={() => setMobileShowDetail(false)}
-                  className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground md:hidden"
+                  className="rounded-xl p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground md:hidden"
                   aria-label="Back to threads"
                 >
                   <ArrowLeft className="h-5 w-5" />
@@ -199,61 +210,77 @@ export function InboxPanel() {
               </div>
 
               {/* Messages */}
-              <div className="flex-1 overflow-y-auto px-4 py-4 md:px-6">
-                <div className="mx-auto max-w-2xl space-y-3">
+              <div className="flex-1 overflow-y-auto px-4 py-6 md:px-6">
+                <div className="mx-auto max-w-2xl space-y-4">
                   {(conversationDetail.messages || []).length === 0 ? (
                     <p className="py-12 text-center text-sm text-muted-foreground">
                       No messages in this thread.
                     </p>
                   ) : null}
-                  {(conversationDetail.messages || []).map((item) => (
-                    <div
-                      key={item.id}
-                      className={cn(
-                        "max-w-[90%] rounded-xl px-4 py-3 md:max-w-[85%]",
-                        item.direction === "outbound"
-                          ? "ml-auto bg-primary/10"
-                          : "bg-muted"
-                      )}
-                    >
-                      <p className="text-sm leading-relaxed">{item.body}</p>
-                      <div className="mt-2 flex items-center justify-between gap-3">
-                        <span className="text-[11px] text-muted-foreground">
-                          {formatTimestamp(item.createdAt)}
-                        </span>
-                        <span className="text-[11px] font-medium capitalize text-muted-foreground">
-                          {item.status}
-                        </span>
-                      </div>
-                      {item.status === "draft" || item.status === "hold" ? (
-                        <div className="mt-2 flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => approveMessage(item.id)}
-                            className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                          >
-                            <Check className="h-3 w-3" />
-                            Approve
-                          </button>
-                          {item.status === "draft" ? (
-                            <button
-                              type="button"
-                              onClick={() => rejectMessage(item.id)}
-                              className="inline-flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
-                            >
-                              <X className="h-3 w-3" />
-                              Reject
-                            </button>
+                  {(conversationDetail.messages || []).map((item) => {
+                    const isOutbound = item.direction === "outbound";
+                    return (
+                      <div
+                        key={item.id}
+                        className={cn("flex", isOutbound ? "justify-end" : "justify-start")}
+                      >
+                        <div
+                          className={cn(
+                            "max-w-[85%] rounded-2xl px-4 py-3 md:max-w-[75%]",
+                            isOutbound
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-card shadow-card"
+                          )}
+                        >
+                          <p className="text-sm leading-relaxed">{item.body}</p>
+                          <div className={cn(
+                            "mt-2 flex items-center justify-between gap-4 text-[11px]",
+                            isOutbound ? "text-primary-foreground/60" : "text-muted-foreground"
+                          )}>
+                            <span>{formatTimestamp(item.createdAt)}</span>
+                            <span className="font-medium capitalize">{item.status}</span>
+                          </div>
+                          {item.status === "draft" || item.status === "hold" ? (
+                            <div className="mt-3 flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => approveMessage(item.id)}
+                                className={cn(
+                                  "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+                                  isOutbound
+                                    ? "bg-primary-foreground/20 text-primary-foreground hover:bg-primary-foreground/30"
+                                    : "bg-primary text-primary-foreground hover:bg-primary/90"
+                                )}
+                              >
+                                <Check className="h-3 w-3" />
+                                Approve
+                              </button>
+                              {item.status === "draft" ? (
+                                <button
+                                  type="button"
+                                  onClick={() => rejectMessage(item.id)}
+                                  className={cn(
+                                    "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+                                    isOutbound
+                                      ? "bg-primary-foreground/10 text-primary-foreground hover:bg-primary-foreground/20"
+                                      : "bg-muted text-foreground hover:bg-accent"
+                                  )}
+                                >
+                                  <X className="h-3 w-3" />
+                                  Reject
+                                </button>
+                              ) : null}
+                            </div>
                           ) : null}
                         </div>
-                      ) : null}
-                    </div>
-                  ))}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
               {/* Compose */}
-              <div className="border-t border-border px-4 py-3 md:px-6 md:py-4">
+              <div className="bg-card px-4 py-4 shadow-elevated md:px-6">
                 <form onSubmit={createDraft} className="mx-auto max-w-2xl">
                   <div className="mb-3">
                     <Select
@@ -285,7 +312,7 @@ export function InboxPanel() {
                       onChange={(e) => setDraftForm((c) => ({ ...c, body: e.target.value }))}
                       className="min-h-[2.5rem] flex-1 resize-none text-sm"
                     />
-                    <Button type="submit" size="icon" className="h-11 w-11 shrink-0">
+                    <Button type="submit" size="icon" className="h-10 w-10 shrink-0 rounded-xl">
                       <Send className="h-4 w-4" />
                     </Button>
                   </div>

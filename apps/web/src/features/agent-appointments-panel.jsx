@@ -10,16 +10,16 @@ import { useEffect, useMemo, useState } from "react";
 import { cn } from "../lib/utils";
 
 const statusColors = {
-  pending: "bg-status-pending text-status-pending-foreground border-status-pending-border",
-  confirmed: "bg-status-confirmed text-status-confirmed-foreground border-status-confirmed-border",
-  cancelled: "bg-status-cancelled text-status-cancelled-foreground border-status-cancelled-border",
-  completed: "bg-status-completed text-status-completed-foreground border-status-completed-border",
+  pending: "bg-status-pending text-status-pending-foreground",
+  confirmed: "bg-status-confirmed text-status-confirmed-foreground",
+  cancelled: "bg-status-cancelled text-status-cancelled-foreground",
+  completed: "bg-status-completed text-status-completed-foreground",
 };
 
 function StatusPill({ status }) {
   return (
     <span className={cn(
-      "inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize",
+      "inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-medium capitalize",
       statusColors[status] || "bg-muted text-muted-foreground"
     )}>
       {status}
@@ -121,14 +121,14 @@ export function AgentAppointmentsPanel() {
     <div className="p-6">
       <div className="mx-auto max-w-6xl space-y-6">
         {/* Filters bar */}
-        <div className="rounded-xl border border-border bg-card">
-          <div className="grid items-end gap-4 px-5 py-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="rounded-2xl bg-card shadow-card">
+          <div className="grid items-end gap-4 p-5 sm:grid-cols-2 lg:grid-cols-5">
             <div>
               <Label className="text-xs text-muted-foreground">Status</Label>
               <Select
                 value={appointmentFilters.status}
                 onChange={(e) => updateFilter("status", e.target.value)}
-                className="mt-1 h-9 text-sm"
+                className="mt-1.5 h-9 text-sm"
               >
                 <option value="all">All</option>
                 <option value="pending">Pending</option>
@@ -142,7 +142,7 @@ export function AgentAppointmentsPanel() {
               <Select
                 value={appointmentFilters.unitId}
                 onChange={(e) => updateFilter("unitId", e.target.value)}
-                className="mt-1 h-9 text-sm"
+                className="mt-1.5 h-9 text-sm"
               >
                 <option value="all">All units</option>
                 {units.map((unit) => (
@@ -158,7 +158,7 @@ export function AgentAppointmentsPanel() {
                 type="date"
                 value={appointmentFilters.fromDate || ""}
                 onChange={(e) => updateFilter("fromDate", e.target.value)}
-                className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1.5 h-9 w-full rounded-xl bg-muted px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
             <div>
@@ -167,11 +167,11 @@ export function AgentAppointmentsPanel() {
                 type="date"
                 value={appointmentFilters.toDate || ""}
                 onChange={(e) => updateFilter("toDate", e.target.value)}
-                className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1.5 h-9 w-full rounded-xl bg-muted px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
-          <div className="border-t border-border px-5 py-3">
+          <div className="px-5 pb-5">
             <Button
               type="button"
               size="sm"
@@ -195,7 +195,7 @@ export function AgentAppointmentsPanel() {
               </div>
               <span className="text-xs text-muted-foreground">{unitContext}</span>
             </div>
-            <div className="rounded-xl border border-border bg-card p-4">
+            <div className="rounded-2xl bg-card p-4 shadow-card">
               <Calendar
                 mode="single"
                 month={calendarMonth}
@@ -216,11 +216,11 @@ export function AgentAppointmentsPanel() {
               />
               <div className="mt-3 flex gap-4 text-[11px] text-muted-foreground">
                 <span className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full bg-status-confirmed-border" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-status-confirmed" />
                   Available
                 </span>
                 <span className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
+                  <span className="h-2.5 w-2.5 rounded-full bg-muted" />
                   Empty
                 </span>
               </div>
@@ -231,17 +231,17 @@ export function AgentAppointmentsPanel() {
           <div>
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-sm font-semibold">Appointments</h3>
-              <span className="text-xs tabular-nums text-muted-foreground">{appointments.length}</span>
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">{appointments.length}</span>
             </div>
-            <div className="overflow-hidden rounded-xl border border-border bg-card" data-testid="agent-appointments-card-list">
+            <div className="rounded-2xl bg-card shadow-card" data-testid="agent-appointments-card-list">
               {appointments.length === 0 ? (
                 <div className="px-4 py-12 text-center text-sm text-muted-foreground">
                   No appointments for selected filters.
                 </div>
               ) : (
-                <div className="divide-y divide-border">
+                <div className="space-y-1 p-2">
                   {appointments.map((item) => (
-                    <div key={item.id} className="px-5 py-3.5" data-testid="agent-appointment-row">
+                    <div key={item.id} className="rounded-xl bg-muted px-4 py-3.5" data-testid="agent-appointment-row">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
@@ -279,19 +279,18 @@ export function AgentAppointmentsPanel() {
         {timelineBuckets.length > 0 ? (
           <div>
             <h3 className="mb-3 text-sm font-semibold">Timeline</h3>
-            <div className="space-y-2" data-testid="agent-appointments-timeline">
+            <div className="space-y-4" data-testid="agent-appointments-timeline">
               {timelineBuckets.map((bucket) => (
                 <div key={bucket.date} data-testid="agent-appointment-day">
-                  <div className="mb-1.5 flex items-center gap-2">
-                    <div className="h-px flex-1 bg-border" />
-                    <span className="shrink-0 text-xs font-medium text-muted-foreground">{bucket.date}</span>
-                    <div className="h-px flex-1 bg-border" />
+                  <div className="mb-2 flex items-center gap-3">
+                    <span className="shrink-0 rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">{bucket.date}</span>
+                    <div className="h-px flex-1 bg-muted" />
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     {bucket.items.map((item) => (
                       <div
                         key={item.id}
-                        className="rounded-lg border border-border bg-card px-4 py-3"
+                        className="rounded-2xl bg-card px-4 py-3 shadow-card"
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-sm font-medium tabular-nums">
