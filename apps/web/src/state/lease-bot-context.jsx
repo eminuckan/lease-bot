@@ -65,6 +65,10 @@ export function LeaseBotProvider({ children }) {
     fromDate: "",
     toDate: ""
   });
+  const [platformPolicies, setPlatformPolicies] = useState([]);
+  const [platformHealth, setPlatformHealth] = useState([]);
+  const [globalPlatformSendMode, setGlobalPlatformSendMode] = useState("draft_only");
+  const [platformHealthGeneratedAt, setPlatformHealthGeneratedAt] = useState(null);
 
   const isAdmin = user?.role === "admin";
   const canAccessAgent = user?.role === "agent" || isAdmin;
@@ -191,6 +195,47 @@ export function LeaseBotProvider({ children }) {
     }
   }
 
+  async function refreshAdminPlatformData() {
+    if (!isAdmin) {
+      return;
+    }
+
+    try {
+      const [policyResponse, healthResponse] = await Promise.all([
+        request("/api/admin/platform-policies"),
+        request("/api/admin/platform-health")
+      ]);
+
+      setPlatformPolicies(policyResponse.items || []);
+      setGlobalPlatformSendMode(policyResponse.globalDefaultSendMode || "draft_only");
+      setPlatformHealth(healthResponse.items || []);
+      setPlatformHealthGeneratedAt(healthResponse.generatedAt || null);
+    } catch (error) {
+      setApiError(error.message);
+    }
+  }
+
+  async function updatePlatformPolicy(platformAccountId, updates) {
+    if (!isAdmin || !platformAccountId) {
+      return null;
+    }
+
+    setApiError("");
+    setMessage("");
+    try {
+      const updated = await request(`/api/admin/platform-policies/${platformAccountId}`, {
+        method: "PUT",
+        body: JSON.stringify(updates)
+      });
+      setMessage(`Platform policy updated: ${updated.platform}`);
+      await refreshAdminPlatformData();
+      return updated;
+    } catch (error) {
+      setApiError(error.message);
+      return null;
+    }
+  }
+
   async function refreshData() {
     if (!user) {
       return;
@@ -215,7 +260,12 @@ export function LeaseBotProvider({ children }) {
         unitId: current.unitId || fallbackUnitId
       }));
 
-      await Promise.all([refreshInbox(selectedInboxStatus, false), refreshAvailability(fallbackUnitId), refreshAppointments()]);
+      await Promise.all([
+        refreshInbox(selectedInboxStatus, false),
+        refreshAvailability(fallbackUnitId),
+        refreshAppointments(),
+        ...(isAdmin ? [refreshAdminPlatformData()] : [])
+      ]);
     } catch (error) {
       setApiError(error.message);
     }
@@ -397,17 +447,23 @@ export function LeaseBotProvider({ children }) {
     appointments,
     appointmentFilters,
     setAppointmentFilters,
+    platformPolicies,
+    platformHealth,
+    globalPlatformSendMode,
+    platformHealthGeneratedAt,
     refreshData,
     refreshInbox,
     refreshAvailability,
     refreshAppointments,
+    refreshAdminPlatformData,
     signInEmail,
     signUpEmail,
     signOut,
     saveAssignment,
     createDraft,
     approveMessage,
-    rejectMessage
+    rejectMessage,
+    updatePlatformPolicy
   };
 
   return <LeaseBotContext.Provider value={value}>{children}</LeaseBotContext.Provider>;

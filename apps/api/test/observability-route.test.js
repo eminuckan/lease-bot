@@ -120,6 +120,7 @@ test("/api/admin/observability returns snapshot payload from route wiring", asyn
       aiEscalations: 1,
       aiReplyErrors: 1,
       platformDispatchErrors: 1,
+      platformDispatchDlq: 1,
       bookingCreated: 3,
       bookingReplayed: 1,
       bookingConflicts: 1,
@@ -130,7 +131,7 @@ test("/api/admin/observability returns snapshot payload from route wiring", asyn
       escalationReasons: [{ reasonCode: "escalate_no_slot_candidates", count: 2 }],
       bookingsByStatus: [{ status: "confirmed", count: 3 }],
       bookingsByPlatform: [{ platform: "leasebreak", count: 3 }],
-      platformFailures: [{ platform: "leasebreak", action: "platform_dispatch_error", count: 1 }]
+      platformFailures: [{ platform: "leasebreak", stage: "dispatch_outbound_message", action: "platform_dispatch_error", count: 1 }]
     },
     recentErrors: [{ id: "err-1" }],
     recentAudit: [{ id: "aud-1" }]

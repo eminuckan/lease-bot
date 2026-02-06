@@ -2,6 +2,11 @@ import { runReplyPipeline } from "../../ai/src/index.js";
 import { createConnectorRegistry, listSupportedPlatforms, resolvePlatformCredentials } from "./connectors.js";
 import { calculateBackoffDelay, isRetryableError, withRetry } from "./retry.js";
 
+const allowedSendModes = new Set(["auto_send", "draft_only"]);
+const defaultPlatformSendMode = allowedSendModes.has(process.env.PLATFORM_DEFAULT_SEND_MODE)
+  ? process.env.PLATFORM_DEFAULT_SEND_MODE
+  : "draft_only";
+
 function formatSlotWindow(slot) {
   const timezone = slot.timezone || "UTC";
   const startsAt = new Date(slot.starts_at || slot.startsAt).toISOString();
@@ -242,6 +247,9 @@ export function createPostgresQueueAdapter(client) {
                 c.platform_account_id,
                 pa.platform,
                 pa.credentials AS platform_credentials,
+                pa.is_active AS platform_is_active,
+                pa.send_mode AS platform_send_mode_override,
+                COALESCE(pa.send_mode, $2) AS platform_effective_send_mode,
                 c.assigned_agent_id,
                 c.external_thread_id,
                 c.lead_name,
@@ -260,11 +268,11 @@ export function createPostgresQueueAdapter(client) {
            JOIN "PlatformAccounts" pa ON pa.id = c.platform_account_id
       LEFT JOIN "Listings" l ON l.id = c.listing_id
       LEFT JOIN "Units" u ON u.id = l.unit_id
-          WHERE m.direction = 'inbound'
-            AND NOT (COALESCE(m.metadata, '{}'::jsonb) ? 'aiProcessedAt')
-          ORDER BY m.sent_at ASC, m.created_at ASC
-          LIMIT $1`,
-        [limit]
+           WHERE m.direction = 'inbound'
+             AND NOT (COALESCE(m.metadata, '{}'::jsonb) ? 'aiProcessedAt')
+           ORDER BY m.sent_at ASC, m.created_at ASC
+           LIMIT $1`,
+        [limit, defaultPlatformSendMode]
       );
 
       return result.rows.map((row) => ({
@@ -275,6 +283,12 @@ export function createPostgresQueueAdapter(client) {
         platformAccountId: row.platform_account_id,
         platform: row.platform,
         platformCredentials: row.platform_credentials || {},
+        platformPolicy: {
+          isActive: row.platform_is_active !== false,
+          sendMode: row.platform_effective_send_mode,
+          sendModeOverride: row.platform_send_mode_override,
+          globalDefaultSendMode: defaultPlatformSendMode
+        },
         assignedAgentId: row.assigned_agent_id,
         externalThreadId: row.external_thread_id,
         leadName: row.lead_name,
@@ -362,7 +376,7 @@ export function createPostgresQueueAdapter(client) {
     },
 
     async recordOutboundReply({ conversationId, assignedAgentId, body, metadata, channel = "in_app", externalMessageId = null }) {
-      await client.query(
+      const insertResult = await client.query(
         `INSERT INTO "Messages" (
            conversation_id,
            sender_type,
@@ -373,16 +387,107 @@ export function createPostgresQueueAdapter(client) {
            body,
            metadata,
            sent_at
-         ) VALUES ($1::uuid, 'agent', $2::uuid, $3, 'outbound', $4, $5, $6::jsonb, NOW())`,
+         ) VALUES ($1::uuid, 'agent', $2::uuid, $3, 'outbound', $4, $5, $6::jsonb, NOW())
+         ON CONFLICT (conversation_id, external_message_id) DO NOTHING
+         RETURNING id`,
         [conversationId, assignedAgentId, externalMessageId, channel, body, JSON.stringify(metadata)]
       );
 
-      await client.query(
-        `UPDATE "Conversations"
-            SET last_message_at = NOW(),
-                updated_at = NOW()
+      if (insertResult.rowCount > 0) {
+        await client.query(
+          `UPDATE "Conversations"
+              SET last_message_at = NOW(),
+                  updated_at = NOW()
+            WHERE id = $1::uuid`,
+          [conversationId]
+        );
+      }
+
+      return {
+        inserted: insertResult.rowCount > 0
+      };
+    },
+
+    async beginDispatchAttempt({ messageId, dispatchKey, platform, stage, now }) {
+      const attemptResult = await client.query(
+        `UPDATE "Messages"
+            SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+              'dispatch',
+              jsonb_build_object(
+                'key', $2,
+                'state', 'in_progress',
+                'platform', $3,
+                'stage', $4,
+                'attempts', COALESCE((COALESCE(metadata, '{}'::jsonb)#>>'{dispatch,attempts}')::int, 0) + 1,
+                'lastAttemptAt', $5
+              )
+            )
+          WHERE id = $1::uuid
+            AND (
+              COALESCE(metadata#>>'{dispatch,key}', '') <> $2
+              OR COALESCE(metadata#>>'{dispatch,state}', '') NOT IN ('in_progress', 'completed')
+            )
+          RETURNING COALESCE(metadata->'dispatch', '{}'::jsonb) AS dispatch`,
+        [messageId, dispatchKey, platform || "unknown", stage || "dispatch_outbound_message", now || new Date().toISOString()]
+      );
+
+      if (attemptResult.rowCount > 0) {
+        return {
+          shouldDispatch: true,
+          duplicate: false,
+          state: "in_progress",
+          delivery: null
+        };
+      }
+
+      const existingResult = await client.query(
+        `SELECT COALESCE(metadata->'dispatch', '{}'::jsonb) AS dispatch
+           FROM "Messages"
           WHERE id = $1::uuid`,
-        [conversationId]
+        [messageId]
+      );
+      const dispatch = existingResult.rows[0]?.dispatch || {};
+      return {
+        shouldDispatch: false,
+        duplicate: true,
+        state: dispatch.state || "completed",
+        delivery: dispatch.delivery || null
+      };
+    },
+
+    async completeDispatchAttempt({ messageId, dispatchKey, status, delivery, now }) {
+      await client.query(
+        `UPDATE "Messages"
+            SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+              'dispatch',
+              COALESCE(metadata->'dispatch', '{}'::jsonb) || jsonb_build_object(
+                'state', 'completed',
+                'status', $3,
+                'completedAt', $4,
+                'delivery', $5::jsonb
+              )
+            )
+          WHERE id = $1::uuid
+            AND COALESCE(metadata#>>'{dispatch,key}', '') = $2`,
+        [messageId, dispatchKey, status, now || new Date().toISOString(), JSON.stringify(delivery || null)]
+      );
+    },
+
+    async failDispatchAttempt({ messageId, stage, error, now, retry = {} }) {
+      await client.query(
+        `UPDATE "Messages"
+            SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+              'dispatch',
+              COALESCE(metadata->'dispatch', '{}'::jsonb) || jsonb_build_object(
+                'state', 'failed',
+                'failedStage', $2,
+                'lastError', $3,
+                'failedAt', $4,
+                'retry', $5::jsonb
+              )
+            )
+          WHERE id = $1::uuid`,
+        [messageId, stage || "dispatch_outbound_message", error || "dispatch_failed", now || new Date().toISOString(), JSON.stringify(retry || {})]
       );
     },
 

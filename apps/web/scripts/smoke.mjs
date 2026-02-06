@@ -88,6 +88,66 @@ function buildAvailability(unitId) {
 
 const inboxItems = buildInboxItems();
 const appointments = buildAppointments();
+const platformPolicies = [
+  {
+    id: "11111111-1111-4111-8111-111111111111",
+    platform: "leasebreak",
+    accountName: "Leasebreak Main",
+    accountExternalId: "lb-main",
+    isActive: true,
+    integrationMode: "rpa",
+    sendMode: "auto_send",
+    sendModeOverride: "auto_send",
+    globalDefaultSendMode: "draft_only",
+    credentials: {},
+    createdAt: "2026-02-06T00:00:00.000Z",
+    updatedAt: "2026-02-06T00:00:00.000Z"
+  },
+  {
+    id: "22222222-2222-4222-8222-222222222222",
+    platform: "roomies",
+    accountName: "Roomies Main",
+    accountExternalId: "roomies-main",
+    isActive: false,
+    integrationMode: "rpa",
+    sendMode: "draft_only",
+    sendModeOverride: null,
+    globalDefaultSendMode: "draft_only",
+    credentials: {},
+    createdAt: "2026-02-06T00:00:00.000Z",
+    updatedAt: "2026-02-06T00:00:00.000Z"
+  }
+];
+const platformHealth = [
+  {
+    id: "11111111-1111-4111-8111-111111111111",
+    platform: "leasebreak",
+    accountName: "Leasebreak Main",
+    accountExternalId: "lb-main",
+    isActive: true,
+    sendMode: "auto_send",
+    sendModeOverride: "auto_send",
+    globalDefaultSendMode: "draft_only",
+    lastSuccessfulIngestAt: "2026-02-06T10:10:00.000Z",
+    lastSuccessfulSendAt: "2026-02-06T10:12:00.000Z",
+    errorCount24h: 0,
+    disableReason: null
+  },
+  {
+    id: "22222222-2222-4222-8222-222222222222",
+    platform: "roomies",
+    accountName: "Roomies Main",
+    accountExternalId: "roomies-main",
+    isActive: false,
+    sendMode: "draft_only",
+    sendModeOverride: null,
+    globalDefaultSendMode: "draft_only",
+    lastSuccessfulIngestAt: "2026-02-05T08:00:00.000Z",
+    lastSuccessfulSendAt: "2026-02-05T08:05:00.000Z",
+    errorCount24h: 2,
+    disableReason: "disabled_by_admin_policy"
+  }
+];
 const conversationDetails = new Map(
   inboxItems.map((item, index) => [
     item.id,
@@ -303,6 +363,52 @@ function createMockApiServer() {
       return;
     }
 
+    if (req.method === "GET" && requestUrl.pathname === "/api/admin/platform-policies") {
+      sendJson(req, res, 200, {
+        globalDefaultSendMode: "draft_only",
+        requiredPlatforms: ["spareroom", "roomies", "leasebreak", "renthop", "furnishedfinder"],
+        missingPlatforms: ["spareroom", "renthop", "furnishedfinder"],
+        items: platformPolicies
+      });
+      return;
+    }
+
+    if (req.method === "GET" && requestUrl.pathname === "/api/admin/platform-health") {
+      sendJson(req, res, 200, {
+        generatedAt: "2026-02-06T10:15:00.000Z",
+        items: platformHealth
+      });
+      return;
+    }
+
+    const policyMatch = requestUrl.pathname.match(/^\/api\/admin\/platform-policies\/([0-9a-f\-]+)$/i);
+    if (req.method === "PUT" && policyMatch) {
+      const policyId = policyMatch[1];
+      const payload = await readJsonBody(req);
+      const target = platformPolicies.find((item) => item.id === policyId);
+      if (!target) {
+        sendJson(req, res, 404, { error: "not_found" });
+        return;
+      }
+      if (typeof payload.isActive === "boolean") {
+        target.isActive = payload.isActive;
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, "sendMode")) {
+        target.sendModeOverride = payload.sendMode;
+        target.sendMode = payload.sendMode || "draft_only";
+      }
+      target.updatedAt = new Date().toISOString();
+      const healthTarget = platformHealth.find((item) => item.id === policyId);
+      if (healthTarget) {
+        healthTarget.isActive = target.isActive;
+        healthTarget.sendModeOverride = target.sendModeOverride;
+        healthTarget.sendMode = target.sendMode;
+        healthTarget.disableReason = target.isActive ? null : "disabled_by_admin_policy";
+      }
+      sendJson(req, res, 200, target);
+      return;
+    }
+
     if (req.method === "GET" && requestUrl.pathname === "/api/inbox") {
       const status = requestUrl.searchParams.get("status");
       const items = status && status !== "all" ? inboxItems.filter((item) => item.status === status) : inboxItems;
@@ -446,6 +552,8 @@ async function runSmoke() {
       await page.getByRole("heading", { name: "Assignments" }).waitFor();
       await page.getByRole("tab", { name: "Showings" }).click();
       await page.getByRole("heading", { name: "Showings" }).waitFor();
+      await page.getByRole("tab", { name: "Platform controls" }).click();
+      await page.getByRole("heading", { name: "Platform controls" }).waitFor();
 
       const inboxRows = page.getByTestId("inbox-row");
       const weeklyRows = page.getByTestId("weekly-rule-row");

@@ -13,11 +13,20 @@ function createMemoryAdapter({ pendingMessages, ruleByIntent, templatesByName, s
   const processed = [];
   const outbound = [];
   const logs = [];
+  const dispatchByMessageId = new Map();
 
   return {
     adapter: {
       async fetchPendingMessages() {
-        return pendingMessages;
+        return pendingMessages.map((message) => ({
+          ...message,
+          platformPolicy: message.platformPolicy || {
+            isActive: true,
+            sendMode: "auto_send",
+            sendModeOverride: "auto_send",
+            globalDefaultSendMode: "draft_only"
+          }
+        }));
       },
       async fetchSlotOptions(unitId) {
         return slotOptionsByUnit[unitId] || [];
@@ -29,7 +38,59 @@ function createMemoryAdapter({ pendingMessages, ruleByIntent, templatesByName, s
         return templatesByName[templateName] || null;
       },
       async recordOutboundReply(payload) {
+        if (payload.externalMessageId && outbound.some((entry) => entry.externalMessageId === payload.externalMessageId)) {
+          return { inserted: false };
+        }
         outbound.push(payload);
+        return { inserted: true };
+      },
+      async beginDispatchAttempt({ messageId, dispatchKey }) {
+        const current = dispatchByMessageId.get(messageId);
+        if (current && current.key === dispatchKey && (current.state === "in_progress" || current.state === "completed")) {
+          return {
+            shouldDispatch: false,
+            duplicate: true,
+            state: current.state,
+            delivery: current.delivery || null
+          };
+        }
+
+        dispatchByMessageId.set(messageId, {
+          key: dispatchKey,
+          state: "in_progress",
+          attempts: (current?.attempts || 0) + 1
+        });
+        return {
+          shouldDispatch: true,
+          duplicate: false,
+          state: "in_progress",
+          delivery: null
+        };
+      },
+      async completeDispatchAttempt({ messageId, dispatchKey, status, delivery }) {
+        const current = dispatchByMessageId.get(messageId);
+        if (!current || current.key !== dispatchKey) {
+          return;
+        }
+        dispatchByMessageId.set(messageId, {
+          ...current,
+          state: "completed",
+          status,
+          delivery: delivery || null
+        });
+      },
+      async failDispatchAttempt({ messageId, stage, error, retry }) {
+        const current = dispatchByMessageId.get(messageId);
+        if (!current) {
+          return;
+        }
+        dispatchByMessageId.set(messageId, {
+          ...current,
+          state: "failed",
+          failedStage: stage,
+          error,
+          retry
+        });
       },
       async markInboundProcessed(payload) {
         processed.push(payload);
@@ -40,7 +101,8 @@ function createMemoryAdapter({ pendingMessages, ruleByIntent, templatesByName, s
     },
     processed,
     outbound,
-    logs
+    logs,
+    dispatchByMessageId
   };
 }
 
@@ -527,10 +589,139 @@ test("dispatch failures emit platform failure metrics and audit signals", async 
   assert.equal(fixture.logs.at(-2).details.stage, "dispatch_outbound_message");
   assert.equal(fixture.logs.at(-1).action, "platform_dispatch_error");
   assert.equal(fixture.logs.at(-1).details.platform, "leasebreak");
+  assert.equal(fixture.logs.at(-1).details.retry.retryExhausted, false);
+  assert.equal(result.metrics.platformFailureStages["leasebreak:dispatch_outbound_message"], 1);
 });
 
-test("connector registry exposes five platforms with API/RPA paths", async () => {
-  const transportCalls = [];
+test("dispatch duplicate suppression prevents double-send for the same dispatch key", async () => {
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m9-dup",
+        conversationId: "c9-dup",
+        body: "Can I tour this unit this weekend?",
+        metadata: {},
+        platform: "leasebreak",
+        platformAccountId: "p9",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        propertyName: "Atlas Apartments",
+        unitNumber: "4B",
+        hasRecentOutbound: false
+      }
+    ],
+    ruleByIntent: {
+      tour_request: {
+        id: "r1",
+        enabled: true,
+        actionConfig: { template: "tour_invite_v1" }
+      }
+    },
+    templatesByName: {
+      tour_invite_v1: {
+        id: "t1",
+        body: "Tours for {{unit_number}}"
+      }
+    },
+    slotOptionsByUnit: {
+      u1: [
+        {
+          starts_at: "2026-02-10T17:00:00.000Z",
+          ends_at: "2026-02-10T17:30:00.000Z",
+          timezone: "UTC"
+        }
+      ]
+    }
+  });
+
+  fixture.adapter.dispatchOutboundMessage = async () => ({
+    externalMessageId: "ext-dedupe",
+    channel: "in_app",
+    providerStatus: "sent"
+  });
+
+  const firstRun = await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-06T10:00:00.000Z")
+  });
+
+  const secondRun = await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-06T10:00:00.000Z")
+  });
+
+  assert.equal(firstRun.metrics.dispatch.duplicatesSuppressed, 0);
+  assert.equal(secondRun.metrics.dispatch.duplicatesSuppressed, 1);
+  assert.equal(fixture.outbound.length, 1);
+  assert.equal(fixture.logs.some((entry) => entry.action === "ai_reply_dispatch_duplicate_suppressed"), true);
+});
+
+test("retry-exhausted dispatch failures emit DLQ and escalation observability", async () => {
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m9-dlq",
+        conversationId: "c9-dlq",
+        body: "Can I tour this unit this weekend?",
+        metadata: {},
+        platform: "leasebreak",
+        platformAccountId: "p9",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        propertyName: "Atlas Apartments",
+        unitNumber: "4B",
+        hasRecentOutbound: false
+      }
+    ],
+    ruleByIntent: {
+      tour_request: {
+        id: "r1",
+        enabled: true,
+        actionConfig: { template: "tour_invite_v1" }
+      }
+    },
+    templatesByName: {
+      tour_invite_v1: {
+        id: "t1",
+        body: "Tours for {{unit_number}}"
+      }
+    },
+    slotOptionsByUnit: {
+      u1: [
+        {
+          starts_at: "2026-02-10T17:00:00.000Z",
+          ends_at: "2026-02-10T17:30:00.000Z",
+          timezone: "UTC"
+        }
+      ]
+    }
+  });
+
+  fixture.adapter.dispatchOutboundMessage = async () => {
+    const error = new Error("platform outage");
+    error.status = 503;
+    error.retryExhausted = true;
+    error.retryAttempts = 4;
+    throw error;
+  };
+
+  const result = await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-06T10:00:00.000Z")
+  });
+
+  assert.equal(result.metrics.dispatch.dlqQueued, 1);
+  assert.equal(result.metrics.platformFailureStages["leasebreak:dispatch_outbound_message"], 1);
+  assert.equal(fixture.logs.some((entry) => entry.action === "platform_dispatch_dlq"), true);
+  assert.equal(fixture.logs.some((entry) => entry.action === "ai_reply_dispatch_escalated"), true);
+});
+
+test("connector registry keeps five-platform RPA ingest and outbound contracts", async () => {
   const rpaCalls = [];
   const registry = createConnectorRegistry({
     env: {
@@ -543,22 +734,70 @@ test("connector registry exposes five platforms with API/RPA paths", async () =>
       FURNISHEDFINDER_USERNAME: "ff_user",
       FURNISHEDFINDER_PASSWORD: "ff_pass"
     },
-    transport: {
-      async request(payload) {
-        transportCalls.push(payload);
-        if (payload.method === "POST") {
-          return { id: "api-1", status: "sent", channel: "in_app" };
-        }
-        return { messages: [] };
-      }
-    },
     rpaRunner: {
       async run(payload) {
         rpaCalls.push(payload);
-        return { externalMessageId: "rpa-1", status: "sent", channel: "sms" };
+        if (payload.action === "ingest") {
+          return {
+            messages: [
+              {
+                threadId: `${payload.platform}-thread-1`,
+                messageId: `${payload.platform}-message-1`,
+                body: `Inbound on ${payload.platform}`
+              }
+            ]
+          };
+        }
+
+        return {
+          externalMessageId: `${payload.platform}-outbound-1`,
+          status: "queued",
+          channel: "in_app"
+        };
       }
     }
   });
+
+  const platformAccounts = [
+    {
+      id: "acc-spareroom",
+      platform: "spareroom",
+      credentials: {
+        usernameRef: "env:SPAREROOM_USERNAME",
+        passwordRef: "env:SPAREROOM_PASSWORD"
+      }
+    },
+    {
+      id: "acc-roomies",
+      platform: "roomies",
+      credentials: {
+        emailRef: "env:ROOMIES_EMAIL",
+        passwordRef: "env:ROOMIES_PASSWORD"
+      }
+    },
+    {
+      id: "acc-leasebreak",
+      platform: "leasebreak",
+      credentials: {
+        apiKeyRef: "env:LEASEBREAK_API_KEY"
+      }
+    },
+    {
+      id: "acc-renthop",
+      platform: "renthop",
+      credentials: {
+        accessTokenRef: "env:RENTHOP_ACCESS_TOKEN"
+      }
+    },
+    {
+      id: "acc-furnishedfinder",
+      platform: "furnishedfinder",
+      credentials: {
+        usernameRef: "env:FURNISHEDFINDER_USERNAME",
+        passwordRef: "env:FURNISHEDFINDER_PASSWORD"
+      }
+    }
+  ];
 
   assert.deepEqual(registry.supportedPlatforms.sort(), [
     "furnishedfinder",
@@ -568,44 +807,38 @@ test("connector registry exposes five platforms with API/RPA paths", async () =>
     "spareroom"
   ]);
 
-  await registry.sendMessageForAccount({
-    account: {
-      id: "acc-leasebreak",
-      platform: "leasebreak",
-      credentials: { apiKey: "env:LEASEBREAK_API_KEY" }
-    },
-    outbound: {
-      externalThreadId: "thread-leasebreak-1",
-      body: "Tour slots available"
-    }
-  });
+  for (const account of platformAccounts) {
+    const ingested = await registry.ingestMessagesForAccount(account);
+    assert.equal(ingested.length, 1);
+    assert.equal(ingested[0].externalThreadId, `${account.platform}-thread-1`);
+    assert.equal(ingested[0].externalMessageId, `${account.platform}-message-1`);
 
-  await registry.sendMessageForAccount({
-    account: {
-      id: "acc-spareroom",
-      platform: "spareroom",
-      credentials: {
-        usernameRef: "SPAREROOM_USERNAME",
-        passwordRef: "env:SPAREROOM_PASSWORD"
+    const sent = await registry.sendMessageForAccount({
+      account,
+      outbound: {
+        externalThreadId: `${account.platform}-thread-1`,
+        body: "Tour slots available"
       }
-    },
-    outbound: {
-      externalThreadId: "thread-spareroom-1",
-      body: "Tour slots available"
-    }
-  });
+    });
 
-  assert.equal(transportCalls.length, 1);
-  assert.equal(transportCalls[0].path, "/leasebreak/messages");
-  assert.equal(rpaCalls.length, 1);
-  assert.equal(rpaCalls[0].platform, "spareroom");
+    assert.deepEqual(sent, {
+      externalMessageId: `${account.platform}-outbound-1`,
+      channel: "in_app",
+      providerStatus: "queued"
+    });
+  }
+
+  const ingestCalls = rpaCalls.filter((call) => call.action === "ingest");
+  const sendCalls = rpaCalls.filter((call) => call.action === "send");
+  assert.equal(ingestCalls.length, 5);
+  assert.equal(sendCalls.length, 5);
 });
 
 test("credentials resolve from env references and fail fast when missing", () => {
   const account = {
     platform: "renthop",
     credentials: {
-      accessTokenRef: "RENTHOP_ACCESS_TOKEN"
+      accessTokenRef: "env:RENTHOP_ACCESS_TOKEN"
     }
   };
 
@@ -619,113 +852,244 @@ test("credentials resolve from env references and fail fast when missing", () =>
     () => resolvePlatformCredentials(account, {}),
     /Missing credential 'accessToken' for renthop/
   );
+
+  assert.throws(
+    () => resolvePlatformCredentials({
+      platform: "renthop",
+      credentials: {
+        accessToken: "token-plaintext"
+      }
+    }, {
+      RENTHOP_ACCESS_TOKEN: "token-123"
+    }),
+    {
+      code: "CREDENTIAL_PLAINTEXT_FORBIDDEN"
+    }
+  );
+
+  assert.throws(
+    () => resolvePlatformCredentials({
+      platform: "renthop",
+      credentials: {
+        accessTokenRef: "RENTHOP_ACCESS_TOKEN"
+      }
+    }, {
+      RENTHOP_ACCESS_TOKEN: "token-123"
+    }),
+    {
+      code: "CREDENTIAL_PLAINTEXT_FORBIDDEN"
+    }
+  );
 });
 
-test("connector registry retries transient failures and keeps ingest/send contracts", async () => {
-  const sleeps = [];
-  let apiIngestAttempts = 0;
-  let rpaSendAttempts = 0;
+test("connector registry circuit breaker trips, fail-fasts, probes half-open, and closes on success", async () => {
+  let now = 0;
+  const attempts = [];
+  let shouldFail = true;
 
   const registry = createConnectorRegistry({
     env: {
-      LEASEBREAK_API_KEY: "lb_key",
-      FURNISHEDFINDER_USERNAME: "ff_user",
-      FURNISHEDFINDER_PASSWORD: "ff_pass"
+      LEASEBREAK_API_KEY: "lb_key"
     },
-    retry: {
-      retries: 2,
-      baseDelayMs: 1,
-      sleep: async (delayMs) => {
-        sleeps.push(delayMs);
+    nowMs: () => now,
+    random: () => 0,
+    sleep: async (delayMs) => {
+      now += delayMs;
+    },
+    antiBot: {
+      leasebreak: {
+        minIntervalMs: 0,
+        jitterMs: 0,
+        maxCaptchaRetries: 0
       }
     },
-    transport: {
-      async request(payload) {
-        if (payload.method === "GET" && payload.path === "/leasebreak/messages") {
-          apiIngestAttempts += 1;
-          if (apiIngestAttempts === 1) {
-            const error = new Error("leasebreak outage");
-            error.status = 503;
+    retry: {
+      retries: 0
+    },
+    circuitBreaker: {
+      leasebreak: {
+        failureThreshold: 2,
+        cooldownMs: 50
+      }
+    },
+    rpaRunner: {
+      async run(payload) {
+        attempts.push({ attempt: payload.attempt, at: now });
+        if (shouldFail) {
+          const error = new Error("rpa outage");
+          error.status = 503;
+          throw error;
+        }
+
+        return {
+          messages: [
+            {
+              threadId: "thread-leasebreak-cb",
+              messageId: `msg-${attempts.length}`,
+              body: "Recovered"
+            }
+          ]
+        };
+      }
+    }
+  });
+
+  const account = {
+    id: "acc-cb-1",
+    platform: "leasebreak",
+    credentials: { apiKeyRef: "env:LEASEBREAK_API_KEY" }
+  };
+
+  await assert.rejects(() => registry.ingestMessagesForAccount(account), /rpa outage/);
+  await assert.rejects(() => registry.ingestMessagesForAccount(account), /rpa outage/);
+  assert.equal(attempts.length, 2);
+
+  await assert.rejects(
+    () => registry.ingestMessagesForAccount(account),
+    {
+      code: "CIRCUIT_OPEN"
+    }
+  );
+  assert.equal(attempts.length, 2);
+
+  now = 50;
+  await assert.rejects(() => registry.ingestMessagesForAccount(account), /rpa outage/);
+  assert.equal(attempts.length, 3);
+
+  await assert.rejects(
+    () => registry.ingestMessagesForAccount(account),
+    {
+      code: "CIRCUIT_OPEN"
+    }
+  );
+  assert.equal(attempts.length, 3);
+
+  shouldFail = false;
+  now = 100;
+  const recovered = await registry.ingestMessagesForAccount(account);
+  assert.equal(recovered.length, 1);
+  assert.equal(attempts.length, 4);
+
+  now = 101;
+  await registry.ingestMessagesForAccount(account);
+  assert.equal(attempts.length, 5);
+});
+
+test("connector registry applies bounded retries, session refresh, captcha limits, and anti-bot pacing", async () => {
+  const sleeps = [];
+  const refreshes = [];
+  const runAttempts = [];
+  let now = 0;
+  let forceCaptchaFailure = false;
+
+  const registry = createConnectorRegistry({
+    env: {
+      LEASEBREAK_API_KEY: "lb_key"
+    },
+    nowMs: () => now,
+    random: () => 1,
+    sleep: async (delayMs) => {
+      sleeps.push(delayMs);
+      now += delayMs;
+    },
+    antiBot: {
+      leasebreak: {
+        minIntervalMs: 100,
+        jitterMs: 50,
+        maxCaptchaRetries: 1
+      }
+    },
+    retry: {
+      retries: 3,
+      baseDelayMs: 1,
+      maxDelayMs: 10
+    },
+    sessionManager: {
+      async get() {
+        return { token: "session-v1" };
+      },
+      async refresh(payload) {
+        refreshes.push(payload.reason);
+      }
+    },
+    rpaRunner: {
+      async run(payload) {
+        runAttempts.push({ action: payload.action, attempt: payload.attempt });
+        if (payload.action === "ingest") {
+          if (forceCaptchaFailure) {
+            const error = new Error("captcha blocked repeatedly");
+            error.code = "CAPTCHA_REQUIRED";
+            throw error;
+          }
+
+          if (payload.attempt === 1) {
+            const error = new Error("captcha challenge page");
+            error.code = "CAPTCHA_REQUIRED";
             throw error;
           }
 
           return {
             messages: [
               {
-                threadId: "thread-1",
-                messageId: "msg-1",
+                threadId: "thread-leasebreak-1",
+                messageId: "msg-leasebreak-1",
                 body: "Interested in a tour"
               }
             ]
           };
         }
 
-        return { messages: [] };
-      }
-    },
-    rpaRunner: {
-      async run(payload) {
-        if (payload.platform === "furnishedfinder" && payload.action === "send") {
-          rpaSendAttempts += 1;
-          if (rpaSendAttempts === 1) {
-            const error = new Error("temporary timeout");
-            error.code = "ETIMEDOUT";
+        if (payload.action === "send") {
+          if (payload.attempt === 1) {
+            const error = new Error("session expired");
+            error.code = "SESSION_EXPIRED";
             throw error;
           }
 
           return {
-            externalMessageId: "ff-msg-1",
-            channel: "email",
-            status: "queued"
+            externalMessageId: "leasebreak-outbound-1",
+            channel: "sms",
+            status: "sent"
           };
         }
 
-        return { messages: [] };
+        return {};
       }
     }
   });
 
-  const ingested = await registry.ingestMessagesForAccount({
+  const account = {
     id: "acc-lb-1",
     platform: "leasebreak",
-    credentials: { apiKeyRef: "LEASEBREAK_API_KEY" }
-  });
+    credentials: { apiKeyRef: "env:LEASEBREAK_API_KEY" }
+  };
 
-  assert.equal(apiIngestAttempts, 2);
-  assert.equal(ingested.length, 1);
-  assert.deepEqual(ingested[0], {
-    externalThreadId: "thread-1",
-    externalMessageId: "msg-1",
-    body: "Interested in a tour",
-    leadName: null,
-    leadContact: {},
-    channel: "in_app",
-    sentAt: ingested[0].sentAt,
-    metadata: {}
-  });
-
+  const ingested = await registry.ingestMessagesForAccount(account);
   const sent = await registry.sendMessageForAccount({
-    account: {
-      id: "acc-ff-1",
-      platform: "furnishedfinder",
-      credentials: {
-        usernameRef: "env:FURNISHEDFINDER_USERNAME",
-        passwordRef: "FURNISHEDFINDER_PASSWORD"
-      }
-    },
+    account,
     outbound: {
-      externalThreadId: "thread-2",
+      externalThreadId: "thread-leasebreak-1",
       body: "Tour availability attached"
     }
   });
 
-  assert.equal(rpaSendAttempts, 2);
-  assert.deepEqual(sent, {
-    externalMessageId: "ff-msg-1",
-    channel: "email",
-    providerStatus: "queued"
-  });
-  assert.equal(sleeps.length, 2);
+  assert.equal(ingested.length, 1);
+  assert.equal(sent.externalMessageId, "leasebreak-outbound-1");
+  assert.deepEqual(refreshes, ["captcha_or_bot_challenge", "session_expired"]);
+  assert.deepEqual(runAttempts, [
+    { action: "ingest", attempt: 1 },
+    { action: "ingest", attempt: 2 },
+    { action: "send", attempt: 1 },
+    { action: "send", attempt: 2 }
+  ]);
+  assert.equal(sleeps.some((delay) => delay >= 150), true);
+  assert.equal(sleeps.some((delay) => delay === 1), true);
+
+  forceCaptchaFailure = true;
+  await assert.rejects(
+    () => registry.ingestMessagesForAccount(account),
+    /captcha blocked repeatedly/
+  );
 });
 
 test("retry backoff retries transient failures before succeeding", async () => {
@@ -924,4 +1288,102 @@ test("non-tour intent escalates with explicit reason code", async () => {
   assert.equal(result.metrics.escalations.raised, 1);
   assert.equal(fixture.processed[0].metadataPatch.outcome, "escalate");
   assert.equal(fixture.processed[0].metadataPatch.replyDecisionReason, "escalate_non_tour_intent");
+});
+
+test("inactive platform policy blocks worker send path and marks inbound processed", async () => {
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m10",
+        conversationId: "c10",
+        body: "Can I tour this place this weekend?",
+        metadata: {},
+        platform: "leasebreak",
+        platformAccountId: "p10",
+        assignedAgentId: "a1",
+        platformPolicy: {
+          isActive: false,
+          sendMode: "auto_send",
+          sendModeOverride: "auto_send",
+          globalDefaultSendMode: "draft_only"
+        }
+      }
+    ],
+    ruleByIntent: {},
+    templatesByName: {}
+  });
+
+  const result = await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-06T10:00:00.000Z")
+  });
+
+  assert.equal(result.repliesCreated, 0);
+  assert.equal(result.metrics.decisions.ineligible, 1);
+  assert.equal(result.metrics.decisions.reasons.policy_platform_inactive, 1);
+  assert.equal(fixture.outbound.length, 0);
+  assert.equal(fixture.processed[0].metadataPatch.replyDecisionReason, "policy_platform_inactive");
+  assert.equal(fixture.processed[0].metadataPatch.outcome, "blocked");
+  assert.equal(fixture.logs[0].action, "ai_reply_policy_blocked");
+});
+
+test("draft_only platform policy forces draft even when rule enables auto-send", async () => {
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m11",
+        conversationId: "c11",
+        body: "Can I tour this place this weekend?",
+        metadata: {},
+        platform: "leasebreak",
+        platformAccountId: "p11",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        unitNumber: "4B",
+        hasRecentOutbound: false,
+        platformPolicy: {
+          isActive: true,
+          sendMode: "draft_only",
+          sendModeOverride: "draft_only",
+          globalDefaultSendMode: "draft_only"
+        }
+      }
+    ],
+    ruleByIntent: {
+      tour_request: {
+        id: "r1",
+        enabled: true,
+        actionConfig: { template: "tour_invite_v1" }
+      }
+    },
+    templatesByName: {
+      tour_invite_v1: {
+        id: "t1",
+        body: "Tours for {{unit_number}}"
+      }
+    },
+    slotOptionsByUnit: {
+      u1: [
+        {
+          starts_at: "2026-02-10T17:00:00.000Z",
+          ends_at: "2026-02-10T17:30:00.000Z",
+          timezone: "UTC"
+        }
+      ]
+    }
+  });
+
+  const result = await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-06T10:00:00.000Z")
+  });
+
+  assert.equal(result.repliesCreated, 1);
+  assert.equal(result.metrics.sends.sent, 0);
+  assert.equal(result.metrics.sends.drafted, 1);
+  assert.equal(fixture.outbound[0].metadata.reviewStatus, "draft");
+  assert.equal(fixture.outbound[0].metadata.platformPolicy.sendMode, "draft_only");
 });

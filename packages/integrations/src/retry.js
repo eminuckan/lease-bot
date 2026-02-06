@@ -57,6 +57,9 @@ export async function withRetry(operation, options = {}) {
 
       const canRetry = attempt <= retries && shouldRetry(lastError, attempt);
       if (!canRetry) {
+        lastError.retryAttempts = attempt;
+        lastError.retryExhausted = attempt > retries && isRetryableError(lastError);
+        lastError.retryConfigured = retries;
         throw lastError;
       }
 

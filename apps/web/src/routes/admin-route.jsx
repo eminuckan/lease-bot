@@ -1,6 +1,7 @@
 import { createRoute } from "@tanstack/react-router";
 import { AssignmentPanel } from "../features/assignment-panel";
 import { InboxPanel } from "../features/inbox-panel";
+import { PlatformControlsPanel } from "../features/platform-controls-panel";
 import { ShowingsPanel } from "../features/showings-panel";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -30,10 +31,10 @@ function AdminPage() {
       <Card>
         <CardHeader>
           <CardTitle>Admin View</CardTitle>
-          <CardDescription>Modular route with mobile action clusters</CardDescription>
+          <CardDescription>Modular route with mobile action clusters and platform policy controls</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3" role="tablist" aria-label="Admin panels" data-testid="admin-panel-switcher">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" role="tablist" aria-label="Admin panels" data-testid="admin-panel-switcher">
             <Button
               type="button"
               role="tab"
@@ -61,6 +62,15 @@ function AdminPage() {
             >
               Showings
             </Button>
+            <Button
+              type="button"
+              role="tab"
+              aria-selected={panel === "platform"}
+              variant={panel === "platform" ? "default" : "outline"}
+              onClick={() => setPanel("platform")}
+            >
+              Platform controls
+            </Button>
           </div>
         </CardContent>
       </Card>
@@ -68,6 +78,7 @@ function AdminPage() {
       {panel === "inbox" ? <InboxPanel /> : null}
       {panel === "assignment" ? <AssignmentPanel /> : null}
       {panel === "showings" ? <ShowingsPanel /> : null}
+      {panel === "platform" ? <PlatformControlsPanel /> : null}
     </section>
   );
 }

@@ -45,6 +45,7 @@ test("builds observability payload with core metrics and recent feeds", async ()
         ai_escalations: "2",
         ai_reply_errors: "2",
         platform_dispatch_errors: "1",
+        platform_dispatch_dlq: "1",
         booking_created: "6",
         booking_replayed: "1",
         booking_conflicts: "2",
@@ -67,8 +68,9 @@ test("builds observability payload with core metrics and recent feeds", async ()
     },
     {
       rows: [
-        { platform: "leasebreak", action: "platform_dispatch_error", count: "2" },
-        { platform: "unknown", action: "api_error", count: "1" }
+        { platform: "leasebreak", stage: "dispatch_outbound_message", action: "platform_dispatch_error", count: "2" },
+        { platform: "leasebreak", stage: "dispatch_outbound_message", action: "platform_dispatch_dlq", count: "1" },
+        { platform: "unknown", stage: "unknown", action: "api_error", count: "1" }
       ]
     },
     {
@@ -117,6 +119,7 @@ test("builds observability payload with core metrics and recent feeds", async ()
     aiEscalations: 2,
     aiReplyErrors: 2,
     platformDispatchErrors: 1,
+    platformDispatchDlq: 1,
     bookingCreated: 6,
     bookingReplayed: 1,
     bookingConflicts: 2,
@@ -136,8 +139,9 @@ test("builds observability payload with core metrics and recent feeds", async ()
     { platform: "spareroom", count: 3 }
   ]);
   assert.deepEqual(payload.signals.platformFailures, [
-    { platform: "leasebreak", action: "platform_dispatch_error", count: 2 },
-    { platform: "unknown", action: "api_error", count: 1 }
+    { platform: "leasebreak", stage: "dispatch_outbound_message", action: "platform_dispatch_error", count: 2 },
+    { platform: "leasebreak", stage: "dispatch_outbound_message", action: "platform_dispatch_dlq", count: 1 },
+    { platform: "unknown", stage: "unknown", action: "api_error", count: 1 }
   ]);
   assert.equal(payload.recentErrors.length, 1);
   assert.deepEqual(payload.recentErrors[0], {

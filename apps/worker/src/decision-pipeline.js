@@ -1,5 +1,7 @@
 import { classifyIntent, detectFollowUp, runReplyPipelineWithAI } from "../../../packages/ai/src/index.js";
 
+import { createHash } from "node:crypto";
+
 function formatSlotWindow(slot) {
   const timezone = slot.timezone || "UTC";
   const startsAt = new Date(slot.starts_at || slot.startsAt).toISOString();
@@ -38,6 +40,11 @@ function createMetricsSnapshot() {
       reasons: {}
     },
     platformFailures: {},
+    platformFailureStages: {},
+    dispatch: {
+      duplicatesSuppressed: 0,
+      dlqQueued: 0
+    },
     errors: 0,
     auditLogsWritten: 0
   };
@@ -48,6 +55,42 @@ function incrementMetricBucket(bucket, key) {
   bucket[normalizedKey] = (bucket[normalizedKey] || 0) + 1;
 }
 
+function getPolicyContext(message) {
+  const policy = message.platformPolicy || {};
+  const sendMode = policy.sendMode === "auto_send" ? "auto_send" : "draft_only";
+  return {
+    isActive: policy.isActive !== false,
+    sendMode,
+    sendModeOverride: policy.sendModeOverride ?? null,
+    globalDefaultSendMode: policy.globalDefaultSendMode || "draft_only"
+  };
+}
+
+function buildDispatchKey({ message, pipeline, status }) {
+  const payload = JSON.stringify({
+    messageId: message.id,
+    conversationId: message.conversationId,
+    externalThreadId: message.externalThreadId,
+    platformAccountId: message.platformAccountId,
+    platform: message.platform,
+    status,
+    body: pipeline.replyBody,
+    intent: pipeline.intent,
+    effectiveIntent: pipeline.effectiveIntent
+  });
+  return createHash("sha256").update(payload).digest("hex");
+}
+
+function getRetryDetails(error) {
+  const attempts = Number(error?.retryAttempts || 1);
+  const retryable = error?.retryable === true || (typeof error?.status === "number" && (error.status === 429 || error.status >= 500));
+  return {
+    attempts,
+    retryExhausted: Boolean(error?.retryExhausted) || (retryable && attempts > 1),
+    retryable
+  };
+}
+
 export async function processPendingMessagesWithAi({ adapter, logger = console, limit = 20, now = new Date() }) {
   const pendingMessages = await adapter.fetchPendingMessages(limit);
   let repliesCreated = 0;
@@ -55,8 +98,42 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
 
   for (const message of pendingMessages) {
     const platform = message.platform || "unknown";
+    const platformPolicy = getPolicyContext(message);
     let failureStage = "pipeline";
     try {
+      if (!platformPolicy.isActive) {
+        const decisionReason = "policy_platform_inactive";
+        const blockedMetadataPatch = {
+          aiProcessedAt: now.toISOString(),
+          replyEligible: false,
+          replyDecisionReason: decisionReason,
+          outcome: "blocked",
+          platformPolicy
+        };
+
+        metrics.decisions.ineligible += 1;
+        incrementMetricBucket(metrics.decisions.reasons, decisionReason);
+
+        await adapter.markInboundProcessed({
+          messageId: message.id,
+          metadataPatch: blockedMetadataPatch
+        });
+
+        await adapter.recordLog({
+          actorType: "worker",
+          entityType: "message",
+          entityId: message.id,
+          action: "ai_reply_policy_blocked",
+          details: {
+            platform,
+            reason: decisionReason,
+            platformPolicy
+          }
+        });
+        metrics.auditLogsWritten += 1;
+        continue;
+      }
+
       const slotRows = message.unitId ? await adapter.fetchSlotOptions(message.unitId, 3) : [];
       const slotOptions = slotRows.map((slot) => formatSlotWindow(slot));
       const followUpRuleFallbackIntent = message.metadata?.intent || "tour_request";
@@ -86,7 +163,7 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
         rule,
         template,
         templateContext,
-        autoSendEnabled: Boolean(rule?.enabled)
+        autoSendEnabled: Boolean(rule?.enabled) && platformPolicy.sendMode === "auto_send"
       });
 
       await adapter.recordLog({
@@ -102,6 +179,7 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
           outcome: pipeline.outcome,
           decision: pipeline.eligibility,
           escalationReasonCode: pipeline.escalationReasonCode,
+          platformPolicy,
           guardrails: pipeline.guardrails.reasons
         }
       });
@@ -129,6 +207,7 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
             provider: pipeline.provider,
             escalationReasonCode: pipeline.escalationReasonCode,
             decision: pipeline.eligibility,
+            platformPolicy,
             guardrails: pipeline.guardrails.reasons
           }
         });
@@ -137,9 +216,47 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
 
       if (pipeline.eligibility.eligible) {
         const status = pipeline.outcome === "send" ? "sent" : "draft";
+        const dispatchKey = buildDispatchKey({ message, pipeline, status });
+        let dispatchGuard = {
+          shouldDispatch: true,
+          duplicate: false,
+          state: "new",
+          delivery: null
+        };
+
+        if (typeof adapter.beginDispatchAttempt === "function") {
+          failureStage = "dispatch_idempotency_guard";
+          dispatchGuard = await adapter.beginDispatchAttempt({
+            messageId: message.id,
+            dispatchKey,
+            platform,
+            stage: "dispatch_outbound_message",
+            now: now.toISOString()
+          });
+        }
+
+        if (!dispatchGuard.shouldDispatch) {
+          metrics.dispatch.duplicatesSuppressed += 1;
+          await adapter.recordLog({
+            actorType: "worker",
+            entityType: "message",
+            entityId: message.id,
+            action: "ai_reply_dispatch_duplicate_suppressed",
+            details: {
+              platform,
+              stage: "dispatch_outbound_message",
+              dispatchKey,
+              state: dispatchGuard.state || "completed"
+            }
+          });
+          metrics.auditLogsWritten += 1;
+        }
+
         metrics.sends.attempted += 1;
         failureStage = "dispatch_outbound_message";
-        const deliveryReceipt = status === "sent" && typeof adapter.dispatchOutboundMessage === "function"
+        const deliveryReceipt = !dispatchGuard.shouldDispatch
+          ? dispatchGuard.delivery || null
+          : status === "sent" && typeof adapter.dispatchOutboundMessage === "function"
           ? await adapter.dispatchOutboundMessage({
               platformAccountId: message.platformAccountId,
               platform: message.platform,
@@ -153,50 +270,69 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
             })
           : null;
 
+        if (dispatchGuard.shouldDispatch && typeof adapter.completeDispatchAttempt === "function") {
+          failureStage = "dispatch_idempotency_complete";
+          await adapter.completeDispatchAttempt({
+            messageId: message.id,
+            dispatchKey,
+            status,
+            delivery: deliveryReceipt,
+            now: now.toISOString()
+          });
+        }
+
         failureStage = "record_audit_send";
 
-        await adapter.recordLog({
-          actorType: "worker",
-          entityType: "message",
-          entityId: message.id,
-          action: status === "sent" ? "ai_reply_send_attempted" : "ai_reply_draft_created",
-          details: {
-            platform,
+        if (dispatchGuard.shouldDispatch) {
+          await adapter.recordLog({
+            actorType: "worker",
+            entityType: "message",
+            entityId: message.id,
+            action: status === "sent" ? "ai_reply_send_attempted" : "ai_reply_draft_created",
+            details: {
+              platform,
+              intent: pipeline.intent,
+              effectiveIntent: pipeline.effectiveIntent,
+              reviewStatus: status,
+              platformPolicy,
+              dispatchKey,
+              delivery: deliveryReceipt
+            }
+          });
+          metrics.auditLogsWritten += 1;
+        }
+
+        if (dispatchGuard.shouldDispatch) {
+          const outboundMetadata = {
+            reviewStatus: status,
+            templateId: template?.id || null,
             intent: pipeline.intent,
             effectiveIntent: pipeline.effectiveIntent,
-            reviewStatus: status,
+            followUp: pipeline.followUp,
+            workerGeneratedAt: now.toISOString(),
+            guardrails: pipeline.guardrails.reasons,
+            escalationReasonCode: pipeline.escalationReasonCode,
+            platformPolicy,
+            dispatchKey,
             delivery: deliveryReceipt
+          };
+
+          failureStage = "record_outbound_reply";
+          await adapter.recordOutboundReply({
+            conversationId: message.conversationId,
+            assignedAgentId: message.assignedAgentId,
+            body: pipeline.replyBody,
+            metadata: outboundMetadata,
+            channel: deliveryReceipt?.channel || "in_app",
+            externalMessageId: deliveryReceipt?.externalMessageId || dispatchKey
+          });
+
+          repliesCreated += 1;
+          if (status === "sent") {
+            metrics.sends.sent += 1;
+          } else {
+            metrics.sends.drafted += 1;
           }
-        });
-        metrics.auditLogsWritten += 1;
-
-        const outboundMetadata = {
-          reviewStatus: status,
-          templateId: template?.id || null,
-          intent: pipeline.intent,
-          effectiveIntent: pipeline.effectiveIntent,
-          followUp: pipeline.followUp,
-          workerGeneratedAt: now.toISOString(),
-          guardrails: pipeline.guardrails.reasons,
-          escalationReasonCode: pipeline.escalationReasonCode,
-          delivery: deliveryReceipt
-        };
-
-        failureStage = "record_outbound_reply";
-        await adapter.recordOutboundReply({
-          conversationId: message.conversationId,
-          assignedAgentId: message.assignedAgentId,
-          body: pipeline.replyBody,
-          metadata: outboundMetadata,
-          channel: deliveryReceipt?.channel || "in_app",
-          externalMessageId: deliveryReceipt?.externalMessageId || null
-        });
-
-        repliesCreated += 1;
-        if (status === "sent") {
-          metrics.sends.sent += 1;
-        } else {
-          metrics.sends.drafted += 1;
         }
       }
 
@@ -211,6 +347,7 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
         replyDecisionReason: pipeline.eligibility.reason,
         outcome: pipeline.outcome,
         escalationReasonCode: pipeline.escalationReasonCode,
+        platformPolicy,
         guardrails: pipeline.guardrails.reasons
       };
 
@@ -234,6 +371,7 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
           outcome: pipeline.outcome,
           decision: pipeline.eligibility,
           escalationReasonCode: pipeline.escalationReasonCode,
+          platformPolicy,
           guardrails: pipeline.guardrails.reasons
         }
       });
@@ -256,7 +394,20 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
         }
       });
       if (failureStage.startsWith("dispatch_")) {
+        const retry = getRetryDetails(error);
         incrementMetricBucket(metrics.platformFailures, platform);
+        incrementMetricBucket(metrics.platformFailureStages, `${platform}:${failureStage}`);
+
+        if (typeof adapter.failDispatchAttempt === "function") {
+          await adapter.failDispatchAttempt({
+            messageId: message.id,
+            stage: failureStage,
+            error: error instanceof Error ? error.message : String(error),
+            now: now.toISOString(),
+            retry
+          });
+        }
+
         await adapter.recordLog({
           actorType: "worker",
           entityType: "message",
@@ -265,10 +416,41 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
           details: {
             platform,
             stage: failureStage,
-            error: error instanceof Error ? error.message : String(error)
+            error: error instanceof Error ? error.message : String(error),
+            retry
           }
         });
         metrics.auditLogsWritten += 1;
+
+        if (retry.retryExhausted) {
+          metrics.dispatch.dlqQueued += 1;
+          await adapter.recordLog({
+            actorType: "worker",
+            entityType: "message",
+            entityId: message.id,
+            action: "platform_dispatch_dlq",
+            details: {
+              platform,
+              stage: failureStage,
+              error: error instanceof Error ? error.message : String(error),
+              retry
+            }
+          });
+          metrics.auditLogsWritten += 1;
+
+          await adapter.recordLog({
+            actorType: "worker",
+            entityType: "message",
+            entityId: message.id,
+            action: "ai_reply_dispatch_escalated",
+            details: {
+              platform,
+              stage: failureStage,
+              reason: "escalate_dispatch_retry_exhausted"
+            }
+          });
+          metrics.auditLogsWritten += 1;
+        }
       }
       metrics.auditLogsWritten += 1;
     }

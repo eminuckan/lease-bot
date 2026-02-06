@@ -65,6 +65,10 @@ export async function fetchObservabilitySnapshot(client, { windowHours = 24, aud
                 AND created_at >= NOW() - make_interval(hours => $1::int)
             ) AS platform_dispatch_errors,
             COUNT(*) FILTER (
+              WHERE action = 'platform_dispatch_dlq'
+                AND created_at >= NOW() - make_interval(hours => $1::int)
+            ) AS platform_dispatch_dlq,
+            COUNT(*) FILTER (
               WHERE action = 'showing_booking_created'
                 AND created_at >= NOW() - make_interval(hours => $1::int)
             ) AS booking_created,
@@ -116,13 +120,14 @@ export async function fetchObservabilitySnapshot(client, { windowHours = 24, aud
 
   const platformFailureResult = await client.query(
     `SELECT COALESCE(NULLIF(details->>'platform', ''), 'unknown') AS platform,
+            COALESCE(NULLIF(details->>'stage', ''), 'unknown') AS stage,
             action,
             COUNT(*)::int AS count
        FROM "AuditLogs"
       WHERE created_at >= NOW() - make_interval(hours => $1::int)
-        AND action IN ('platform_dispatch_error', 'ai_reply_error', 'api_error', 'showing_booking_failed')
-      GROUP BY platform, action
-      ORDER BY count DESC, platform ASC, action ASC`,
+        AND action IN ('platform_dispatch_error', 'platform_dispatch_dlq', 'ai_reply_error', 'api_error', 'showing_booking_failed')
+      GROUP BY platform, stage, action
+      ORDER BY count DESC, platform ASC, stage ASC, action ASC`,
     [windowHours]
   );
 
@@ -171,6 +176,7 @@ export async function fetchObservabilitySnapshot(client, { windowHours = 24, aud
       aiEscalations: Number(audit.ai_escalations || 0),
       aiReplyErrors: Number(audit.ai_reply_errors || 0),
       platformDispatchErrors: Number(audit.platform_dispatch_errors || 0),
+      platformDispatchDlq: Number(audit.platform_dispatch_dlq || 0),
       bookingCreated: Number(audit.booking_created || 0),
       bookingReplayed: Number(audit.booking_replayed || 0),
       bookingConflicts: Number(audit.booking_conflicts || 0),
@@ -190,6 +196,7 @@ export async function fetchObservabilitySnapshot(client, { windowHours = 24, aud
         .sort((a, b) => b.count - a.count || a.platform.localeCompare(b.platform)),
       platformFailures: platformFailureResult.rows.map((row) => ({
         platform: row.platform || "unknown",
+        stage: row.stage || "unknown",
         action: row.action,
         count: Number(row.count || 0)
       }))

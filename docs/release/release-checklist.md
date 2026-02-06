@@ -1,4 +1,4 @@
-# Release Checklist (Mobile-First + Scheduling)
+# Release Checklist (Platform Hardening Rollout)
 
 Use this checklist for every production rollout candidate.
 
@@ -14,9 +14,16 @@ Use this checklist for every production rollout candidate.
 - [ ] API tests pass: `npm run test -w @lease-bot/api`
 - [ ] Worker tests pass: `npm run test -w @lease-bot/worker`
 - [ ] Web smoke passes: `npm run smoke -w @lease-bot/web`
+- [ ] Platform integration/e2e passes: `node --test apps/api/test/platform-contract-e2e.test.js apps/worker/test/platform-contract-e2e.test.js`
 - [ ] Evidence logs updated in `docs/qa/evidence/`
 - [ ] CI run metadata copied from `ci-run-metadata` workflow artifact into `docs/qa/evidence/ci-run-metadata.md`
 - [ ] `.env` variable set audited against `.env.example`
+
+## Required platform parity gate (R13)
+
+- [ ] `requiredPlatforms` contract includes exactly: `spareroom`, `roomies`, `leasebreak`, `renthop`, `furnishedfinder`.
+- [ ] Missing platform list (`missingPlatforms`) is empty for release candidate accounts.
+- [ ] Each required platform passes at least one ingest and one outbound contract assertion in CI.
 
 ## Mobile-first verification gate (R17, R18)
 
@@ -34,24 +41,39 @@ Use this checklist for every production rollout candidate.
 - [ ] Scheduling filters (status, unit, date range) return expected results.
 - [ ] Empty-state behavior is explicit (no-data list and timeline messages).
 
-## Rollout plan
+## Staged rollout plan (R15)
 
-1. Deploy API and worker to staging/prod candidate.
-2. Run smoke checks immediately after deployment.
-3. Monitor rollout progress until complete:
+1. Shadow stage (0% user impact)
+
+- [ ] Deploy API and worker with platform connectors enabled in shadow mode only.
+- [ ] Confirm all required checks are green in CI and no new critical runtime errors are observed.
+- [ ] Validate platform health snapshots and ingest logs for all 5 required platforms.
+
+2. Canary stage (small controlled slice)
+
+- [ ] Enable canary traffic for a small account cohort.
+- [ ] Re-run smoke + platform integration/e2e checks against canary build.
+- [ ] Monitor audit/observability counters for failure spikes by platform.
+
+3. Full stage (100% rollout)
+
+- [ ] Promote to full traffic only if shadow + canary checks stay green.
+- [ ] Monitor rollout progress until complete:
 
 ```bash
 kubectl rollout status deployment/lease-bot-api --timeout 10m
 kubectl rollout status deployment/lease-bot-worker --timeout 10m
 ```
 
-4. Monitor metrics and logs for at least one worker poll interval window.
+- [ ] Monitor metrics and logs for at least one worker poll interval window after full promotion.
 
 ## Rollback guidance
 
 Trigger rollback on any of the following:
 
-- CI critical-path gate fails post-merge.
+- Any required CI gate fails (API, worker, web smoke, platform integration/e2e).
+- `missingPlatforms` becomes non-empty for required platforms.
+- Canary shows repeated platform dispatch failures, circuit-open fail-fast events, or elevated DLQ volume.
 - Mobile-first smoke or scheduling checks fail in release environment.
 - Elevated runtime errors in web/API/worker after rollout.
 
@@ -73,7 +95,6 @@ Post-rollback requirements:
 
 ## Acceptance mapping
 
-- R9: release is blocked unless API/worker/web critical checks are green.
-- R10: release requires env audit aligned with `.env.example` and runbook.
-- R17: mobile-first verification is a hard gate before go-live.
-- R18: mobile fallback, bounded list render, and performance proxy budgets are validated by smoke assertions.
+- R13: required platform parity and ingest/outbound contract checks are mandatory before release.
+- R14: release is blocked unless API/worker/web smoke/platform integration-e2e gates are green.
+- R15: rollout follows shadow -> canary -> full stages with explicit rollback triggers and commands.

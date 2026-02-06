@@ -1,6 +1,6 @@
-# Critical Path QA Gates (R9, R17, R18)
+# Critical Path QA Gates (R13, R14, R15)
 
-This document defines the release-blocking quality gates for API, worker, and web critical paths.
+This document defines the release-blocking quality gates for API, worker, web, and platform integration/e2e critical paths.
 
 ## Context7 references used
 
@@ -17,6 +17,10 @@ This document defines the release-blocking quality gates for API, worker, and we
   - Key guidance: optionally require branches to be up to date before merge so checks run against the latest base branch.
   - Key guidance: use workflow path filters (`push`/`pull_request` + `paths`) so CI runs only for relevant file changes.
   - Key guidance: persist run evidence with `actions/upload-artifact` so release records can link to real run outputs.
+
+- Library ID: `/websites/nodejs_latest-v20_x`
+  - Key guidance: run targeted suites with `node --test <file...>` when a workflow needs explicit test-file scope.
+  - Key guidance: use `node:test` subtests to keep platform-level scenarios isolated but still aggregated in one suite.
 
 - Library ID: `/kubernetes/website`
   - Key guidance: use rollout status to verify deployment progress and keep rollback commands ready (`kubectl rollout undo`) as part of release runbooks.
@@ -53,11 +57,24 @@ Smoke assertions are release-blocking for:
 - Explicit mobile card-list fallback checks for critical lists (inbox, weekly rules, availability, agent appointments).
 - Performance proxies: login/admin->agent route transition duration, list render settle duration, and main JS payload budget.
 
+4. Platform integration/e2e contract suite (all 5 required platforms)
+
+```bash
+node --test apps/api/test/platform-contract-e2e.test.js apps/worker/test/platform-contract-e2e.test.js
+```
+
+Platform suite assertions are release-blocking for:
+
+- Required platform coverage parity: `spareroom`, `roomies`, `leasebreak`, `renthop`, `furnishedfinder`.
+- At least one ingest and one outbound contract assertion per required platform.
+- API contract parity for `requiredPlatforms` and `missingPlatforms` fields.
+
 ## Evidence artifact paths
 
 - `docs/qa/evidence/api-tests.log`
 - `docs/qa/evidence/worker-tests.log`
 - `docs/qa/evidence/web-smoke.log`
+- `docs/qa/evidence/platform-integration-e2e.log`
 - `docs/qa/evidence/ci-run-metadata.md`
 
 ## CI metadata evidence process
@@ -65,12 +82,12 @@ Smoke assertions are release-blocking for:
 The `Critical Path Gates` workflow uploads a `ci-run-metadata` artifact for each run. This artifact includes run ID, URL, SHA, branch, and per-check job status sourced from the actual GitHub Actions execution.
 
 1. Open the workflow run in GitHub Actions for the release candidate commit.
-2. Download artifacts: `api-tests-log`, `worker-tests-log`, `web-smoke-log`, and `ci-run-metadata`.
+2. Download artifacts: `api-tests-log`, `worker-tests-log`, `web-smoke-log`, `platform-integration-e2e-log`, and `ci-run-metadata`.
 3. Copy the metadata artifact contents into `docs/qa/evidence/ci-run-metadata.md` and keep the run URL and status fields unchanged.
 4. Keep this file aligned with release candidate evidence when branch protection gates are evaluated.
 
 ## Acceptance mapping
 
-- R9: API + worker + web critical tests are mandatory and release-blocking.
-- R17: Web smoke must pass on mobile viewport set (320/375/430) and larger breakpoints.
-- R18: Web smoke verifies bounded list rendering, explicit mobile card-list fallback, and measurable performance proxy budgets.
+- R13: platform integration/e2e suite verifies ingest+outbound contracts for each required platform.
+- R14: CI requires API tests + worker tests + web smoke + platform integration/e2e to pass.
+- R15: this gate set is tied to staged rollout decisions in `docs/release/release-checklist.md`.

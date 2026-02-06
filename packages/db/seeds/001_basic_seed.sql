@@ -1,17 +1,72 @@
 BEGIN;
 
-INSERT INTO "PlatformAccounts" (id, platform, account_name, account_external_id, credentials)
+INSERT INTO "PlatformAccounts" (
+  id,
+  platform,
+  account_name,
+  account_external_id,
+  credentials,
+  is_active,
+  send_mode,
+  integration_mode
+)
 VALUES
   (
     '11111111-1111-1111-1111-111111111111',
     'leasebreak',
     'Downtown Leasing Team',
     'lb_001',
-    '{"apiKeyRef":"env:LEASEBREAK_API_KEY"}'::jsonb
+    '{"sessionRef":"env:LEASEBREAK_RPA_SESSION"}'::jsonb,
+    TRUE,
+    'draft_only',
+    'rpa'
+  ),
+  (
+    '12111111-1111-1111-1111-111111111111',
+    'spareroom',
+    'Downtown Spareroom Team',
+    'sr_001',
+    '{"sessionRef":"env:SPAREROOM_RPA_SESSION"}'::jsonb,
+    TRUE,
+    'draft_only',
+    'rpa'
+  ),
+  (
+    '13111111-1111-1111-1111-111111111111',
+    'roomies',
+    'Downtown Roomies Team',
+    'rm_001',
+    '{"sessionRef":"env:ROOMIES_RPA_SESSION"}'::jsonb,
+    TRUE,
+    'draft_only',
+    'rpa'
+  ),
+  (
+    '14111111-1111-1111-1111-111111111111',
+    'renthop',
+    'Downtown RentHop Team',
+    'rh_001',
+    '{"sessionRef":"env:RENTHOP_RPA_SESSION"}'::jsonb,
+    TRUE,
+    'draft_only',
+    'rpa'
+  ),
+  (
+    '15111111-1111-1111-1111-111111111111',
+    'furnishedfinder',
+    'Downtown FurnishedFinder Team',
+    'ff_001',
+    '{"sessionRef":"env:FURNISHEDFINDER_RPA_SESSION"}'::jsonb,
+    TRUE,
+    'draft_only',
+    'rpa'
   )
 ON CONFLICT (platform, account_external_id) DO UPDATE SET
   account_name = EXCLUDED.account_name,
   credentials = EXCLUDED.credentials,
+  is_active = EXCLUDED.is_active,
+  send_mode = EXCLUDED.send_mode,
+  integration_mode = EXCLUDED.integration_mode,
   updated_at = NOW();
 
 INSERT INTO "Agents" (id, platform_account_id, full_name, email, phone, timezone)

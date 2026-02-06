@@ -33,6 +33,14 @@ const allowedOrigins = new Set(
     .filter(Boolean)
 );
 
+const requiredPlatforms = ["spareroom", "roomies", "leasebreak", "renthop", "furnishedfinder"];
+const requiredPlatformSet = new Set(requiredPlatforms);
+const allowedSendModes = new Set(["auto_send", "draft_only"]);
+const allowedIntegrationModes = new Set(["rpa"]);
+const globalDefaultSendMode = allowedSendModes.has(process.env.PLATFORM_DEFAULT_SEND_MODE)
+  ? process.env.PLATFORM_DEFAULT_SEND_MODE
+  : "draft_only";
+
 function setCorsHeaders(req, res) {
   const origin = req.headers.origin;
 
@@ -217,6 +225,77 @@ function splitLocalDateTime(value) {
   return {
     date: matched[1],
     time: matched[2]
+  };
+}
+
+function isObject(value) {
+  return value !== null && !Array.isArray(value) && typeof value === "object";
+}
+
+function parsePlatformPolicyPayload(payload, { partial = false } = {}) {
+  const errors = [];
+  const updates = {};
+
+  if (!partial || payload.isActive !== undefined) {
+    if (typeof payload.isActive !== "boolean") {
+      errors.push("isActive must be a boolean");
+    } else {
+      updates.isActive = payload.isActive;
+    }
+  }
+
+  if (!partial || payload.sendMode !== undefined) {
+    if (payload.sendMode !== null && !allowedSendModes.has(payload.sendMode)) {
+      errors.push("sendMode must be auto_send, draft_only, or null");
+    } else {
+      updates.sendMode = payload.sendMode;
+    }
+  }
+
+  if (!partial || payload.integrationMode !== undefined) {
+    if (!allowedIntegrationModes.has(payload.integrationMode)) {
+      errors.push("integrationMode must be rpa");
+    } else {
+      updates.integrationMode = payload.integrationMode;
+    }
+  }
+
+  if (!partial || payload.credentials !== undefined) {
+    if (!isObject(payload.credentials)) {
+      errors.push("credentials must be an object");
+    } else {
+      for (const [key, value] of Object.entries(payload.credentials)) {
+        if (typeof value !== "string" || !/^(env|secret):/.test(value)) {
+          errors.push(`credentials.${key} must reference env: or secret:`);
+        }
+      }
+      if (errors.length === 0) {
+        updates.credentials = payload.credentials;
+      }
+    }
+  }
+
+  return {
+    errors,
+    updates
+  };
+}
+
+function toPlatformPolicyDto(row) {
+  const sendModeOverride = row.send_mode;
+  return {
+    id: row.id,
+    platform: row.platform,
+    accountName: row.account_name,
+    accountExternalId: row.account_external_id,
+    isActive: row.is_active,
+    integrationMode: row.integration_mode,
+    sendMode: sendModeOverride || globalDefaultSendMode,
+    sendModeOverride,
+    globalDefaultSendMode,
+    credentials: row.credentials || {},
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   };
 }
 
@@ -539,6 +618,69 @@ async function recordAuditLog(client, { actorType, actorId = null, entityType, e
   );
 }
 
+async function fetchPlatformPolicies(client) {
+  const result = await client.query(
+    `SELECT id,
+            platform,
+            account_name,
+            account_external_id,
+            credentials,
+            is_active,
+            send_mode,
+            integration_mode,
+            created_at,
+            updated_at
+       FROM "PlatformAccounts"
+      ORDER BY platform ASC, account_name ASC`
+  );
+
+  return result.rows.map((row) => toPlatformPolicyDto(row));
+}
+
+async function updatePlatformPolicy(client, id, updates) {
+  const isActiveProvided = Object.prototype.hasOwnProperty.call(updates, "isActive");
+  const sendModeProvided = Object.prototype.hasOwnProperty.call(updates, "sendMode");
+  const integrationModeProvided = Object.prototype.hasOwnProperty.call(updates, "integrationMode");
+  const credentialsProvided = Object.prototype.hasOwnProperty.call(updates, "credentials");
+
+  const result = await client.query(
+    `UPDATE "PlatformAccounts"
+        SET is_active = CASE WHEN $2::boolean THEN $3::boolean ELSE is_active END,
+            send_mode = CASE WHEN $4::boolean THEN $5 ELSE send_mode END,
+            integration_mode = CASE WHEN $6::boolean THEN $7 ELSE integration_mode END,
+            credentials = CASE WHEN $8::boolean THEN $9::jsonb ELSE credentials END,
+            updated_at = NOW()
+      WHERE id = $1::uuid
+      RETURNING id,
+                platform,
+                account_name,
+                account_external_id,
+                credentials,
+                is_active,
+                send_mode,
+                integration_mode,
+                created_at,
+                updated_at`,
+    [
+      id,
+      isActiveProvided,
+      updates.isActive ?? false,
+      sendModeProvided,
+      sendModeProvided ? updates.sendMode : null,
+      integrationModeProvided,
+      integrationModeProvided ? updates.integrationMode : null,
+      credentialsProvided,
+      credentialsProvided ? JSON.stringify(updates.credentials) : null
+    ]
+  );
+
+  if (result.rowCount === 0) {
+    return null;
+  }
+
+  return toPlatformPolicyDto(result.rows[0]);
+}
+
 async function fetchUnits(client) {
   const result = await client.query(
     `SELECT u.id,
@@ -607,7 +749,7 @@ async function fetchUnits(client) {
   }));
 }
 
-async function fetchListings(client, unitId = null) {
+async function fetchListings(client, unitId = null, { onlyActivePlatform = true } = {}) {
   const result = await client.query(
     `SELECT l.id,
             l.unit_id,
@@ -618,12 +760,17 @@ async function fetchListings(client, unitId = null) {
             l.currency_code,
             l.available_on,
             l.metadata,
+            pa.is_active AS platform_is_active,
+            pa.send_mode AS platform_send_mode,
+            pa.integration_mode AS platform_integration_mode,
             l.created_at,
             l.updated_at
-       FROM "Listings" l
-      WHERE ($1::uuid IS NULL OR l.unit_id = $1::uuid)
-      ORDER BY l.updated_at DESC`,
-    [unitId]
+        FROM "Listings" l
+        JOIN "PlatformAccounts" pa ON pa.id = l.platform_account_id
+       WHERE ($1::uuid IS NULL OR l.unit_id = $1::uuid)
+         AND ($2::boolean = FALSE OR pa.is_active = TRUE)
+       ORDER BY l.updated_at DESC`,
+    [unitId, onlyActivePlatform]
   );
 
   return result.rows.map((row) => ({
@@ -637,6 +784,13 @@ async function fetchListings(client, unitId = null) {
     availableOn: row.available_on,
     metadata: row.metadata || {},
     assignedAgentId: row.metadata?.assignedAgentId || null,
+    platformPolicy: {
+      isActive: row.platform_is_active,
+      integrationMode: row.platform_integration_mode,
+      sendMode: row.platform_send_mode || globalDefaultSendMode,
+      sendModeOverride: row.platform_send_mode,
+      globalDefaultSendMode
+    },
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }));
@@ -1480,6 +1634,123 @@ async function fetchAutoSendRule(client, platformAccountId) {
   };
 }
 
+async function fetchPlatformSendPolicy(client, platformAccountId) {
+  const result = await client.query(
+    `SELECT id, platform, is_active, send_mode
+       FROM "PlatformAccounts"
+      WHERE id = $1::uuid
+      LIMIT 1`,
+    [platformAccountId]
+  );
+
+  if (result.rowCount === 0) {
+    return null;
+  }
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    platform: row.platform,
+    isActive: Boolean(row.is_active),
+    sendMode: row.send_mode || globalDefaultSendMode,
+    sendModeOverride: row.send_mode
+  };
+}
+
+function collectGuardrailReviewReasons(metadata) {
+  if (!isObject(metadata)) {
+    return [];
+  }
+
+  const reasons = [];
+  if (metadata.requiresAdminReview === true || metadata.forceAdminReview === true) {
+    reasons.push("explicit_admin_review");
+  }
+
+  if (Array.isArray(metadata.guardrails) && metadata.guardrails.length > 0) {
+    reasons.push("guardrails_blocked");
+  }
+
+  const riskLevel = typeof metadata.riskLevel === "string" ? metadata.riskLevel.toLowerCase() : "";
+  if (riskLevel === "high" || riskLevel === "critical") {
+    reasons.push(`risk_${riskLevel}`);
+  }
+
+  const uniqueReasons = Array.from(new Set(reasons));
+  return uniqueReasons;
+}
+
+async function fetchPlatformHealthSnapshot(client) {
+  const result = await client.query(
+    `SELECT pa.id,
+            pa.platform,
+            pa.account_name,
+            pa.account_external_id,
+            pa.is_active,
+            pa.send_mode,
+            (
+              SELECT MAX(m.sent_at)
+                FROM "Messages" m
+                JOIN "Conversations" c ON c.id = m.conversation_id
+               WHERE c.platform_account_id = pa.id
+                 AND m.direction = 'inbound'
+            ) AS last_successful_ingest_at,
+            (
+              SELECT MAX(m.sent_at)
+                FROM "Messages" m
+                JOIN "Conversations" c ON c.id = m.conversation_id
+               WHERE c.platform_account_id = pa.id
+                 AND m.direction = 'outbound'
+                 AND COALESCE(m.metadata->>'reviewStatus', 'sent') = 'sent'
+            ) AS last_successful_send_at,
+            (
+              SELECT COUNT(*)::int
+                FROM "AuditLogs" al
+               WHERE al.created_at >= NOW() - INTERVAL '24 hours'
+                 AND COALESCE(
+                   NULLIF(al.details->>'platform', ''),
+                   NULLIF(al.details#>>'{platformPolicy,platform}', ''),
+                   NULLIF(al.details#>>'{delivery,platform}', ''),
+                   'unknown'
+                 ) = pa.platform
+                 AND al.action IN ('platform_dispatch_error', 'ai_reply_error', 'api_error', 'inbox_draft_error', 'inbox_message_error')
+            ) AS error_count_24h,
+            (
+              SELECT COALESCE(
+                NULLIF(al.details->>'disableReason', ''),
+                NULLIF(al.details#>>'{updates,disableReason}', ''),
+                'disabled_by_admin_policy'
+              )
+                FROM "AuditLogs" al
+               WHERE al.action = 'platform_policy_updated'
+                 AND al.entity_id = pa.id
+                 AND (
+                   al.details->>'isActive' = 'false'
+                   OR al.details#>>'{updates,isActive}' = 'false'
+                 )
+               ORDER BY al.created_at DESC
+               LIMIT 1
+            ) AS disable_reason
+       FROM "PlatformAccounts" pa
+      ORDER BY pa.platform ASC, pa.account_name ASC`
+  );
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    platform: row.platform,
+    accountName: row.account_name,
+    accountExternalId: row.account_external_id,
+    isActive: Boolean(row.is_active),
+    sendMode: row.send_mode || globalDefaultSendMode,
+    sendModeOverride: row.send_mode,
+    globalDefaultSendMode,
+    lastSuccessfulIngestAt: row.last_successful_ingest_at,
+    lastSuccessfulSendAt: row.last_successful_send_at,
+    errorCount24h: Number(row.error_count_24h || 0),
+    disableReason: row.is_active ? null : row.disable_reason || "disabled_by_admin_policy"
+  }));
+}
+
 async function fetchInboxList(client, statusFilter = null) {
   const result = await client.query(
     `SELECT c.id,
@@ -1804,6 +2075,127 @@ export async function routeApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/api/admin/platform-policies" && req.method === "GET") {
+    const access = await requireRole(req, res, [roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const fetchPlatformPoliciesRunner = routeTestOverrides?.fetchPlatformPolicies || fetchPlatformPolicies;
+    const items = await withClientRunner((client) => fetchPlatformPoliciesRunner(client));
+    const missingPlatforms = requiredPlatforms.filter((platform) => !items.some((item) => item.platform === platform));
+
+    json(res, 200, {
+      globalDefaultSendMode,
+      requiredPlatforms,
+      missingPlatforms,
+      items
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/admin/platform-health" && req.method === "GET") {
+    const access = await requireRole(req, res, [roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const fetchPlatformHealthSnapshotRunner = routeTestOverrides?.fetchPlatformHealthSnapshot || fetchPlatformHealthSnapshot;
+    const items = await withClientRunner((client) => fetchPlatformHealthSnapshotRunner(client));
+
+    json(res, 200, {
+      generatedAt: new Date().toISOString(),
+      items
+    });
+    return;
+  }
+
+  const adminPlatformPolicyMatch = url.pathname.match(/^\/api\/admin\/platform-policies\/([0-9a-f\-]+)$/i);
+  if (adminPlatformPolicyMatch && req.method === "PUT") {
+    const access = await requireRole(req, res, [roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const platformAccountId = adminPlatformPolicyMatch[1];
+    if (!isUuid(platformAccountId)) {
+      badRequest(res, "platformAccountId must be a UUID");
+      return;
+    }
+
+    let payload;
+    try {
+      payload = await readJsonBody(req);
+    } catch {
+      badRequest(res, "Request body must be valid JSON");
+      return;
+    }
+
+    const { errors, updates } = parsePlatformPolicyPayload(payload, { partial: true });
+    if (errors.length > 0) {
+      badRequest(res, "Invalid platform policy payload", errors);
+      return;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      badRequest(res, "At least one policy field must be provided");
+      return;
+    }
+
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const updated = await withClientRunner(async (client) => {
+      const targetResult = await client.query(
+        `SELECT id, platform
+           FROM "PlatformAccounts"
+          WHERE id = $1::uuid
+          LIMIT 1`,
+        [platformAccountId]
+      );
+
+      if (targetResult.rowCount === 0) {
+        return null;
+      }
+
+      const target = targetResult.rows[0];
+      if (!requiredPlatformSet.has(target.platform)) {
+        return { error: "platform_not_supported" };
+      }
+
+      const nextPolicy = await updatePlatformPolicy(client, platformAccountId, updates);
+
+      await recordAuditLog(client, {
+        actorType: "user",
+        actorId: access.session.user.id,
+        entityType: "platform_account",
+        entityId: platformAccountId,
+        action: "platform_policy_updated",
+        details: {
+          updates,
+          effectiveSendMode: nextPolicy?.sendMode || null,
+          integrationMode: nextPolicy?.integrationMode || null,
+          isActive: nextPolicy?.isActive || false
+        }
+      });
+
+      return nextPolicy;
+    });
+
+    if (updated?.error === "platform_not_supported") {
+      badRequest(res, "Only mandatory RPA platforms may be updated");
+      return;
+    }
+
+    if (!updated) {
+      notFound(res);
+      return;
+    }
+
+    json(res, 200, updated);
+    return;
+  }
+
   if (url.pathname === "/api/message-automation" && req.method === "PUT") {
     const access = await requireRole(req, res, [roles.admin]);
     if (!access) {
@@ -2095,8 +2487,14 @@ export async function routeApi(req, res, url) {
           return { error: "not_found" };
         }
 
-        const rule = await fetchAutoSendRule(client, detail.conversation.platformAccountId);
-        const autoSendEnabled = Boolean(rule?.enabled);
+        const platformPolicy = await fetchPlatformSendPolicy(client, detail.conversation.platformAccountId);
+        if (!platformPolicy) {
+          return { error: "platform_policy_not_found" };
+        }
+        if (!platformPolicy.isActive) {
+          return { error: "platform_inactive" };
+        }
+        const autoSendEnabled = platformPolicy.sendMode === "auto_send";
 
         let messageBody = payload.body;
         let templateId = null;
@@ -2120,10 +2518,14 @@ export async function routeApi(req, res, url) {
           return { error: "body_required" };
         }
 
-        const status = autoSendEnabled ? "sent" : "draft";
+        const guardrailReviewReasons = collectGuardrailReviewReasons(payload.metadata);
+        const requiresAdminReview = guardrailReviewReasons.length > 0;
+        const status = autoSendEnabled && !requiresAdminReview ? "sent" : "draft";
         const metadata = {
           ...(payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {}),
           reviewStatus: status,
+          reviewRequired: requiresAdminReview,
+          ...(guardrailReviewReasons.length > 0 ? { guardrailReviewReasons } : {}),
           ...(templateId ? { templateId } : {})
         };
 
@@ -2160,6 +2562,9 @@ export async function routeApi(req, res, url) {
             conversationId,
             templateId,
             autoSendEnabled,
+            platformPolicy,
+            requiresAdminReview,
+            guardrailReviewReasons,
             reviewStatus: status
           }
         });
@@ -2167,7 +2572,10 @@ export async function routeApi(req, res, url) {
         return {
           id: inserted.rows[0].id,
           status,
-          autoSendEnabled
+          autoSendEnabled,
+          effectiveSendMode: platformPolicy.sendMode,
+          requiresAdminReview,
+          guardrailReviewReasons
         };
       });
     } catch (error) {
@@ -2200,6 +2608,17 @@ export async function routeApi(req, res, url) {
     }
     if (result.error === "body_required") {
       badRequest(res, "body is required when template does not render content");
+      return;
+    }
+    if (result.error === "platform_policy_not_found") {
+      badRequest(res, "platform policy not found for this conversation");
+      return;
+    }
+    if (result.error === "platform_inactive") {
+      json(res, 409, {
+        error: "platform_inactive",
+        message: "platform is disabled for outbound sends"
+      });
       return;
     }
 
@@ -2957,7 +3376,12 @@ export async function routeApi(req, res, url) {
       return;
     }
 
-    const items = await withClient((client) => fetchListings(client, unitId));
+    const includeInactive = url.searchParams.get("includeInactive") === "true";
+    const onlyActivePlatform = !(includeInactive && access.role === roles.admin);
+
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const fetchListingsRunner = routeTestOverrides?.fetchListings || fetchListings;
+    const items = await withClientRunner((client) => fetchListingsRunner(client, unitId, { onlyActivePlatform }));
     json(res, 200, { items });
     return;
   }
@@ -3032,9 +3456,23 @@ export async function routeApi(req, res, url) {
       }
 
       const result = await pool.query(
-        `SELECT id, unit_id, platform_account_id, listing_external_id, status, rent_cents, currency_code, available_on, metadata, created_at, updated_at
-           FROM "Listings"
-          WHERE id = $1::uuid`,
+        `SELECT l.id,
+                l.unit_id,
+                l.platform_account_id,
+                l.listing_external_id,
+                l.status,
+                l.rent_cents,
+                l.currency_code,
+                l.available_on,
+                l.metadata,
+                pa.is_active AS platform_is_active,
+                pa.send_mode AS platform_send_mode,
+                pa.integration_mode AS platform_integration_mode,
+                l.created_at,
+                l.updated_at
+           FROM "Listings" l
+           JOIN "PlatformAccounts" pa ON pa.id = l.platform_account_id
+          WHERE l.id = $1::uuid`,
         [listingId]
       );
       if (result.rowCount === 0) {
@@ -3054,6 +3492,13 @@ export async function routeApi(req, res, url) {
         availableOn: row.available_on,
         metadata: row.metadata || {},
         assignedAgentId: row.metadata?.assignedAgentId || null,
+        platformPolicy: {
+          isActive: row.platform_is_active,
+          integrationMode: row.platform_integration_mode,
+          sendMode: row.platform_send_mode || globalDefaultSendMode,
+          sendModeOverride: row.platform_send_mode,
+          globalDefaultSendMode
+        },
         createdAt: row.created_at,
         updatedAt: row.updated_at
       });
@@ -3853,7 +4298,8 @@ export function resetRouteTestOverrides() {
 }
 
 export const __testables = {
-  fetchUnitAgentSlotCandidates
+  fetchUnitAgentSlotCandidates,
+  collectGuardrailReviewReasons
 };
 
 export { server };

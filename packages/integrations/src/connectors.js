@@ -1,6 +1,54 @@
-import { withRetry } from "./retry.js";
+import { isRetryableError, withRetry } from "./retry.js";
 
 const SUPPORTED_PLATFORMS = ["spareroom", "roomies", "leasebreak", "renthop", "furnishedfinder"];
+
+const DEFAULT_RETRY_POLICY = {
+  retries: 3,
+  baseDelayMs: 250,
+  maxDelayMs: 5_000,
+  factor: 2,
+  jitter: true,
+  jitterRatio: 0.2
+};
+
+const DEFAULT_ANTI_BOT_POLICY = {
+  minIntervalMs: 1_200,
+  jitterMs: 350,
+  maxCaptchaRetries: 1
+};
+
+const DEFAULT_CIRCUIT_BREAKER_POLICY = {
+  failureThreshold: 3,
+  cooldownMs: 30_000
+};
+
+const PLATFORM_ANTI_BOT_POLICIES = {
+  spareroom: {
+    minIntervalMs: 1_400,
+    jitterMs: 400,
+    maxCaptchaRetries: 1
+  },
+  roomies: {
+    minIntervalMs: 1_250,
+    jitterMs: 300,
+    maxCaptchaRetries: 1
+  },
+  leasebreak: {
+    minIntervalMs: 1_100,
+    jitterMs: 250,
+    maxCaptchaRetries: 1
+  },
+  renthop: {
+    minIntervalMs: 1_100,
+    jitterMs: 250,
+    maxCaptchaRetries: 1
+  },
+  furnishedfinder: {
+    minIntervalMs: 1_500,
+    jitterMs: 450,
+    maxCaptchaRetries: 1
+  }
+};
 
 const CONNECTOR_DEFINITIONS = {
   spareroom: {
@@ -14,12 +62,12 @@ const CONNECTOR_DEFINITIONS = {
     apiBasePath: "/roomies"
   },
   leasebreak: {
-    mode: "api",
+    mode: "rpa",
     requiredCredentials: ["apiKey"],
     apiBasePath: "/leasebreak"
   },
   renthop: {
-    mode: "api",
+    mode: "rpa",
     requiredCredentials: ["accessToken"],
     apiBasePath: "/renthop"
   },
@@ -38,30 +86,46 @@ function createMissingCredentialError(platform, key, ref) {
   return error;
 }
 
-function resolveEnvReference(reference, env, platform, key) {
+function createPlaintextCredentialError(platform, key) {
+  const error = new Error(`Credential '${key}' for ${platform} must use env: or secret: reference`);
+  error.code = "CREDENTIAL_PLAINTEXT_FORBIDDEN";
+  error.retryable = false;
+  return error;
+}
+
+function resolveReferencedCredential(reference, env, platform, key) {
   if (typeof reference !== "string" || reference.length === 0) {
     throw createMissingCredentialError(platform, key);
   }
 
-  const envKey = reference.startsWith("env:") ? reference.slice(4) : reference;
+  const normalizedRef = reference.trim();
+  if (normalizedRef.length === 0) {
+    throw createMissingCredentialError(platform, key);
+  }
+
+  if (!normalizedRef.startsWith("env:") && !normalizedRef.startsWith("secret:")) {
+    throw createPlaintextCredentialError(platform, key);
+  }
+
+  const envKey = normalizedRef.startsWith("env:") ? normalizedRef.slice(4) : normalizedRef.slice(7);
   const resolved = env[envKey];
   if (resolved === undefined || resolved === null || resolved === "") {
-    throw createMissingCredentialError(platform, key, reference);
+    throw createMissingCredentialError(platform, key, normalizedRef);
   }
 
   return resolved;
 }
 
 function resolveCredentialValue(value, env, platform, key) {
-  if (typeof value === "string" && value.startsWith("env:")) {
-    return resolveEnvReference(value, env, platform, key);
-  }
-
   if (value === undefined || value === null || value === "") {
     throw createMissingCredentialError(platform, key);
   }
 
-  return value;
+  if (typeof value === "string") {
+    return resolveReferencedCredential(value, env, platform, key);
+  }
+
+  throw createPlaintextCredentialError(platform, key);
 }
 
 function resolveCredentials(platform, rawCredentials = {}, env = process.env) {
@@ -81,7 +145,7 @@ function resolveCredentials(platform, rawCredentials = {}, env = process.env) {
     }
 
     if (referencedValue !== undefined && referencedValue !== null && referencedValue !== "") {
-      resolved[key] = resolveEnvReference(referencedValue, env, platform, key);
+      resolved[key] = resolveReferencedCredential(referencedValue, env, platform, key);
       continue;
     }
 
@@ -102,6 +166,39 @@ function normalizeInboundMessage(rawMessage, fallback = {}) {
     sentAt: rawMessage.sentAt || new Date().toISOString(),
     metadata: rawMessage.metadata || {}
   };
+}
+
+function sleepWithTimeout(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function isSessionExpiredError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return error?.code === "SESSION_EXPIRED"
+    || error?.code === "AUTH_REFRESH_REQUIRED"
+    || error?.status === 401
+    || error?.statusCode === 401
+    || error?.status === 419
+    || error?.statusCode === 419
+    || message.includes("session expired")
+    || message.includes("not authenticated");
+}
+
+function isCaptchaError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return error?.code === "CAPTCHA_REQUIRED"
+    || error?.code === "BOT_CHALLENGE"
+    || message.includes("captcha")
+    || message.includes("challenge page")
+    || message.includes("cloudflare");
+}
+
+function createCircuitOpenError({ platform, accountId, action, retryAfterMs }) {
+  const error = new Error(`Circuit open for ${platform}:${accountId}:${action}`);
+  error.code = "CIRCUIT_OPEN";
+  error.retryable = false;
+  error.retryAfterMs = retryAfterMs;
+  return error;
 }
 
 function createApiConnector({ platform, config, transport }) {
@@ -140,27 +237,196 @@ function createApiConnector({ platform, config, transport }) {
   };
 }
 
-function createRpaConnector({ platform, config, rpaRunner }) {
+function createRpaConnector({
+  platform,
+  config,
+  rpaRunner,
+  logger,
+  retry,
+  sleep,
+  sessionManager,
+  antiBotPolicy,
+  circuitBreakerPolicy,
+  nowMs,
+  random,
+  pacingState,
+  circuitState
+}) {
+  async function enforcePacing(account, action) {
+    const accountId = account?.id || account?.account_external_id || "unknown";
+    const pacingKey = `${platform}:${accountId}:${action}`;
+    const priorTimestamp = pacingState.get(pacingKey) || 0;
+
+    const minIntervalMs = Math.max(0, Number(antiBotPolicy.minIntervalMs || 0));
+    const jitterMs = Math.max(0, Number(antiBotPolicy.jitterMs || 0));
+    const jitterDelay = jitterMs > 0 ? Math.round(jitterMs * random()) : 0;
+
+    const waitUntil = priorTimestamp + minIntervalMs + jitterDelay;
+    const waitMs = Math.max(0, waitUntil - nowMs());
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+
+    pacingState.set(pacingKey, nowMs());
+  }
+
+  async function runWithAutomationResilience({ account, action, payload }) {
+    const accountId = account?.id || account?.account_external_id || "unknown";
+    const breakerKey = `${platform}:${accountId}:${action}`;
+    const breaker = circuitState.get(breakerKey) || {
+      state: "closed",
+      failureCount: 0,
+      openedAtMs: 0,
+      halfOpenInFlight: false
+    };
+    const failureThreshold = Math.max(1, Number(circuitBreakerPolicy.failureThreshold || 1));
+    const cooldownMs = Math.max(0, Number(circuitBreakerPolicy.cooldownMs || 0));
+    const now = nowMs();
+
+    if (breaker.state === "open") {
+      const elapsedMs = now - breaker.openedAtMs;
+      if (elapsedMs < cooldownMs) {
+        throw createCircuitOpenError({
+          platform,
+          accountId,
+          action,
+          retryAfterMs: Math.max(0, cooldownMs - elapsedMs)
+        });
+      }
+
+      breaker.state = "half_open";
+      breaker.halfOpenInFlight = true;
+      circuitState.set(breakerKey, breaker);
+    } else if (breaker.state === "half_open") {
+      if (breaker.halfOpenInFlight) {
+        throw createCircuitOpenError({
+          platform,
+          accountId,
+          action,
+          retryAfterMs: cooldownMs
+        });
+      }
+
+      breaker.halfOpenInFlight = true;
+      circuitState.set(breakerKey, breaker);
+    }
+
+    let captchaRetries = 0;
+    const maxCaptchaRetries = Math.max(0, Number(antiBotPolicy.maxCaptchaRetries || 0));
+
+    try {
+      const result = await withRetry(
+        async (attempt) => {
+          await enforcePacing(account, action);
+
+          const session = await sessionManager.get({
+            platform,
+            account,
+            action,
+            attempt
+          });
+
+          try {
+            return await rpaRunner.run({
+              platform,
+              action,
+              account,
+              credentials: account.credentials,
+              payload,
+              session,
+              antiBotPolicy,
+              attempt
+            });
+          } catch (error) {
+            if (isSessionExpiredError(error) || isCaptchaError(error)) {
+              await sessionManager.refresh({
+                platform,
+                account,
+                action,
+                reason: isCaptchaError(error) ? "captcha_or_bot_challenge" : "session_expired",
+                error
+              });
+            }
+
+            throw error;
+          }
+        },
+        {
+          ...DEFAULT_RETRY_POLICY,
+          ...retry,
+          sleep,
+          shouldRetry: (error, attempt) => {
+            if (isSessionExpiredError(error)) {
+              return true;
+            }
+
+            if (isCaptchaError(error)) {
+              if (captchaRetries >= maxCaptchaRetries) {
+                return false;
+              }
+              captchaRetries += 1;
+              return true;
+            }
+
+            return isRetryableError(error, attempt);
+          },
+          onRetry: ({ delayMs, error, attempt }) => {
+            logger.warn?.("[integrations] anti-bot retry", {
+              platform,
+              accountId: account.id,
+              action,
+              attempt,
+              delayMs,
+              reason: isCaptchaError(error) ? "captcha_or_challenge" : isSessionExpiredError(error) ? "session_refresh" : "transient_failure",
+              error: error.message
+            });
+          }
+        }
+      );
+
+      breaker.state = "closed";
+      breaker.failureCount = 0;
+      breaker.openedAtMs = 0;
+      breaker.halfOpenInFlight = false;
+      circuitState.set(breakerKey, breaker);
+      return result;
+    } catch (error) {
+      if (breaker.state === "half_open") {
+        breaker.state = "open";
+        breaker.failureCount = failureThreshold;
+        breaker.openedAtMs = nowMs();
+        breaker.halfOpenInFlight = false;
+      } else {
+        breaker.failureCount += 1;
+        if (breaker.failureCount >= failureThreshold) {
+          breaker.state = "open";
+          breaker.openedAtMs = nowMs();
+          breaker.halfOpenInFlight = false;
+        }
+      }
+
+      circuitState.set(breakerKey, breaker);
+      throw error;
+    }
+  }
+
   return {
     id: platform,
     mode: config.mode,
     async ingest({ account }) {
-      const result = await rpaRunner.run({
-        platform,
-        action: "ingest",
+      const result = await runWithAutomationResilience({
         account,
-        credentials: account.credentials
+        action: "ingest",
+        payload: null
       });
 
       const messages = Array.isArray(result?.messages) ? result.messages : [];
       return messages.map((message) => normalizeInboundMessage(message));
     },
     async send({ account, outbound }) {
-      const result = await rpaRunner.run({
-        platform,
-        action: "send",
+      const result = await runWithAutomationResilience({
         account,
-        credentials: account.credentials,
+        action: "send",
         payload: {
           externalThreadId: outbound.externalThreadId,
           body: outbound.body
@@ -213,19 +479,60 @@ function createNoopRpaRunner() {
   };
 }
 
+function createNoopSessionManager() {
+  return {
+    async get() {
+      return null;
+    },
+    async refresh() {
+      return null;
+    }
+  };
+}
+
 export function createConnectorRegistry(options = {}) {
   const env = options.env || process.env;
   const logger = options.logger || console;
   const transport = options.transport || createNoopTransport();
   const rpaRunner = options.rpaRunner || createNoopRpaRunner();
   const retry = options.retry || {};
+  const sleep = options.sleep || retry.sleep || sleepWithTimeout;
+  const sessionManager = options.sessionManager || createNoopSessionManager();
+  const nowMs = options.nowMs || (() => Date.now());
+  const random = options.random || Math.random;
+  const pacingState = new Map();
+  const circuitState = new Map();
 
   const connectors = new Map();
   for (const platform of SUPPORTED_PLATFORMS) {
     const config = CONNECTOR_DEFINITIONS[platform];
+    const antiBotPolicy = {
+      ...DEFAULT_ANTI_BOT_POLICY,
+      ...(PLATFORM_ANTI_BOT_POLICIES[platform] || {}),
+      ...(options.antiBot?.[platform] || {})
+    };
+    const circuitBreakerPolicy = {
+      ...DEFAULT_CIRCUIT_BREAKER_POLICY,
+      ...(options.circuitBreaker?.[platform] || {})
+    };
+
     const connector = config.mode === "api"
       ? createApiConnector({ platform, config, transport })
-      : createRpaConnector({ platform, config, rpaRunner });
+      : createRpaConnector({
+          platform,
+          config,
+          rpaRunner,
+          logger,
+          retry,
+          sleep,
+          sessionManager,
+          antiBotPolicy,
+          circuitBreakerPolicy,
+          nowMs,
+          random,
+          pacingState,
+          circuitState
+        });
 
     connectors.set(platform, connector);
   }
@@ -253,6 +560,10 @@ export function createConnectorRegistry(options = {}) {
     async ingestMessagesForAccount(account) {
       const normalizedAccount = normalizeAccount(account);
       const connector = getConnector(normalizedAccount.platform);
+      if (connector.mode === "rpa") {
+        return connector.ingest({ account: normalizedAccount });
+      }
+
       return withRetry(
         () => connector.ingest({ account: normalizedAccount }),
         {
@@ -273,6 +584,10 @@ export function createConnectorRegistry(options = {}) {
     async sendMessageForAccount({ account, outbound }) {
       const normalizedAccount = normalizeAccount(account);
       const connector = getConnector(normalizedAccount.platform);
+      if (connector.mode === "rpa") {
+        return connector.send({ account: normalizedAccount, outbound });
+      }
+
       return withRetry(
         () => connector.send({ account: normalizedAccount, outbound }),
         {
