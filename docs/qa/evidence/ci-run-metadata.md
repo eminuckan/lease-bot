@@ -5,23 +5,23 @@ Do not hand-edit check statuses; they must match the workflow artifact for the r
 
 ## Release candidate
 
-- Date (UTC):
-- Branch/Ref:
-- Commit SHA:
+- Date (UTC): 2026-02-06T02:52:31Z
+- Branch/Ref: master
+- Commit SHA: 4284d4d5a45ebb11037fde62ba320a7f8bc3d58c
 - Workflow: Critical Path Gates
-- Run ID:
-- Run URL:
+- Run ID: 21736897887
+- Run URL: https://github.com/eminuckan/lease-bot/actions/runs/21736897887
 
 ## Required workflow checks
 
 | Check | Job status | Evidence artifact |
 | --- | --- | --- |
-| API tests (`npm test -w @lease-bot/api`) | | api-tests-log |
-| Worker tests (`npm test -w @lease-bot/worker`) | | worker-tests-log |
-| Web smoke (`npm run smoke -w @lease-bot/web`) | | web-smoke-log |
+| API tests (`npm test -w @lease-bot/api`) | success | api-tests-log |
+| Worker tests (`npm test -w @lease-bot/worker`) | success | worker-tests-log |
+| Web smoke (`npm run smoke -w @lease-bot/web`) | success | web-smoke-log |
 
 ## Notes
 
-- Branch protection gate result:
-- Any reruns needed:
-- Incident/ref links:
+- Branch protection gate result: required checks passed for run 21736897887
+- Any reruns needed: none
+- Incident/ref links: https://github.com/eminuckan/lease-bot/actions/runs/21736897887
