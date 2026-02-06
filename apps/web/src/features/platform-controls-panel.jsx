@@ -1,6 +1,6 @@
 import { RefreshCw, Zap, AlertTriangle } from "lucide-react";
 import { Label } from "../components/ui/label";
-import { Select } from "../components/ui/select";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
 import { Switch } from "../components/ui/switch";
 import { formatTimestamp } from "../lib/utils";
 import { useLeaseBot } from "../state/lease-bot-context";
@@ -137,16 +137,20 @@ export function PlatformControlsPanel() {
                       <Select
                         value={item.sendModeOverride || "inherit"}
                         disabled={isSaving}
-                        onChange={(e) =>
+                        onValueChange={(v) =>
                           savePolicy(item.id, {
-                            sendMode: e.target.value === "inherit" ? null : e.target.value,
+                            sendMode: v === "inherit" ? null : v,
                           })
                         }
-                        className="h-9 bg-card text-sm"
                       >
-                        <option value="inherit">Inherit ({globalPlatformSendMode})</option>
-                        <option value="draft_only">Draft only</option>
-                        <option value="auto_send">Auto send</option>
+                        <SelectTrigger className="h-9 bg-card text-sm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="inherit">Inherit ({globalPlatformSendMode})</SelectItem>
+                          <SelectItem value="draft_only">Draft only</SelectItem>
+                          <SelectItem value="auto_send">Auto send</SelectItem>
+                        </SelectContent>
                       </Select>
                     </div>
                   </div>

@@ -145,7 +145,7 @@ function AppLayout() {
       {/* Desktop sidebar */}
       <aside
         className={cn(
-          "hidden flex-col bg-card transition-all duration-200 md:flex",
+          "hidden flex-col border-r border-dashed border-border bg-card transition-all duration-200 md:flex",
           sidebarOpen ? "w-56" : "w-14"
         )}
       >
@@ -233,7 +233,7 @@ function AppLayout() {
       {/* Main content area */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top header bar */}
-        <header className="flex h-14 shrink-0 items-center justify-between bg-card px-4 shadow-card">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-dashed border-border bg-card px-4">
           <div className="flex items-center gap-3">
             {/* Mobile hamburger */}
             <button

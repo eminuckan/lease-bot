@@ -1,7 +1,7 @@
 import { Save, Building2, List, Users } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Label } from "../components/ui/label";
-import { Select } from "../components/ui/select";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
 import { useLeaseBot } from "../state/lease-bot-context";
 
 export function AssignmentPanel() {
@@ -11,6 +11,8 @@ export function AssignmentPanel() {
   async function handleSubmit(event) {
     await saveAssignment(event);
   }
+
+  const filteredListings = listings.filter((item) => item.unitId === assignmentForm.unitId);
 
   return (
     <div className="p-6">
@@ -61,49 +63,58 @@ export function AssignmentPanel() {
                   <div className="rounded-xl bg-muted p-4">
                     <Label className="text-xs text-muted-foreground">Unit</Label>
                     <Select
-                      value={assignmentForm.unitId}
-                      onChange={(e) => setAssignmentForm((c) => ({ ...c, unitId: e.target.value }))}
-                      required
-                      className="mt-1.5 h-9 bg-card text-sm"
+                      value={assignmentForm.unitId || "__none__"}
+                      onValueChange={(v) => setAssignmentForm((c) => ({ ...c, unitId: v === "__none__" ? "" : v }))}
                     >
-                      <option value="">Select unit</option>
-                      {units.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.propertyName} {item.unitNumber}
-                        </option>
-                      ))}
+                      <SelectTrigger className="mt-1.5 h-9 bg-card text-sm">
+                        <SelectValue placeholder="Select unit" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">Select unit</SelectItem>
+                        {units.map((item) => (
+                          <SelectItem key={item.id} value={item.id}>
+                            {item.propertyName} {item.unitNumber}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
                     </Select>
                   </div>
                   <div className="rounded-xl bg-muted p-4">
                     <Label className="text-xs text-muted-foreground">Listing</Label>
                     <Select
-                      value={assignmentForm.listingId}
-                      onChange={(e) => setAssignmentForm((c) => ({ ...c, listingId: e.target.value }))}
-                      className="mt-1.5 h-9 bg-card text-sm"
+                      value={assignmentForm.listingId || "__none__"}
+                      onValueChange={(v) => setAssignmentForm((c) => ({ ...c, listingId: v === "__none__" ? "" : v }))}
                     >
-                      <option value="">Latest for unit</option>
-                      {listings
-                        .filter((item) => item.unitId === assignmentForm.unitId)
-                        .map((item) => (
-                          <option key={item.id} value={item.id}>
+                      <SelectTrigger className="mt-1.5 h-9 bg-card text-sm">
+                        <SelectValue placeholder="Latest for unit" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">Latest for unit</SelectItem>
+                        {filteredListings.map((item) => (
+                          <SelectItem key={item.id} value={item.id}>
                             {item.id.slice(0, 8)} ({item.status})
-                          </option>
+                          </SelectItem>
                         ))}
+                      </SelectContent>
                     </Select>
                   </div>
                   <div className="rounded-xl bg-muted p-4">
                     <Label className="text-xs text-muted-foreground">Agent</Label>
                     <Select
-                      value={assignmentForm.agentId}
-                      onChange={(e) => setAssignmentForm((c) => ({ ...c, agentId: e.target.value }))}
-                      className="mt-1.5 h-9 bg-card text-sm"
+                      value={assignmentForm.agentId || "__none__"}
+                      onValueChange={(v) => setAssignmentForm((c) => ({ ...c, agentId: v === "__none__" ? "" : v }))}
                     >
-                      <option value="">Unassign</option>
-                      {agents.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.fullName}
-                        </option>
-                      ))}
+                      <SelectTrigger className="mt-1.5 h-9 bg-card text-sm">
+                        <SelectValue placeholder="Unassign" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">Unassign</SelectItem>
+                        {agents.map((item) => (
+                          <SelectItem key={item.id} value={item.id}>
+                            {item.fullName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
                     </Select>
                   </div>
                 </div>

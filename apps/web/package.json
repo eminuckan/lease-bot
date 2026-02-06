@@ -10,6 +10,7 @@
     "smoke": "VITE_API_BASE_URL=http://127.0.0.1:3011 npm run build && node ./scripts/smoke.mjs"
   },
   "dependencies": {
+    "@radix-ui/react-select": "^2.2.6",
     "@tanstack/react-router": "^1.130.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

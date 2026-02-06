@@ -1,6 +1,6 @@
 import { RefreshCw, ChevronLeft, ChevronRight, Clock, Repeat } from "lucide-react";
 import { Label } from "../components/ui/label";
-import { Select } from "../components/ui/select";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
 import { useLeaseBot } from "../state/lease-bot-context";
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "../lib/utils";
@@ -83,16 +83,20 @@ export function ShowingsPanel() {
           <div className="flex-1">
             <Label className="text-xs text-muted-foreground">Unit</Label>
             <Select
-              value={selectedUnitId}
-              onChange={(e) => setSelectedUnitId(e.target.value)}
-              className="mt-1.5 h-10 text-sm"
+              value={selectedUnitId || "__none__"}
+              onValueChange={(v) => setSelectedUnitId(v === "__none__" ? "" : v)}
             >
-              <option value="">Select unit</option>
-              {units.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.propertyName} {item.unitNumber}
-                </option>
-              ))}
+              <SelectTrigger className="mt-1.5 h-10 text-sm">
+                <SelectValue placeholder="Select unit" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">Select unit</SelectItem>
+                {units.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {item.propertyName} {item.unitNumber}
+                  </SelectItem>
+                ))}
+              </SelectContent>
             </Select>
           </div>
           <button

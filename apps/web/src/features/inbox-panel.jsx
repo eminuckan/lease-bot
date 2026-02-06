@@ -1,6 +1,6 @@
 import { RefreshCw, ChevronLeft, ChevronRight, Send, Check, X, MessageSquare, User, Building2, ArrowLeft } from "lucide-react";
 import { Button } from "../components/ui/button";
-import { Select } from "../components/ui/select";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
 import { formatTimestamp } from "../lib/utils";
 import { useLeaseBot } from "../state/lease-bot-context";
@@ -8,6 +8,14 @@ import { useEffect, useMemo, useState } from "react";
 import { cn } from "../lib/utils";
 
 const INBOX_PAGE_SIZE = 20;
+
+const STATUS_OPTIONS = [
+  { value: "all", label: "All threads" },
+  { value: "new", label: "New" },
+  { value: "draft", label: "Draft" },
+  { value: "sent", label: "Sent" },
+  { value: "hold", label: "Hold" },
+];
 
 export function InboxPanel() {
   const {
@@ -62,22 +70,21 @@ export function InboxPanel() {
       <div className="flex min-h-0 flex-1">
         {/* Thread list sidebar */}
         <div className={cn(
-          "flex shrink-0 flex-col bg-card",
+          "flex shrink-0 flex-col border-r border-dashed border-border bg-card",
           "w-full md:w-80",
           mobileShowDetail && "hidden md:flex"
         )}>
           {/* Thread list header */}
           <div className="flex items-center gap-2 px-4 py-3">
-            <Select
-              value={selectedInboxStatus}
-              onChange={(event) => setSelectedInboxStatus(event.target.value)}
-              className="h-9 flex-1 text-sm"
-            >
-              <option value="all">All threads</option>
-              <option value="new">New</option>
-              <option value="draft">Draft</option>
-              <option value="sent">Sent</option>
-              <option value="hold">Hold</option>
+            <Select value={selectedInboxStatus} onValueChange={setSelectedInboxStatus}>
+              <SelectTrigger className="h-9 flex-1 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STATUS_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                ))}
+              </SelectContent>
             </Select>
             <button
               type="button"
@@ -178,7 +185,7 @@ export function InboxPanel() {
           {conversationDetail ? (
             <>
               {/* Conversation header */}
-              <div className="flex items-center gap-3 bg-card px-4 py-3 shadow-card md:gap-4 md:px-6 md:py-4">
+              <div className="flex items-center gap-3 border-b border-dashed border-border bg-card px-4 py-3 md:gap-4 md:px-6 md:py-4">
                 {/* Back button - mobile only */}
                 <button
                   type="button"
@@ -280,39 +287,31 @@ export function InboxPanel() {
               </div>
 
               {/* Compose */}
-              <div className="bg-card px-4 py-4 shadow-elevated md:px-6">
-                <form onSubmit={createDraft} className="mx-auto max-w-2xl">
-                  <div className="mb-3">
-                    <Select
-                      value={draftForm.templateId}
-                      onChange={(event) => {
-                        const templateId = event.target.value;
-                        const template = (conversationDetail.templates || []).find(
-                          (t) => t.id === templateId
-                        );
-                        setDraftForm((c) => ({
-                          ...c,
-                          templateId,
-                          body: template ? template.body : c.body,
-                        }));
-                      }}
-                      className="h-9 text-sm"
-                    >
-                      <option value="">No template</option>
-                      {(conversationDetail.templates || []).map((t) => (
-                        <option key={t.id} value={t.id}>{t.name}</option>
-                      ))}
-                    </Select>
-                  </div>
-                  <div className="flex gap-2">
+              <div className="border-t border-dashed border-border bg-card px-4 py-4 md:px-6">
+                <form onSubmit={createDraft} className="mx-auto max-w-2xl space-y-3">
+                  <TemplateSelect
+                    templates={conversationDetail.templates || []}
+                    value={draftForm.templateId}
+                    onChange={(templateId) => {
+                      const template = (conversationDetail.templates || []).find(
+                        (t) => t.id === templateId
+                      );
+                      setDraftForm((c) => ({
+                        ...c,
+                        templateId,
+                        body: template ? template.body : c.body,
+                      }));
+                    }}
+                  />
+                  <div className="flex items-end gap-3">
                     <Textarea
                       rows={2}
                       placeholder="Type your message..."
                       value={draftForm.body}
                       onChange={(e) => setDraftForm((c) => ({ ...c, body: e.target.value }))}
-                      className="min-h-[2.5rem] flex-1 resize-none text-sm"
+                      className="min-h-[3rem] flex-1 resize-none text-sm"
                     />
-                    <Button type="submit" size="icon" className="h-10 w-10 shrink-0 rounded-xl">
+                    <Button type="submit" size="icon" className="h-10 w-10 shrink-0">
                       <Send className="h-4 w-4" />
                     </Button>
                   </div>
@@ -328,5 +327,22 @@ export function InboxPanel() {
         </div>
       </div>
     </div>
+  );
+}
+
+function TemplateSelect({ templates, value, onChange }) {
+  if (!templates.length) return null;
+  return (
+    <Select value={value || "__none__"} onValueChange={(v) => onChange(v === "__none__" ? "" : v)}>
+      <SelectTrigger className="h-9 text-sm">
+        <SelectValue placeholder="No template" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="__none__">No template</SelectItem>
+        {templates.map((t) => (
+          <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }

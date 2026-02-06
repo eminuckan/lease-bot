@@ -2,7 +2,7 @@ import { Filter, CalendarDays, Clock, MapPin, User } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Calendar } from "../components/ui/calendar";
 import { Label } from "../components/ui/label";
-import { Select } from "../components/ui/select";
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
 import { formatTimestamp } from "../lib/utils";
 import { useLeaseBot } from "../state/lease-bot-context";
 import { endOfMonth, eachDayOfInterval, format, startOfMonth } from "date-fns";
@@ -26,6 +26,14 @@ function StatusPill({ status }) {
     </span>
   );
 }
+
+const STATUS_FILTER_OPTIONS = [
+  { value: "all", label: "All" },
+  { value: "pending", label: "Pending" },
+  { value: "confirmed", label: "Confirmed" },
+  { value: "cancelled", label: "Cancelled" },
+  { value: "completed", label: "Completed" },
+];
 
 export function AgentAppointmentsPanel() {
   const {
@@ -127,29 +135,35 @@ export function AgentAppointmentsPanel() {
               <Label className="text-xs text-muted-foreground">Status</Label>
               <Select
                 value={appointmentFilters.status}
-                onChange={(e) => updateFilter("status", e.target.value)}
-                className="mt-1.5 h-9 text-sm"
+                onValueChange={(v) => updateFilter("status", v)}
               >
-                <option value="all">All</option>
-                <option value="pending">Pending</option>
-                <option value="confirmed">Confirmed</option>
-                <option value="cancelled">Cancelled</option>
-                <option value="completed">Completed</option>
+                <SelectTrigger className="mt-1.5 h-9 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUS_FILTER_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
             </div>
             <div className="sm:col-span-2 lg:col-span-2">
               <Label className="text-xs text-muted-foreground">Unit</Label>
               <Select
                 value={appointmentFilters.unitId}
-                onChange={(e) => updateFilter("unitId", e.target.value)}
-                className="mt-1.5 h-9 text-sm"
+                onValueChange={(v) => updateFilter("unitId", v)}
               >
-                <option value="all">All units</option>
-                {units.map((unit) => (
-                  <option key={unit.id} value={unit.id}>
-                    {unit.propertyName} {unit.unitNumber}
-                  </option>
-                ))}
+                <SelectTrigger className="mt-1.5 h-9 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All units</SelectItem>
+                  {units.map((unit) => (
+                    <SelectItem key={unit.id} value={unit.id}>
+                      {unit.propertyName} {unit.unitNumber}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
             </div>
             <div>
@@ -284,7 +298,7 @@ export function AgentAppointmentsPanel() {
                 <div key={bucket.date} data-testid="agent-appointment-day">
                   <div className="mb-2 flex items-center gap-3">
                     <span className="shrink-0 rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">{bucket.date}</span>
-                    <div className="h-px flex-1 bg-muted" />
+                    <div className="h-px flex-1 bg-border" />
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     {bucket.items.map((item) => (
