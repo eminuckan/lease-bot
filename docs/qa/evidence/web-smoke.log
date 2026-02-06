@@ -1,0 +1,24 @@
+
+> @lease-bot/web@0.1.0 smoke
+> VITE_API_BASE_URL=http://127.0.0.1:3011 npm run build && node ./scripts/smoke.mjs
+
+
+> @lease-bot/web@0.1.0 build
+> vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 141 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.39 kB │ gzip:  0.26 kB
+dist/assets/index-nK3ij2uE.css   17.78 kB │ gzip:  4.31 kB
+dist/assets/index-CuTs_3GY.js   280.91 kB │ gzip: 87.70 kB
+✓ built in 954ms
+  ➜  Local:   http://127.0.0.1:4173/
+[mobile-320] R18 perf-proxy route(login=69ms,adminToAgent=46ms) render(inbox=33ms,showings=43ms) payload(mainJs=280918B)
+[mobile-375] R18 perf-proxy route(login=55ms,adminToAgent=45ms) render(inbox=33ms,showings=30ms) payload(mainJs=280918B)
+[mobile-430] R18 perf-proxy route(login=58ms,adminToAgent=46ms) render(inbox=34ms,showings=29ms) payload(mainJs=280918B)
+[tablet-768] R18 perf-proxy route(login=59ms,adminToAgent=34ms) render(inbox=33ms,showings=32ms) payload(mainJs=280918B)
+[desktop-1280] R18 perf-proxy route(login=56ms,adminToAgent=34ms) render(inbox=33ms,showings=33ms) payload(mainJs=280918B)
+Smoke passed: multi-viewport auth/panel checks with explicit R18 mobile card fallback and performance proxy assertions.

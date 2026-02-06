@@ -1,32 +1,32 @@
 import { withRetry } from "./retry.js";
 
-const SUPPORTED_PLATFORMS = ["zillow", "zumper", "apartments_com", "realtor_com", "craigslist"];
+const SUPPORTED_PLATFORMS = ["spareroom", "roomies", "leasebreak", "renthop", "furnishedfinder"];
 
 const CONNECTOR_DEFINITIONS = {
-  zillow: {
-    mode: "api",
-    requiredCredentials: ["apiKey"],
-    apiBasePath: "/zillow"
-  },
-  zumper: {
-    mode: "api",
-    requiredCredentials: ["accessToken"],
-    apiBasePath: "/zumper"
-  },
-  apartments_com: {
+  spareroom: {
     mode: "rpa",
     requiredCredentials: ["username", "password"],
-    apiBasePath: "/apartments-com"
+    apiBasePath: "/spareroom"
   },
-  realtor_com: {
-    mode: "rpa",
-    requiredCredentials: ["username", "password"],
-    apiBasePath: "/realtor-com"
-  },
-  craigslist: {
+  roomies: {
     mode: "rpa",
     requiredCredentials: ["email", "password"],
-    apiBasePath: "/craigslist"
+    apiBasePath: "/roomies"
+  },
+  leasebreak: {
+    mode: "api",
+    requiredCredentials: ["apiKey"],
+    apiBasePath: "/leasebreak"
+  },
+  renthop: {
+    mode: "api",
+    requiredCredentials: ["accessToken"],
+    apiBasePath: "/renthop"
+  },
+  furnishedfinder: {
+    mode: "rpa",
+    requiredCredentials: ["username", "password"],
+    apiBasePath: "/furnishedfinder"
   }
 };
 
@@ -38,14 +38,23 @@ function createMissingCredentialError(platform, key, ref) {
   return error;
 }
 
+function resolveEnvReference(reference, env, platform, key) {
+  if (typeof reference !== "string" || reference.length === 0) {
+    throw createMissingCredentialError(platform, key);
+  }
+
+  const envKey = reference.startsWith("env:") ? reference.slice(4) : reference;
+  const resolved = env[envKey];
+  if (resolved === undefined || resolved === null || resolved === "") {
+    throw createMissingCredentialError(platform, key, reference);
+  }
+
+  return resolved;
+}
+
 function resolveCredentialValue(value, env, platform, key) {
   if (typeof value === "string" && value.startsWith("env:")) {
-    const envKey = value.slice(4);
-    const resolved = env[envKey];
-    if (!resolved) {
-      throw createMissingCredentialError(platform, key, value);
-    }
-    return resolved;
+    return resolveEnvReference(value, env, platform, key);
   }
 
   if (value === undefined || value === null || value === "") {
@@ -63,8 +72,20 @@ function resolveCredentials(platform, rawCredentials = {}, env = process.env) {
 
   const resolved = {};
   for (const key of config.requiredCredentials) {
-    const sourceValue = rawCredentials[key] ?? rawCredentials[`${key}Ref`];
-    resolved[key] = resolveCredentialValue(sourceValue, env, platform, key);
+    const inlineValue = rawCredentials[key];
+    const referencedValue = rawCredentials[`${key}Ref`];
+
+    if (inlineValue !== undefined && inlineValue !== null && inlineValue !== "") {
+      resolved[key] = resolveCredentialValue(inlineValue, env, platform, key);
+      continue;
+    }
+
+    if (referencedValue !== undefined && referencedValue !== null && referencedValue !== "") {
+      resolved[key] = resolveEnvReference(referencedValue, env, platform, key);
+      continue;
+    }
+
+    throw createMissingCredentialError(platform, key);
   }
 
   return resolved;

@@ -1,0 +1,144 @@
+
+> @lease-bot/worker@0.1.0 test
+> node --test
+
+TAP version 13
+# [worker] failed processing message { messageId: 'm6', error: 'db insert failed' }
+# [worker] failed processing message { messageId: 'm9', error: 'platform outage' }
+# [integrations] retrying ingest {
+#   platform: 'leasebreak',
+#   accountId: 'acc-lb-1',
+#   attempt: 1,
+#   delayMs: 1,
+#   error: 'leasebreak outage'
+# }
+# [integrations] retrying send {
+#   platform: 'furnishedfinder',
+#   accountId: 'acc-ff-1',
+#   attempt: 1,
+#   delayMs: 1,
+#   error: 'temporary timeout'
+# }
+# Subtest: classifies intent and follow-up signals
+ok 1 - classifies intent and follow-up signals
+  ---
+  duration_ms: 2.169636
+  type: 'test'
+  ...
+# Subtest: policy gating prefers AI intent over heuristic intent
+ok 2 - policy gating prefers AI intent over heuristic intent
+  ---
+  duration_ms: 1.038378
+  type: 'test'
+  ...
+# Subtest: gemini env toggles set provider enablement and model
+ok 3 - gemini env toggles set provider enablement and model
+  ---
+  duration_ms: 0.525704
+  type: 'test'
+  ...
+# Subtest: generation failure falls back to heuristic policy path
+ok 4 - generation failure falls back to heuristic policy path
+  ---
+  duration_ms: 0.416763
+  type: 'test'
+  ...
+# Subtest: R13 no-slot tour flow escalates with explicit reason
+ok 5 - R13 no-slot tour flow escalates with explicit reason
+  ---
+  duration_ms: 0.311672
+  type: 'test'
+  ...
+# Subtest: R13 slot-aware flow drafts when slots are present
+ok 6 - R13 slot-aware flow drafts when slots are present
+  ---
+  duration_ms: 0.264061
+  type: 'test'
+  ...
+# Subtest: queue processing creates template-based reply and logs result
+ok 7 - queue processing creates template-based reply and logs result
+  ---
+  duration_ms: 1.578361
+  type: 'test'
+  ...
+# Subtest: follow-up message falls back to prior intent rule
+ok 8 - follow-up message falls back to prior intent rule
+  ---
+  duration_ms: 0.466404
+  type: 'test'
+  ...
+# Subtest: unsubscribe follow-up stays ineligible even with fallback rule
+ok 9 - unsubscribe follow-up stays ineligible even with fallback rule
+  ---
+  duration_ms: 0.512374
+  type: 'test'
+  ...
+# Subtest: guardrails block unsafe messages and still record logs
+ok 10 - guardrails block unsafe messages and still record logs
+  ---
+  duration_ms: 0.613164
+  type: 'test'
+  ...
+# Subtest: processing failures are captured in metrics and error logs
+ok 11 - processing failures are captured in metrics and error logs
+  ---
+  duration_ms: 2.67024
+  type: 'test'
+  ...
+# Subtest: dispatch failures emit platform failure metrics and audit signals
+ok 12 - dispatch failures emit platform failure metrics and audit signals
+  ---
+  duration_ms: 0.458043
+  type: 'test'
+  ...
+# Subtest: connector registry exposes five platforms with API/RPA paths
+ok 13 - connector registry exposes five platforms with API/RPA paths
+  ---
+  duration_ms: 1.967284
+  type: 'test'
+  ...
+# Subtest: credentials resolve from env references and fail fast when missing
+ok 14 - credentials resolve from env references and fail fast when missing
+  ---
+  duration_ms: 0.439314
+  type: 'test'
+  ...
+# Subtest: connector registry retries transient failures and keeps ingest/send contracts
+ok 15 - connector registry retries transient failures and keeps ingest/send contracts
+  ---
+  duration_ms: 1.244889
+  type: 'test'
+  ...
+# Subtest: retry backoff retries transient failures before succeeding
+ok 16 - retry backoff retries transient failures before succeeding
+  ---
+  duration_ms: 0.355112
+  type: 'test'
+  ...
+# Subtest: queue processing dispatches through connector when auto-send is enabled
+ok 17 - queue processing dispatches through connector when auto-send is enabled
+  ---
+  duration_ms: 0.348673
+  type: 'test'
+  ...
+# Subtest: auto-send disabled drafts policy-eligible tour replies
+ok 18 - auto-send disabled drafts policy-eligible tour replies
+  ---
+  duration_ms: 0.284562
+  type: 'test'
+  ...
+# Subtest: non-tour intent escalates with explicit reason code
+ok 19 - non-tour intent escalates with explicit reason code
+  ---
+  duration_ms: 0.238362
+  type: 'test'
+  ...
+1..19
+# tests 19
+# suites 0
+# pass 19
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 308.085933

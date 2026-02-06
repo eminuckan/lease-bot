@@ -81,6 +81,17 @@ npm run test -w @lease-bot/worker
 
 Copy `.env.example` to `.env` and adjust values for your environment.
 DB scripts (`npm run migrate -w @lease-bot/db` and `npm run seed -w @lease-bot/db`) load the root `.env` automatically via Node `--env-file`.
+API and worker scripts also load root `.env` automatically. Set `BETTER_AUTH_SECRET` to a non-default random value before running `npm run dev:api`.
+
+Connector credentials use env references so secrets stay outside committed JSON. For credential fields in platform accounts, both `env:VAR_NAME` and `VAR_NAME` reference forms are supported (for example `apiKeyRef: "env:LEASEBREAK_API_KEY"` or `apiKeyRef: "LEASEBREAK_API_KEY"`). Keep actual values only in `.env` or deployment secret stores; do not commit live credentials.
+
+AI decision provider toggles:
+
+- `AI_DECISION_PROVIDER`: `heuristic` (default) or `gemini`
+- `AI_GEMINI_MODEL`: optional Gemini model override (default `gemini-2.5-flash`)
+- `GOOGLE_GENERATIVE_AI_API_KEY`: required when `AI_DECISION_PROVIDER=gemini`
+
+Set `AI_DECISION_PROVIDER=heuristic` in local/test environments when no Gemini API key is configured.
 
 Common variables:
 

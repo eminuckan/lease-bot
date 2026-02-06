@@ -113,6 +113,31 @@ function notFound(res) {
   json(res, 404, { error: "not_found" });
 }
 
+function enforceAgentSelfScope(res, access, requestedAgentId) {
+  if (access.role !== roles.agent) {
+    return requestedAgentId || null;
+  }
+
+  const sessionAgentId = access.session?.user?.id;
+  if (!isUuid(sessionAgentId)) {
+    json(res, 403, {
+      error: "forbidden",
+      message: "agent session is missing a valid agent id"
+    });
+    return null;
+  }
+
+  if (requestedAgentId && requestedAgentId !== sessionAgentId) {
+    json(res, 403, {
+      error: "forbidden",
+      message: "agents may only access their own showing appointments"
+    });
+    return null;
+  }
+
+  return sessionAgentId;
+}
+
 function badRequest(res, message, details = null) {
   json(res, 400, {
     error: "validation_error",
@@ -365,6 +390,138 @@ function validateDailyOverridePayload(payload) {
   return errors;
 }
 
+function validateUnitAgentAssignmentPayload(payload) {
+  const errors = [];
+
+  if (!isUuid(payload.agentId)) {
+    errors.push("agentId must be a valid UUID");
+  }
+
+  if (payload.assignmentMode !== undefined) {
+    const assignmentMode = String(payload.assignmentMode);
+    if (assignmentMode !== "active" && assignmentMode !== "passive") {
+      errors.push("assignmentMode must be active or passive");
+    }
+  }
+
+  if (payload.priority !== undefined) {
+    const priority = Number(payload.priority);
+    if (!Number.isInteger(priority) || priority < 1 || priority > 1000) {
+      errors.push("priority must be an integer between 1 and 1000");
+    }
+  }
+
+  return errors;
+}
+
+function validateAgentWeeklyAvailabilityPayload(payload) {
+  const errors = [];
+  const dayOfWeek = Number(payload.dayOfWeek);
+  const weeks = Number(payload.weeks || 8);
+
+  if (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6) {
+    errors.push("dayOfWeek must be an integer from 0 to 6");
+  }
+
+  if (!isTimeString(payload.startTime) || !isTimeString(payload.endTime)) {
+    errors.push("startTime and endTime must be HH:MM");
+  }
+
+  if (isTimeString(payload.startTime) && isTimeString(payload.endTime) && payload.startTime >= payload.endTime) {
+    errors.push("endTime must be after startTime");
+  }
+
+  if (!payload.timezone || !assertTimezone(payload.timezone)) {
+    errors.push("timezone must be a valid IANA timezone");
+  }
+
+  if (payload.fromDate && !isDateString(payload.fromDate)) {
+    errors.push("fromDate must be YYYY-MM-DD");
+  }
+
+  if (!Number.isInteger(weeks) || weeks < 1 || weeks > 26) {
+    errors.push("weeks must be an integer from 1 to 26");
+  }
+
+  if (payload.status !== undefined && payload.status !== "available" && payload.status !== "unavailable") {
+    errors.push("status must be available or unavailable");
+  }
+
+  return errors;
+}
+
+function validateAgentDailyOverridePayload(payload) {
+  const errors = [];
+
+  if (!isDateString(payload.date)) {
+    errors.push("date must be YYYY-MM-DD");
+  }
+  if (!isTimeString(payload.startTime) || !isTimeString(payload.endTime)) {
+    errors.push("startTime and endTime must be HH:MM");
+  }
+  if (isTimeString(payload.startTime) && isTimeString(payload.endTime) && payload.startTime >= payload.endTime) {
+    errors.push("endTime must be after startTime");
+  }
+  if (!payload.timezone || !assertTimezone(payload.timezone)) {
+    errors.push("timezone must be a valid IANA timezone");
+  }
+  if (payload.status !== undefined && payload.status !== "available" && payload.status !== "unavailable") {
+    errors.push("status must be available or unavailable");
+  }
+
+  return errors;
+}
+
+const showingAppointmentStatuses = new Set(["pending", "confirmed", "cancelled", "completed"]);
+
+function isIsoDateTime(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const date = new Date(value);
+  return Number.isFinite(date.getTime());
+}
+
+function validateShowingBookingPayload(payload) {
+  const errors = [];
+
+  if (!isUuid(payload.platformAccountId)) {
+    errors.push("platformAccountId must be a valid UUID");
+  }
+  if (!isUuid(payload.unitId)) {
+    errors.push("unitId must be a valid UUID");
+  }
+  if (!isUuid(payload.agentId)) {
+    errors.push("agentId must be a valid UUID");
+  }
+  if (payload.listingId !== undefined && payload.listingId !== null && !isUuid(payload.listingId)) {
+    errors.push("listingId must be a valid UUID");
+  }
+  if (payload.conversationId !== undefined && payload.conversationId !== null && !isUuid(payload.conversationId)) {
+    errors.push("conversationId must be a valid UUID");
+  }
+  if (typeof payload.idempotencyKey !== "string" || payload.idempotencyKey.trim().length < 6) {
+    errors.push("idempotencyKey must be at least 6 characters");
+  }
+  if (!isIsoDateTime(payload.startsAt) || !isIsoDateTime(payload.endsAt)) {
+    errors.push("startsAt and endsAt must be valid ISO datetime strings");
+  }
+  if (isIsoDateTime(payload.startsAt) && isIsoDateTime(payload.endsAt) && new Date(payload.endsAt) <= new Date(payload.startsAt)) {
+    errors.push("endsAt must be after startsAt");
+  }
+  if (!payload.timezone || !assertTimezone(payload.timezone)) {
+    errors.push("timezone must be a valid IANA timezone");
+  }
+  if (payload.status !== undefined && !showingAppointmentStatuses.has(payload.status)) {
+    errors.push("status must be one of pending, confirmed, cancelled, completed");
+  }
+  if (payload.metadata !== undefined && (payload.metadata === null || Array.isArray(payload.metadata) || typeof payload.metadata !== "object")) {
+    errors.push("metadata must be an object");
+  }
+
+  return errors;
+}
+
 async function withClient(task) {
   const client = await pool.connect();
   try {
@@ -398,16 +555,36 @@ async function fetchUnits(client) {
             u.is_active,
             u.created_at,
             u.updated_at,
-            assignment.assigned_agent_id
+            assignment.primary_assigned_agent_id,
+            assignment.assignments
        FROM "Units" u
-       LEFT JOIN LATERAL (
-         SELECT l.metadata->>'assignedAgentId' AS assigned_agent_id
-           FROM "Listings" l
-          WHERE l.unit_id = u.id
-          ORDER BY l.updated_at DESC
-          LIMIT 1
-       ) assignment ON TRUE
-      ORDER BY u.property_name ASC, u.unit_number ASC`
+        LEFT JOIN LATERAL (
+          SELECT
+            (
+              SELECT ua2.agent_id
+                FROM "UnitAgentAssignments" ua2
+               WHERE ua2.unit_id = u.id
+                 AND ua2.assignment_mode = 'active'
+               ORDER BY ua2.priority ASC, ua2.created_at ASC
+               LIMIT 1
+            ) AS primary_assigned_agent_id,
+            COALESCE(
+              jsonb_agg(
+                jsonb_build_object(
+                  'agentId', ua.agent_id,
+                  'assignmentMode', ua.assignment_mode,
+                  'priority', ua.priority,
+                  'createdAt', ua.created_at,
+                  'updatedAt', ua.updated_at
+                )
+                ORDER BY ua.priority ASC, ua.created_at ASC
+              ) FILTER (WHERE ua.id IS NOT NULL),
+              '[]'::jsonb
+            ) AS assignments
+            FROM "UnitAgentAssignments" ua
+           WHERE ua.unit_id = u.id
+        ) assignment ON TRUE
+       ORDER BY u.property_name ASC, u.unit_number ASC`
   );
 
   return result.rows.map((row) => ({
@@ -423,7 +600,8 @@ async function fetchUnits(client) {
     bathrooms: row.bathrooms === null ? null : Number(row.bathrooms),
     squareFeet: row.square_feet,
     isActive: row.is_active,
-    assignedAgentId: row.assigned_agent_id,
+    assignedAgentId: row.primary_assigned_agent_id,
+    assignedAgents: Array.isArray(row.assignments) ? row.assignments : [],
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }));
@@ -613,6 +791,611 @@ async function fetchWeeklyRules(client, unitId) {
   return Array.from(grouped.values());
 }
 
+async function fetchUnitAgentAssignments(client, unitId) {
+  const result = await client.query(
+    `SELECT ua.unit_id,
+            ua.agent_id,
+            ua.assignment_mode,
+            ua.priority,
+            ua.created_at,
+            ua.updated_at,
+            a.full_name,
+            a.email,
+            a.timezone,
+            a.role
+       FROM "UnitAgentAssignments" ua
+       JOIN "Agents" a ON a.id = ua.agent_id
+      WHERE ua.unit_id = $1::uuid
+      ORDER BY ua.priority ASC, ua.created_at ASC`,
+    [unitId]
+  );
+
+  return result.rows.map((row) => ({
+    unitId: row.unit_id,
+    agentId: row.agent_id,
+    assignmentMode: row.assignment_mode,
+    priority: row.priority,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    agent: {
+      id: row.agent_id,
+      fullName: row.full_name,
+      email: row.email,
+      timezone: row.timezone,
+      role: row.role
+    }
+  }));
+}
+
+async function upsertUnitAgentAssignment(client, unitId, payload) {
+  const assignmentMode = payload.assignmentMode || "active";
+  const priority = Number(payload.priority || 100);
+
+  const unitCheck = await client.query(`SELECT id FROM "Units" WHERE id = $1::uuid`, [unitId]);
+  if (unitCheck.rowCount === 0) {
+    return { error: "unit_not_found" };
+  }
+
+  const agentCheck = await client.query(`SELECT id FROM "Agents" WHERE id = $1::uuid`, [payload.agentId]);
+  if (agentCheck.rowCount === 0) {
+    return { error: "agent_not_found" };
+  }
+
+  await client.query(
+    `INSERT INTO "UnitAgentAssignments" (unit_id, agent_id, assignment_mode, priority)
+     VALUES ($1::uuid, $2::uuid, $3, $4)
+     ON CONFLICT (unit_id, agent_id)
+     DO UPDATE SET
+       assignment_mode = EXCLUDED.assignment_mode,
+       priority = EXCLUDED.priority,
+       updated_at = NOW()`,
+    [unitId, payload.agentId, assignmentMode, priority]
+  );
+
+  return { ok: true };
+}
+
+async function fetchAgentAvailability(client, agentId, { fromDate, toDate, timezone }) {
+  const where = ["agent_id = $1::uuid"];
+  const params = [agentId];
+
+  if (fromDate) {
+    params.push(fromDate);
+    where.push(`starts_at >= ($${params.length}::date)::timestamptz`);
+  }
+  if (toDate) {
+    params.push(toDate);
+    where.push(`starts_at < (($${params.length}::date + INTERVAL '1 day'))::timestamptz`);
+  }
+
+  const result = await client.query(
+    `SELECT id,
+            agent_id,
+            starts_at,
+            ends_at,
+            timezone,
+            status,
+            source,
+            notes,
+            created_at
+       FROM "AgentAvailabilitySlots"
+      WHERE ${where.join(" AND ")}
+      ORDER BY starts_at ASC`,
+    params
+  );
+
+  return result.rows.map((row) => {
+    const outTimezone = timezone || row.timezone;
+    return {
+      id: row.id,
+      agentId: row.agent_id,
+      startsAt: row.starts_at,
+      endsAt: row.ends_at,
+      timezone: row.timezone,
+      displayTimezone: outTimezone,
+      localStart: formatInTimezone(row.starts_at, outTimezone),
+      localEnd: formatInTimezone(row.ends_at, outTimezone),
+      status: row.status,
+      source: row.source,
+      notes: row.notes,
+      createdAt: row.created_at
+    };
+  });
+}
+
+async function upsertAgentWeeklyRule(client, agentId, payload, existingRuleId = null) {
+  const ruleId = existingRuleId || randomUUID();
+  const status = payload.status || "available";
+  const timezone = payload.timezone;
+  const fromDate = payload.fromDate || new Date().toISOString().slice(0, 10);
+  const weeks = Number(payload.weeks || 8);
+  const notesSuffix = typeof payload.notes === "string" && payload.notes.trim().length > 0 ? ` | ${payload.notes.trim()}` : "";
+  const source = "weekly_recurring";
+  const ruleNotes = `rule:${ruleId}${notesSuffix}`;
+
+  await client.query("BEGIN");
+  try {
+    await client.query(
+      `DELETE FROM "AgentAvailabilitySlots"
+        WHERE agent_id = $1::uuid
+          AND source = 'weekly_recurring'
+          AND notes LIKE $2`,
+      [agentId, `rule:${ruleId}%`]
+    );
+
+    const firstDate = nextDateByWeekday(fromDate, Number(payload.dayOfWeek), timezone);
+    const inserts = [];
+
+    for (let index = 0; index < weeks; index += 1) {
+      const currentDate = addDays(firstDate, index * 7);
+      const startsAt = zonedTimeToUtc(currentDate, payload.startTime, timezone);
+      const endsAt = zonedTimeToUtc(currentDate, payload.endTime, timezone);
+
+      inserts.push(
+        client.query(
+          `INSERT INTO "AgentAvailabilitySlots" (
+             agent_id,
+             starts_at,
+             ends_at,
+             timezone,
+             status,
+             source,
+             notes
+           ) VALUES ($1::uuid, $2::timestamptz, $3::timestamptz, $4, $5, $6, $7)`,
+          [agentId, startsAt.toISOString(), endsAt.toISOString(), timezone, status, source, ruleNotes]
+        )
+      );
+    }
+
+    await Promise.all(inserts);
+    await client.query("COMMIT");
+
+    return {
+      ruleId,
+      generatedSlots: inserts.length
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+}
+
+async function fetchAgentWeeklyRules(client, agentId) {
+  const result = await client.query(
+    `SELECT id, starts_at, ends_at, timezone, status, source, notes
+       FROM "AgentAvailabilitySlots"
+      WHERE agent_id = $1::uuid
+        AND source = 'weekly_recurring'
+      ORDER BY starts_at ASC`,
+    [agentId]
+  );
+
+  const grouped = new Map();
+
+  for (const row of result.rows) {
+    const ruleId = parseRuleIdFromNotes(row.notes);
+    if (!ruleId) {
+      continue;
+    }
+
+    const bucket = grouped.get(ruleId) || {
+      ruleId,
+      timezone: row.timezone,
+      status: row.status,
+      notes: row.notes,
+      occurrences: []
+    };
+
+    bucket.occurrences.push({
+      slotId: row.id,
+      startsAt: row.starts_at,
+      endsAt: row.ends_at,
+      localStart: formatInTimezone(row.starts_at, row.timezone),
+      localEnd: formatInTimezone(row.ends_at, row.timezone)
+    });
+
+    grouped.set(ruleId, bucket);
+  }
+
+  return Array.from(grouped.values());
+}
+
+async function fetchUnitAgentSlotCandidates(client, unitId, { fromDate, toDate, timezone, includePassive }) {
+  const params = [unitId];
+  let assignmentModePredicate = "ua.assignment_mode = 'active'";
+
+  if (includePassive) {
+    assignmentModePredicate = "ua.assignment_mode IN ('active', 'passive')";
+  }
+
+  let fromToPredicate = "";
+  if (fromDate) {
+    params.push(fromDate);
+    fromToPredicate += ` AND unit_slot.ends_at >= ($${params.length}::date)::timestamptz`;
+    fromToPredicate += ` AND agent_slot.ends_at >= ($${params.length}::date)::timestamptz`;
+  }
+  if (toDate) {
+    params.push(toDate);
+    fromToPredicate += ` AND unit_slot.starts_at < (($${params.length}::date + INTERVAL '1 day'))::timestamptz`;
+    fromToPredicate += ` AND agent_slot.starts_at < (($${params.length}::date + INTERVAL '1 day'))::timestamptz`;
+  }
+
+  const result = await client.query(
+    `SELECT ua.agent_id,
+            ua.assignment_mode,
+            ua.priority,
+            a.full_name,
+            a.timezone AS agent_timezone,
+            unit_slot.id AS unit_slot_id,
+            unit_slot.starts_at AS unit_starts_at,
+            unit_slot.ends_at AS unit_ends_at,
+            unit_slot.timezone AS unit_timezone,
+            agent_slot.id AS agent_slot_id,
+            agent_slot.starts_at AS agent_starts_at,
+            agent_slot.ends_at AS agent_ends_at,
+            agent_slot.timezone AS agent_timezone_source,
+            GREATEST(unit_slot.starts_at, agent_slot.starts_at) AS candidate_starts_at,
+            LEAST(unit_slot.ends_at, agent_slot.ends_at) AS candidate_ends_at
+       FROM "UnitAgentAssignments" ua
+       JOIN "Agents" a
+         ON a.id = ua.agent_id
+       JOIN "AvailabilitySlots" unit_slot
+         ON unit_slot.unit_id = ua.unit_id
+        AND unit_slot.status = 'open'
+       JOIN "AgentAvailabilitySlots" agent_slot
+          ON agent_slot.agent_id = ua.agent_id
+         AND agent_slot.status = 'available'
+       WHERE ua.unit_id = $1::uuid
+         AND ${assignmentModePredicate}
+         AND tstzrange(unit_slot.starts_at, unit_slot.ends_at, '[)')
+             && tstzrange(agent_slot.starts_at, agent_slot.ends_at, '[)')
+          AND NOT EXISTS (
+            SELECT 1
+              FROM "AgentAvailabilitySlots" blocked_slot
+            WHERE blocked_slot.agent_id = ua.agent_id
+              AND blocked_slot.status = 'unavailable'
+              AND tstzrange(blocked_slot.starts_at, blocked_slot.ends_at, '[)')
+                  && tstzrange(
+                    GREATEST(unit_slot.starts_at, agent_slot.starts_at),
+                    LEAST(unit_slot.ends_at, agent_slot.ends_at),
+                    '[)'
+                  )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+              FROM "ShowingAppointments" appt
+             WHERE appt.agent_id = ua.agent_id
+               AND appt.status IN ('pending', 'confirmed')
+               AND tstzrange(appt.starts_at, appt.ends_at, '[)')
+                   && tstzrange(
+                     GREATEST(unit_slot.starts_at, agent_slot.starts_at),
+                     LEAST(unit_slot.ends_at, agent_slot.ends_at),
+                     '[)'
+                   )
+          )
+          ${fromToPredicate}
+        ORDER BY ua.priority ASC, candidate_starts_at ASC`,
+    params
+  );
+
+  return result.rows
+    .filter((row) => row.candidate_starts_at < row.candidate_ends_at)
+    .map((row) => {
+      const displayTimezone = timezone || row.unit_timezone || row.agent_timezone || "UTC";
+      return {
+        unitId,
+        agentId: row.agent_id,
+        assignmentMode: row.assignment_mode,
+        priority: row.priority,
+        agentName: row.full_name,
+        agentTimezone: row.agent_timezone,
+        unitSlotId: row.unit_slot_id,
+        agentSlotId: row.agent_slot_id,
+        startsAt: row.candidate_starts_at,
+        endsAt: row.candidate_ends_at,
+        displayTimezone,
+        localStart: formatInTimezone(row.candidate_starts_at, displayTimezone),
+        localEnd: formatInTimezone(row.candidate_ends_at, displayTimezone)
+      };
+    });
+}
+
+function toShowingAppointmentDto(row, displayTimezone = null) {
+  const resolvedTimezone = displayTimezone || row.timezone || "UTC";
+  return {
+    id: row.id,
+    idempotencyKey: row.idempotency_key,
+    platformAccountId: row.platform_account_id,
+    conversationId: row.conversation_id,
+    unitId: row.unit_id,
+    listingId: row.listing_id,
+    agentId: row.agent_id,
+    agentName: row.agent_name || null,
+    startsAt: row.starts_at,
+    endsAt: row.ends_at,
+    timezone: row.timezone,
+    displayTimezone: resolvedTimezone,
+    localStart: formatInTimezone(row.starts_at, resolvedTimezone),
+    localEnd: formatInTimezone(row.ends_at, resolvedTimezone),
+    status: row.status,
+    source: row.source,
+    externalBookingRef: row.external_booking_ref,
+    notes: row.notes,
+    metadata: row.metadata || {},
+    unit: row.property_name && row.unit_number ? `${row.property_name} ${row.unit_number}` : null,
+    conversation: {
+      externalThreadId: row.external_thread_id || null,
+      leadName: row.lead_name || null
+    },
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function matchesIdempotentBooking(existingRow, payload) {
+  return (
+    existingRow.platform_account_id === payload.platformAccountId &&
+    existingRow.unit_id === payload.unitId &&
+    existingRow.agent_id === payload.agentId &&
+    new Date(existingRow.starts_at).toISOString() === new Date(payload.startsAt).toISOString() &&
+    new Date(existingRow.ends_at).toISOString() === new Date(payload.endsAt).toISOString() &&
+    (existingRow.listing_id || null) === (payload.listingId || null) &&
+    (existingRow.conversation_id || null) === (payload.conversationId || null)
+  );
+}
+
+async function fetchShowingAppointments(client, { agentId = null, status = null, unitId = null, fromDate = null, toDate = null, timezone = null }) {
+  const where = [];
+  const params = [];
+
+  if (agentId) {
+    params.push(agentId);
+    where.push(`sa.agent_id = $${params.length}::uuid`);
+  }
+  if (status) {
+    params.push(status);
+    where.push(`sa.status = $${params.length}`);
+  }
+  if (unitId) {
+    params.push(unitId);
+    where.push(`sa.unit_id = $${params.length}::uuid`);
+  }
+  if (fromDate) {
+    params.push(fromDate);
+    where.push(`sa.ends_at >= ($${params.length}::date)::timestamptz`);
+  }
+  if (toDate) {
+    params.push(toDate);
+    where.push(`sa.starts_at < (($${params.length}::date + INTERVAL '1 day'))::timestamptz`);
+  }
+
+  const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+  const result = await client.query(
+    `SELECT sa.id,
+            sa.idempotency_key,
+            sa.platform_account_id,
+            sa.conversation_id,
+            sa.unit_id,
+            sa.listing_id,
+            sa.agent_id,
+            sa.starts_at,
+            sa.ends_at,
+            sa.timezone,
+            sa.status,
+            sa.source,
+            sa.external_booking_ref,
+            sa.notes,
+            sa.metadata,
+            sa.created_at,
+            sa.updated_at,
+            u.property_name,
+            u.unit_number,
+            a.full_name AS agent_name,
+            c.external_thread_id,
+            c.lead_name
+       FROM "ShowingAppointments" sa
+       JOIN "Units" u ON u.id = sa.unit_id
+       JOIN "Agents" a ON a.id = sa.agent_id
+  LEFT JOIN "Conversations" c ON c.id = sa.conversation_id
+      ${whereClause}
+      ORDER BY sa.starts_at ASC, sa.created_at ASC`,
+    params
+  );
+
+  return result.rows.map((row) => toShowingAppointmentDto(row, timezone));
+}
+
+async function createShowingAppointment(client, payload) {
+  const startsAtIso = new Date(payload.startsAt).toISOString();
+  const endsAtIso = new Date(payload.endsAt).toISOString();
+
+  await client.query("BEGIN");
+  try {
+    const existing = await client.query(
+      `SELECT sa.id,
+              sa.idempotency_key,
+              sa.platform_account_id,
+              sa.conversation_id,
+              sa.unit_id,
+              sa.listing_id,
+              sa.agent_id,
+              sa.starts_at,
+              sa.ends_at,
+              sa.timezone,
+              sa.status,
+              sa.source,
+              sa.external_booking_ref,
+              sa.notes,
+              sa.metadata,
+              sa.created_at,
+              sa.updated_at,
+              u.property_name,
+              u.unit_number,
+              a.full_name AS agent_name,
+              c.external_thread_id,
+              c.lead_name
+         FROM "ShowingAppointments" sa
+         JOIN "Units" u ON u.id = sa.unit_id
+         JOIN "Agents" a ON a.id = sa.agent_id
+    LEFT JOIN "Conversations" c ON c.id = sa.conversation_id
+        WHERE sa.idempotency_key = $1
+        LIMIT 1`,
+      [payload.idempotencyKey.trim()]
+    );
+
+    if (existing.rowCount > 0) {
+      const existingRow = existing.rows[0];
+      if (!matchesIdempotentBooking(existingRow, payload)) {
+        await client.query("ROLLBACK");
+        return {
+          error: "idempotency_payload_mismatch",
+          appointment: toShowingAppointmentDto(existingRow)
+        };
+      }
+
+      await client.query("COMMIT");
+      return {
+        appointment: toShowingAppointmentDto(existingRow),
+        idempotentReplay: true
+      };
+    }
+
+    const inserted = await client.query(
+      `INSERT INTO "ShowingAppointments" (
+         idempotency_key,
+         platform_account_id,
+         conversation_id,
+         unit_id,
+         listing_id,
+         agent_id,
+         starts_at,
+         ends_at,
+         timezone,
+         status,
+         source,
+         external_booking_ref,
+         notes,
+         metadata
+       ) VALUES (
+         $1,
+         $2::uuid,
+         $3::uuid,
+         $4::uuid,
+         $5::uuid,
+         $6::uuid,
+         $7::timestamptz,
+         $8::timestamptz,
+         $9,
+         $10,
+         $11,
+         $12,
+         $13,
+         $14::jsonb
+       )
+       RETURNING id`,
+      [
+        payload.idempotencyKey.trim(),
+        payload.platformAccountId,
+        payload.conversationId || null,
+        payload.unitId,
+        payload.listingId || null,
+        payload.agentId,
+        startsAtIso,
+        endsAtIso,
+        payload.timezone,
+        payload.status || "confirmed",
+        payload.source || "lead_selection",
+        payload.externalBookingRef || null,
+        payload.notes || null,
+        JSON.stringify(payload.metadata || {})
+      ]
+    );
+
+    const byId = await client.query(
+      `SELECT sa.id,
+              sa.idempotency_key,
+              sa.platform_account_id,
+              sa.conversation_id,
+              sa.unit_id,
+              sa.listing_id,
+              sa.agent_id,
+              sa.starts_at,
+              sa.ends_at,
+              sa.timezone,
+              sa.status,
+              sa.source,
+              sa.external_booking_ref,
+              sa.notes,
+              sa.metadata,
+              sa.created_at,
+              sa.updated_at,
+              u.property_name,
+              u.unit_number,
+              a.full_name AS agent_name,
+              c.external_thread_id,
+              c.lead_name
+         FROM "ShowingAppointments" sa
+         JOIN "Units" u ON u.id = sa.unit_id
+         JOIN "Agents" a ON a.id = sa.agent_id
+    LEFT JOIN "Conversations" c ON c.id = sa.conversation_id
+        WHERE sa.id = $1::uuid
+        LIMIT 1`,
+      [inserted.rows[0].id]
+    );
+
+    await client.query("COMMIT");
+    return {
+      appointment: toShowingAppointmentDto(byId.rows[0]),
+      idempotentReplay: false
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    if (error?.code === "23505") {
+      const replay = await client.query(
+        `SELECT sa.id,
+                sa.idempotency_key,
+                sa.platform_account_id,
+                sa.conversation_id,
+                sa.unit_id,
+                sa.listing_id,
+                sa.agent_id,
+                sa.starts_at,
+                sa.ends_at,
+                sa.timezone,
+                sa.status,
+                sa.source,
+                sa.external_booking_ref,
+                sa.notes,
+                sa.metadata,
+                sa.created_at,
+                sa.updated_at,
+                u.property_name,
+                u.unit_number,
+                a.full_name AS agent_name,
+                c.external_thread_id,
+                c.lead_name
+           FROM "ShowingAppointments" sa
+           JOIN "Units" u ON u.id = sa.unit_id
+           JOIN "Agents" a ON a.id = sa.agent_id
+      LEFT JOIN "Conversations" c ON c.id = sa.conversation_id
+          WHERE sa.idempotency_key = $1
+          LIMIT 1`,
+        [payload.idempotencyKey.trim()]
+      );
+
+      if (replay.rowCount > 0 && matchesIdempotentBooking(replay.rows[0], payload)) {
+        return {
+          appointment: toShowingAppointmentDto(replay.rows[0]),
+          idempotentReplay: true
+        };
+      }
+    }
+
+    throw error;
+  }
+}
+
 function handleLocalTimeValidationError(res, error) {
   if (!(error instanceof LocalTimeValidationError)) {
     return false;
@@ -622,6 +1405,19 @@ function handleLocalTimeValidationError(res, error) {
     `${error.details.date} ${error.details.time} is not a valid local time in ${error.details.timezone}`
   ]);
   return true;
+}
+
+function handleAvailabilityConflictError(res, error, message) {
+  if (error?.code !== "23P01") {
+    return false;
+  }
+
+  badRequest(res, message, ["Requested availability overlaps an existing available slot"]);
+  return true;
+}
+
+function handleShowingConflictError(error) {
+  return error?.code === "23P01";
 }
 
 function normalizeTemplateVariables(payload) {
@@ -1758,65 +2554,394 @@ export async function routeApi(req, res, url) {
       return;
     }
 
-    if (payload.listingId !== undefined && payload.listingId !== null && !isUuid(payload.listingId)) {
-      badRequest(res, "listingId must be a UUID when provided");
-      return;
-    }
-
     const response = await withClient(async (client) => {
-      if (payload.agentId) {
-        const agent = await client.query(`SELECT id FROM "Agents" WHERE id = $1::uuid`, [payload.agentId]);
-        if (agent.rowCount === 0) {
-          return { error: "agent_not_found" };
+      const unitCheck = await client.query(`SELECT id FROM "Units" WHERE id = $1::uuid`, [unitId]);
+      if (unitCheck.rowCount === 0) {
+        return { error: "unit_not_found" };
+      }
+
+      await client.query("BEGIN");
+      try {
+        if (payload.agentId) {
+          const agentCheck = await client.query(`SELECT id FROM "Agents" WHERE id = $1::uuid`, [payload.agentId]);
+          if (agentCheck.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return { error: "agent_not_found" };
+          }
+
+          await client.query(
+            `UPDATE "UnitAgentAssignments"
+                SET assignment_mode = 'passive',
+                    updated_at = NOW()
+              WHERE unit_id = $1::uuid
+                AND assignment_mode = 'active'
+                AND agent_id <> $2::uuid`,
+            [unitId, payload.agentId]
+          );
+
+          await client.query(
+            `INSERT INTO "UnitAgentAssignments" (unit_id, agent_id, assignment_mode, priority)
+             VALUES ($1::uuid, $2::uuid, 'active', 1)
+             ON CONFLICT (unit_id, agent_id)
+             DO UPDATE SET assignment_mode = 'active', priority = 1, updated_at = NOW()`,
+            [unitId, payload.agentId]
+          );
+        } else {
+          await client.query(
+            `UPDATE "UnitAgentAssignments"
+                SET assignment_mode = 'passive',
+                    updated_at = NOW()
+              WHERE unit_id = $1::uuid
+                AND assignment_mode = 'active'`,
+            [unitId]
+          );
         }
+
+        await client.query("COMMIT");
+
+        return {
+          ok: true,
+          assignedAgentId: payload.agentId || null
+        };
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
       }
-
-      const listing = await client.query(
-        payload.listingId
-          ? `SELECT id FROM "Listings" WHERE id = $1::uuid AND unit_id = $2::uuid LIMIT 1`
-          : `SELECT id FROM "Listings" WHERE unit_id = $1::uuid ORDER BY updated_at DESC LIMIT 1`,
-        payload.listingId ? [payload.listingId, unitId] : [unitId]
-      );
-
-      if (listing.rowCount === 0) {
-        return { error: "listing_not_found" };
-      }
-
-      if (payload.agentId) {
-        await client.query(
-          `UPDATE "Listings"
-              SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{assignedAgentId}', to_jsonb($2::text), true),
-                  updated_at = NOW()
-            WHERE id = $1::uuid`,
-          [listing.rows[0].id, payload.agentId]
-        );
-      } else {
-        await client.query(
-          `UPDATE "Listings"
-              SET metadata = COALESCE(metadata, '{}'::jsonb) - 'assignedAgentId',
-                  updated_at = NOW()
-            WHERE id = $1::uuid`,
-          [listing.rows[0].id]
-        );
-      }
-
-      return {
-        ok: true,
-        listingId: listing.rows[0].id,
-        assignedAgentId: payload.agentId || null
-      };
     });
 
+    if (response.error === "unit_not_found") {
+      notFound(res);
+      return;
+    }
     if (response.error === "agent_not_found") {
       badRequest(res, "agentId does not exist");
       return;
     }
-    if (response.error === "listing_not_found") {
-      badRequest(res, "No listing found for this unit. Create a listing first.");
+
+    json(res, 200, response);
+    return;
+  }
+
+  const unitAgentsMatch = url.pathname.match(/^\/api\/units\/([0-9a-f\-]+)\/agents$/i);
+  if (unitAgentsMatch) {
+    const unitId = unitAgentsMatch[1];
+    if (!isUuid(unitId)) {
+      badRequest(res, "unitId must be a UUID");
       return;
     }
 
-    json(res, 200, response);
+    if (req.method === "GET") {
+      const access = await requireRole(req, res, [roles.agent, roles.admin]);
+      if (!access) {
+        return;
+      }
+
+      const items = await withClient((client) => fetchUnitAgentAssignments(client, unitId));
+      json(res, 200, { items });
+      return;
+    }
+
+    if (req.method === "PUT") {
+      const access = await requireRole(req, res, [roles.admin]);
+      if (!access) {
+        return;
+      }
+
+      let payload;
+      try {
+        payload = await readJsonBody(req);
+      } catch {
+        badRequest(res, "Request body must be valid JSON");
+        return;
+      }
+
+      const errors = validateUnitAgentAssignmentPayload(payload);
+      if (errors.length > 0) {
+        badRequest(res, "Invalid unit-agent assignment payload", errors);
+        return;
+      }
+
+      let response;
+      const withClientRunner = routeTestOverrides?.withClient || withClient;
+      try {
+        response = await withClientRunner((client) => upsertUnitAgentAssignment(client, unitId, payload));
+      } catch (error) {
+        if (error?.code === "23505") {
+          badRequest(res, "priority already in use for active unit assignments");
+          return;
+        }
+        throw error;
+      }
+
+      if (response.error === "unit_not_found") {
+        notFound(res);
+        return;
+      }
+      if (response.error === "agent_not_found") {
+        badRequest(res, "agentId does not exist");
+        return;
+      }
+
+      const items = await withClientRunner((client) => fetchUnitAgentAssignments(client, unitId));
+      json(res, 200, { updated: true, items });
+      return;
+    }
+  }
+
+  const unitAgentByIdMatch = url.pathname.match(/^\/api\/units\/([0-9a-f\-]+)\/agents\/([0-9a-f\-]+)$/i);
+  if (unitAgentByIdMatch && req.method === "DELETE") {
+    const access = await requireRole(req, res, [roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const unitId = unitAgentByIdMatch[1];
+    const agentId = unitAgentByIdMatch[2];
+    if (!isUuid(unitId) || !isUuid(agentId)) {
+      badRequest(res, "unitId and agentId must be UUIDs");
+      return;
+    }
+
+    const result = await pool.query(
+      `DELETE FROM "UnitAgentAssignments"
+        WHERE unit_id = $1::uuid
+          AND agent_id = $2::uuid`,
+      [unitId, agentId]
+    );
+
+    if (result.rowCount === 0) {
+      notFound(res);
+      return;
+    }
+
+    json(res, 200, { deleted: true });
+    return;
+  }
+
+  const unitAgentCandidatesMatch = url.pathname.match(/^\/api\/units\/([0-9a-f\-]+)\/agent-slot-candidates$/i);
+  if (unitAgentCandidatesMatch && req.method === "GET") {
+    const access = await requireRole(req, res, [roles.agent, roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const unitId = unitAgentCandidatesMatch[1];
+    if (!isUuid(unitId)) {
+      badRequest(res, "unitId must be a UUID");
+      return;
+    }
+
+    const fromDate = url.searchParams.get("fromDate");
+    const toDate = url.searchParams.get("toDate");
+    const timezone = url.searchParams.get("timezone");
+    const includePassive = url.searchParams.get("includePassive") === "true";
+
+    if (fromDate && !isDateString(fromDate)) {
+      badRequest(res, "fromDate must be YYYY-MM-DD");
+      return;
+    }
+    if (toDate && !isDateString(toDate)) {
+      badRequest(res, "toDate must be YYYY-MM-DD");
+      return;
+    }
+    if (timezone && !assertTimezone(timezone)) {
+      badRequest(res, "timezone must be a valid IANA timezone");
+      return;
+    }
+
+    const fetchCandidates = routeTestOverrides?.fetchUnitAgentSlotCandidates || fetchUnitAgentSlotCandidates;
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const items = await withClientRunner((client) => fetchCandidates(client, unitId, { fromDate, toDate, timezone, includePassive }));
+    json(res, 200, { items });
+    return;
+  }
+
+  if (url.pathname === "/api/showing-appointments" && req.method === "GET") {
+    const access = await requireRole(req, res, [roles.agent, roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const status = url.searchParams.get("status");
+    const unitId = url.searchParams.get("unitId");
+    const fromDate = url.searchParams.get("fromDate");
+    const toDate = url.searchParams.get("toDate");
+    const timezone = url.searchParams.get("timezone");
+    const agentIdParam = url.searchParams.get("agentId");
+
+    if (status && !showingAppointmentStatuses.has(status)) {
+      badRequest(res, "status must be one of pending, confirmed, cancelled, completed");
+      return;
+    }
+    if (unitId && !isUuid(unitId)) {
+      badRequest(res, "unitId must be a UUID");
+      return;
+    }
+    if (fromDate && !isDateString(fromDate)) {
+      badRequest(res, "fromDate must be YYYY-MM-DD");
+      return;
+    }
+    if (toDate && !isDateString(toDate)) {
+      badRequest(res, "toDate must be YYYY-MM-DD");
+      return;
+    }
+    if (timezone && !assertTimezone(timezone)) {
+      badRequest(res, "timezone must be a valid IANA timezone");
+      return;
+    }
+    if (agentIdParam && !isUuid(agentIdParam)) {
+      badRequest(res, "agentId must be a UUID");
+      return;
+    }
+
+    let agentId = agentIdParam || null;
+    if (access.role === roles.agent) {
+      agentId = enforceAgentSelfScope(res, access, agentIdParam || null);
+      if (!agentId) {
+        return;
+      }
+    }
+
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const fetchShowingAppointmentsRunner = routeTestOverrides?.fetchShowingAppointments || fetchShowingAppointments;
+    const items = await withClientRunner((client) =>
+      fetchShowingAppointmentsRunner(client, {
+        agentId,
+        status,
+        unitId,
+        fromDate,
+        toDate,
+        timezone
+      })
+    );
+
+    json(res, 200, { items });
+    return;
+  }
+
+  if (url.pathname === "/api/showing-appointments/book" && req.method === "POST") {
+    const access = await requireRole(req, res, [roles.agent, roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    let payload;
+    try {
+      payload = await readJsonBody(req);
+    } catch {
+      badRequest(res, "Request body must be valid JSON");
+      return;
+    }
+
+    const errors = validateShowingBookingPayload(payload);
+    if (errors.length > 0) {
+      badRequest(res, "Invalid showing booking payload", errors);
+      return;
+    }
+
+    if (access.role === roles.agent) {
+      const scopedAgentId = enforceAgentSelfScope(res, access, payload.agentId);
+      if (!scopedAgentId) {
+        return;
+      }
+      payload.agentId = scopedAgentId;
+    }
+
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const createShowingAppointmentRunner = routeTestOverrides?.createShowingAppointment || createShowingAppointment;
+    const fetchCandidates = routeTestOverrides?.fetchUnitAgentSlotCandidates || fetchUnitAgentSlotCandidates;
+    const recordAuditLogRunner = routeTestOverrides?.recordAuditLog || recordAuditLog;
+
+    const writeBookingAuditLog = async (action, details = {}) => {
+      try {
+        await withClientRunner((client) => {
+          if (recordAuditLogRunner === recordAuditLog && typeof client?.query !== "function") {
+            return null;
+          }
+
+          return recordAuditLogRunner(client, {
+            actorType: access.role === roles.admin ? "admin" : "agent",
+            actorId: access.session.user.id,
+            entityType: "showing_appointment",
+            entityId: String(details.appointmentId || payload.idempotencyKey),
+            action,
+            details: {
+              idempotencyKey: payload.idempotencyKey,
+              platformAccountId: payload.platformAccountId,
+              conversationId: payload.conversationId || null,
+              unitId: payload.unitId,
+              listingId: payload.listingId || null,
+              agentId: payload.agentId,
+              startsAt: payload.startsAt,
+              endsAt: payload.endsAt,
+              timezone: payload.timezone,
+              requestedStatus: payload.status || "confirmed",
+              ...details
+            }
+          });
+        });
+      } catch (loggingError) {
+        console.error("showing_booking_audit_log_failed", loggingError);
+      }
+    };
+
+    let bookingResult;
+    try {
+      bookingResult = await withClientRunner((client) => createShowingAppointmentRunner(client, payload));
+    } catch (error) {
+      if (handleShowingConflictError(error)) {
+        const date = payload.startsAt.slice(0, 10);
+        const alternatives = await withClientRunner((client) =>
+          fetchCandidates(client, payload.unitId, {
+            fromDate: date,
+            toDate: date,
+            timezone: payload.timezone,
+            includePassive: true
+          })
+        );
+
+        await writeBookingAuditLog("showing_booking_conflict", {
+          conflictType: "agent_time_overlap",
+          alternativesCount: alternatives.length
+        });
+
+        json(res, 409, {
+          error: "booking_conflict",
+          message: "Agent already has a booking for the selected time range",
+          alternatives,
+          adminReviewRequired: true
+        });
+        return;
+      }
+      await writeBookingAuditLog("showing_booking_failed", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
+
+    if (bookingResult?.error === "idempotency_payload_mismatch") {
+      await writeBookingAuditLog("showing_booking_idempotency_conflict", {
+        appointmentId: bookingResult.appointment?.id || null
+      });
+      json(res, 409, {
+        error: "idempotency_conflict",
+        message: "idempotencyKey was already used with different booking payload",
+        existingAppointment: bookingResult.appointment,
+        adminReviewRequired: true
+      });
+      return;
+    }
+
+    const statusCode = bookingResult?.idempotentReplay ? 200 : 201;
+    await writeBookingAuditLog(bookingResult?.idempotentReplay ? "showing_booking_replayed" : "showing_booking_created", {
+      appointmentId: bookingResult?.appointment?.id || null,
+      appointmentStatus: bookingResult?.appointment?.status || null,
+      idempotentReplay: Boolean(bookingResult?.idempotentReplay)
+    });
+    json(res, statusCode, {
+      appointment: bookingResult.appointment,
+      idempotentReplay: Boolean(bookingResult?.idempotentReplay)
+    });
     return;
   }
 
@@ -2326,6 +3451,333 @@ export async function routeApi(req, res, url) {
     }
   }
 
+  const agentAvailabilityListMatch = url.pathname.match(/^\/api\/agents\/([0-9a-f\-]+)\/availability$/i);
+  if (agentAvailabilityListMatch && req.method === "GET") {
+    const access = await requireRole(req, res, [roles.agent, roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const agentId = agentAvailabilityListMatch[1];
+    if (!isUuid(agentId)) {
+      badRequest(res, "agentId must be a UUID");
+      return;
+    }
+
+    const fromDate = url.searchParams.get("fromDate");
+    const toDate = url.searchParams.get("toDate");
+    const timezone = url.searchParams.get("timezone");
+
+    if (fromDate && !isDateString(fromDate)) {
+      badRequest(res, "fromDate must be YYYY-MM-DD");
+      return;
+    }
+    if (toDate && !isDateString(toDate)) {
+      badRequest(res, "toDate must be YYYY-MM-DD");
+      return;
+    }
+    if (timezone && !assertTimezone(timezone)) {
+      badRequest(res, "timezone must be a valid IANA timezone");
+      return;
+    }
+
+    const items = await withClient((client) => fetchAgentAvailability(client, agentId, { fromDate, toDate, timezone }));
+    json(res, 200, { items });
+    return;
+  }
+
+  const agentWeeklyRulesMatch = url.pathname.match(/^\/api\/agents\/([0-9a-f\-]+)\/availability\/weekly-rules$/i);
+  if (agentWeeklyRulesMatch) {
+    const agentId = agentWeeklyRulesMatch[1];
+    if (!isUuid(agentId)) {
+      badRequest(res, "agentId must be a UUID");
+      return;
+    }
+
+    if (req.method === "GET") {
+      const access = await requireRole(req, res, [roles.agent, roles.admin]);
+      if (!access) {
+        return;
+      }
+
+      const items = await withClient((client) => fetchAgentWeeklyRules(client, agentId));
+      json(res, 200, { items });
+      return;
+    }
+
+    if (req.method === "POST") {
+      const access = await requireRole(req, res, [roles.admin]);
+      if (!access) {
+        return;
+      }
+
+      let payload;
+      try {
+        payload = await readJsonBody(req);
+      } catch {
+        badRequest(res, "Request body must be valid JSON");
+        return;
+      }
+
+      const errors = validateAgentWeeklyAvailabilityPayload(payload);
+      if (errors.length > 0) {
+        badRequest(res, "Invalid agent weekly recurring payload", errors);
+        return;
+      }
+
+      let result;
+      try {
+        result = await withClient((client) => upsertAgentWeeklyRule(client, agentId, payload));
+      } catch (error) {
+        if (handleLocalTimeValidationError(res, error)) {
+          return;
+        }
+        if (handleAvailabilityConflictError(res, error, "Conflicting agent weekly availability")) {
+          return;
+        }
+        throw error;
+      }
+
+      json(res, 201, result);
+      return;
+    }
+  }
+
+  const agentWeeklyRuleByIdMatch = url.pathname.match(/^\/api\/agents\/([0-9a-f\-]+)\/availability\/weekly-rules\/([0-9a-f\-]+)$/i);
+  if (agentWeeklyRuleByIdMatch) {
+    const agentId = agentWeeklyRuleByIdMatch[1];
+    const ruleId = agentWeeklyRuleByIdMatch[2];
+
+    if (!isUuid(agentId) || !isUuid(ruleId)) {
+      badRequest(res, "agentId and ruleId must be UUIDs");
+      return;
+    }
+
+    if (req.method === "PUT") {
+      const access = await requireRole(req, res, [roles.admin]);
+      if (!access) {
+        return;
+      }
+
+      let payload;
+      try {
+        payload = await readJsonBody(req);
+      } catch {
+        badRequest(res, "Request body must be valid JSON");
+        return;
+      }
+
+      const errors = validateAgentWeeklyAvailabilityPayload(payload);
+      if (errors.length > 0) {
+        badRequest(res, "Invalid agent weekly recurring payload", errors);
+        return;
+      }
+
+      let result;
+      try {
+        result = await withClient((client) => upsertAgentWeeklyRule(client, agentId, payload, ruleId));
+      } catch (error) {
+        if (handleLocalTimeValidationError(res, error)) {
+          return;
+        }
+        if (handleAvailabilityConflictError(res, error, "Conflicting agent weekly availability")) {
+          return;
+        }
+        throw error;
+      }
+
+      json(res, 200, result);
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      const access = await requireRole(req, res, [roles.admin]);
+      if (!access) {
+        return;
+      }
+
+      const result = await pool.query(
+        `DELETE FROM "AgentAvailabilitySlots"
+          WHERE agent_id = $1::uuid
+            AND source = 'weekly_recurring'
+            AND notes LIKE $2`,
+        [agentId, `rule:${ruleId}%`]
+      );
+
+      json(res, 200, { deletedSlots: result.rowCount });
+      return;
+    }
+  }
+
+  const agentDailyOverrideMatch = url.pathname.match(/^\/api\/agents\/([0-9a-f\-]+)\/availability\/daily-overrides$/i);
+  if (agentDailyOverrideMatch && req.method === "POST") {
+    const access = await requireRole(req, res, [roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const agentId = agentDailyOverrideMatch[1];
+    if (!isUuid(agentId)) {
+      badRequest(res, "agentId must be a UUID");
+      return;
+    }
+
+    let payload;
+    try {
+      payload = await readJsonBody(req);
+    } catch {
+      badRequest(res, "Request body must be valid JSON");
+      return;
+    }
+
+    const errors = validateAgentDailyOverridePayload(payload);
+    if (errors.length > 0) {
+      badRequest(res, "Invalid agent daily override payload", errors);
+      return;
+    }
+
+    let startsAt;
+    let endsAt;
+    try {
+      startsAt = zonedTimeToUtc(payload.date, payload.startTime, payload.timezone);
+      endsAt = zonedTimeToUtc(payload.date, payload.endTime, payload.timezone);
+    } catch (error) {
+      if (handleLocalTimeValidationError(res, error)) {
+        return;
+      }
+      throw error;
+    }
+
+    let result;
+    try {
+      result = await pool.query(
+        `INSERT INTO "AgentAvailabilitySlots" (
+           agent_id,
+           starts_at,
+           ends_at,
+           timezone,
+           status,
+           source,
+           notes
+         ) VALUES ($1::uuid, $2::timestamptz, $3::timestamptz, $4, $5, 'daily_override', $6)
+         RETURNING id`,
+        [
+          agentId,
+          startsAt.toISOString(),
+          endsAt.toISOString(),
+          payload.timezone,
+          payload.status || "available",
+          payload.notes || null
+        ]
+      );
+    } catch (error) {
+      if (handleAvailabilityConflictError(res, error, "Conflicting agent daily override")) {
+        return;
+      }
+      throw error;
+    }
+
+    json(res, 201, { id: result.rows[0].id });
+    return;
+  }
+
+  const agentAvailabilityByIdMatch = url.pathname.match(/^\/api\/agent-availability\/([0-9a-f\-]+)$/i);
+  if (agentAvailabilityByIdMatch) {
+    const slotId = agentAvailabilityByIdMatch[1];
+    if (!isUuid(slotId)) {
+      badRequest(res, "slotId must be a UUID");
+      return;
+    }
+
+    if (req.method === "PUT") {
+      const access = await requireRole(req, res, [roles.admin]);
+      if (!access) {
+        return;
+      }
+
+      let payload;
+      try {
+        payload = await readJsonBody(req);
+      } catch {
+        badRequest(res, "Request body must be valid JSON");
+        return;
+      }
+
+      const isWeekly = payload.source === "weekly_recurring";
+      const errors = isWeekly ? validateAgentWeeklyAvailabilityPayload(payload) : validateAgentDailyOverridePayload(payload);
+      if (errors.length > 0) {
+        badRequest(res, "Invalid agent availability payload", errors);
+        return;
+      }
+
+      let startsAt;
+      let endsAt;
+      try {
+        startsAt = isWeekly
+          ? zonedTimeToUtc(payload.fromDate || payload.date, payload.startTime, payload.timezone)
+          : zonedTimeToUtc(payload.date, payload.startTime, payload.timezone);
+        endsAt = isWeekly
+          ? zonedTimeToUtc(payload.fromDate || payload.date, payload.endTime, payload.timezone)
+          : zonedTimeToUtc(payload.date, payload.endTime, payload.timezone);
+      } catch (error) {
+        if (handleLocalTimeValidationError(res, error)) {
+          return;
+        }
+        throw error;
+      }
+
+      let result;
+      try {
+        result = await pool.query(
+          `UPDATE "AgentAvailabilitySlots"
+              SET starts_at = $2::timestamptz,
+                  ends_at = $3::timestamptz,
+                  timezone = $4,
+                  status = COALESCE($5, status),
+                  notes = COALESCE($6, notes)
+            WHERE id = $1::uuid`,
+          [
+            slotId,
+            startsAt.toISOString(),
+            endsAt.toISOString(),
+            payload.timezone,
+            payload.status || null,
+            payload.notes || null
+          ]
+        );
+      } catch (error) {
+        if (handleAvailabilityConflictError(res, error, "Conflicting agent availability update")) {
+          return;
+        }
+        throw error;
+      }
+
+      if (result.rowCount === 0) {
+        notFound(res);
+        return;
+      }
+
+      json(res, 200, { updated: true });
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      const access = await requireRole(req, res, [roles.admin]);
+      if (!access) {
+        return;
+      }
+
+      const result = await pool.query(`DELETE FROM "AgentAvailabilitySlots" WHERE id = $1::uuid`, [slotId]);
+      if (result.rowCount === 0) {
+        notFound(res);
+        return;
+      }
+
+      json(res, 200, { deleted: true });
+      return;
+    }
+  }
+
   notFound(res);
 }
 
@@ -2399,5 +3851,9 @@ export function setRouteTestOverrides(overrides = {}) {
 export function resetRouteTestOverrides() {
   routeTestOverrides = null;
 }
+
+export const __testables = {
+  fetchUnitAgentSlotCandidates
+};
 
 export { server };

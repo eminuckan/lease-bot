@@ -4,10 +4,10 @@ INSERT INTO "PlatformAccounts" (id, platform, account_name, account_external_id,
 VALUES
   (
     '11111111-1111-1111-1111-111111111111',
-    'zillow',
+    'leasebreak',
     'Downtown Leasing Team',
-    'zpa_001',
-    '{"apiKeyRef":"env:ZILLOW_API_KEY"}'::jsonb
+    'lb_001',
+    '{"apiKeyRef":"env:LEASEBREAK_API_KEY"}'::jsonb
   )
 ON CONFLICT (platform, account_external_id) DO UPDATE SET
   account_name = EXCLUDED.account_name,
@@ -63,7 +63,7 @@ VALUES
     '44444444-4444-4444-4444-444444444444',
     '33333333-3333-3333-3333-333333333333',
     '11111111-1111-1111-1111-111111111111',
-    'listing_4b_zpa_001',
+    'listing_4b_lb_001',
     'active',
     245000,
     CURRENT_DATE,
@@ -112,7 +112,7 @@ VALUES
     '11111111-1111-1111-1111-111111111111',
     '44444444-4444-4444-4444-444444444444',
     '22222222-2222-2222-2222-222222222222',
-    'thread_zpa_001_abc',
+    'thread_lb_001_abc',
     'Jamie Tenant',
     '{"email":"jamie.tenant@example.com"}'::jsonb,
     'open',
@@ -231,5 +231,56 @@ VALUES
     'seed_applied',
     '{"source":"packages/db/seeds/001_basic_seed.sql"}'::jsonb
   );
+
+INSERT INTO "ShowingAppointments" (
+  id,
+  idempotency_key,
+  platform_account_id,
+  conversation_id,
+  unit_id,
+  listing_id,
+  agent_id,
+  starts_at,
+  ends_at,
+  timezone,
+  status,
+  source,
+  external_booking_ref,
+  notes,
+  metadata
+)
+VALUES
+  (
+    'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    'seed-booking-thread-lb-001',
+    '11111111-1111-1111-1111-111111111111',
+    '66666666-6666-6666-6666-666666666666',
+    '33333333-3333-3333-3333-333333333333',
+    '44444444-4444-4444-4444-444444444444',
+    '22222222-2222-2222-2222-222222222222',
+    date_trunc('day', NOW()) + INTERVAL '2 day' + INTERVAL '17 hours',
+    date_trunc('day', NOW()) + INTERVAL '2 day' + INTERVAL '17 hours 30 minutes',
+    'America/Chicago',
+    'confirmed',
+    'seed',
+    'seed-ext-booking-001',
+    'Seeded booked showing for agent panel.',
+    '{"leadSelection":true}'::jsonb
+  )
+ON CONFLICT (idempotency_key) DO UPDATE SET
+  platform_account_id = EXCLUDED.platform_account_id,
+  conversation_id = EXCLUDED.conversation_id,
+  unit_id = EXCLUDED.unit_id,
+  listing_id = EXCLUDED.listing_id,
+  agent_id = EXCLUDED.agent_id,
+  starts_at = EXCLUDED.starts_at,
+  ends_at = EXCLUDED.ends_at,
+  timezone = EXCLUDED.timezone,
+  status = EXCLUDED.status,
+  source = EXCLUDED.source,
+  external_booking_ref = EXCLUDED.external_booking_ref,
+  notes = EXCLUDED.notes,
+  metadata = EXCLUDED.metadata,
+  updated_at = NOW();
 
 COMMIT;

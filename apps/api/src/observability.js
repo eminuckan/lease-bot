@@ -53,9 +53,29 @@ export async function fetchObservabilitySnapshot(client, { windowHours = 24, aud
                 AND created_at >= NOW() - make_interval(hours => $1::int)
             ) AS ai_replies_skipped,
             COUNT(*) FILTER (
+              WHERE action = 'ai_reply_escalated'
+                AND created_at >= NOW() - make_interval(hours => $1::int)
+            ) AS ai_escalations,
+            COUNT(*) FILTER (
               WHERE action = 'ai_reply_error'
                 AND created_at >= NOW() - make_interval(hours => $1::int)
             ) AS ai_reply_errors,
+            COUNT(*) FILTER (
+              WHERE action = 'platform_dispatch_error'
+                AND created_at >= NOW() - make_interval(hours => $1::int)
+            ) AS platform_dispatch_errors,
+            COUNT(*) FILTER (
+              WHERE action = 'showing_booking_created'
+                AND created_at >= NOW() - make_interval(hours => $1::int)
+            ) AS booking_created,
+            COUNT(*) FILTER (
+              WHERE action = 'showing_booking_replayed'
+                AND created_at >= NOW() - make_interval(hours => $1::int)
+            ) AS booking_replayed,
+            COUNT(*) FILTER (
+              WHERE action IN ('showing_booking_conflict', 'showing_booking_idempotency_conflict', 'showing_booking_failed')
+                AND created_at >= NOW() - make_interval(hours => $1::int)
+            ) AS booking_conflicts,
             COUNT(*) FILTER (
               WHERE action IN ('inbox_message_approved', 'inbox_message_rejected')
                 AND created_at >= NOW() - make_interval(hours => $1::int)
@@ -67,10 +87,49 @@ export async function fetchObservabilitySnapshot(client, { windowHours = 24, aud
     [windowHours]
   );
 
+  const escalationReasonResult = await client.query(
+    `SELECT COALESCE(NULLIF(details->>'escalationReasonCode', ''), NULLIF(details#>>'{decision,reason}', ''), 'unknown') AS reason_code,
+            COUNT(*)::int AS count
+       FROM "AuditLogs"
+      WHERE action IN ('ai_reply_decision', 'ai_reply_escalated', 'ai_reply_skipped')
+        AND created_at >= NOW() - make_interval(hours => $1::int)
+        AND (
+          COALESCE(details->>'escalationReasonCode', details#>>'{decision,reason}', '') LIKE 'escalate_%'
+          OR details->>'outcome' = 'escalate'
+        )
+      GROUP BY reason_code
+      ORDER BY count DESC, reason_code ASC`,
+    [windowHours]
+  );
+
+  const bookingSignalsResult = await client.query(
+    `SELECT COALESCE(sa.status, 'unknown') AS status,
+            COALESCE(pa.platform, 'unknown') AS platform,
+            COUNT(*)::int AS count
+       FROM "ShowingAppointments" sa
+       LEFT JOIN "PlatformAccounts" pa ON pa.id = sa.platform_account_id
+      WHERE sa.created_at >= NOW() - make_interval(hours => $1::int)
+      GROUP BY status, platform
+      ORDER BY count DESC, status ASC, platform ASC`,
+    [windowHours]
+  );
+
+  const platformFailureResult = await client.query(
+    `SELECT COALESCE(NULLIF(details->>'platform', ''), 'unknown') AS platform,
+            action,
+            COUNT(*)::int AS count
+       FROM "AuditLogs"
+      WHERE created_at >= NOW() - make_interval(hours => $1::int)
+        AND action IN ('platform_dispatch_error', 'ai_reply_error', 'api_error', 'showing_booking_failed')
+      GROUP BY platform, action
+      ORDER BY count DESC, platform ASC, action ASC`,
+    [windowHours]
+  );
+
   const recentErrorsResult = await client.query(
     `SELECT id, actor_type, actor_id, entity_type, entity_id, action, details, created_at
        FROM "AuditLogs"
-      WHERE action IN ('ai_reply_error', 'api_error', 'inbox_message_error', 'inbox_draft_error')
+      WHERE action IN ('ai_reply_error', 'api_error', 'inbox_message_error', 'inbox_draft_error', 'platform_dispatch_error', 'showing_booking_failed')
       ORDER BY created_at DESC
       LIMIT $1`,
     [errorLimit]
@@ -86,6 +145,16 @@ export async function fetchObservabilitySnapshot(client, { windowHours = 24, aud
 
   const messages = metricsResult.rows[0] || {};
   const audit = auditMetricsResult.rows[0] || {};
+  const bookingByStatus = {};
+  const bookingByPlatform = {};
+
+  for (const row of bookingSignalsResult.rows) {
+    const status = row.status || "unknown";
+    const platform = row.platform || "unknown";
+    const count = Number(row.count || 0);
+    bookingByStatus[status] = (bookingByStatus[status] || 0) + count;
+    bookingByPlatform[platform] = (bookingByPlatform[platform] || 0) + count;
+  }
 
   return {
     windowHours,
@@ -99,9 +168,31 @@ export async function fetchObservabilitySnapshot(client, { windowHours = 24, aud
       aiDecisions: Number(audit.ai_decisions || 0),
       aiRepliesCreated: Number(audit.ai_replies_created || 0),
       aiRepliesSkipped: Number(audit.ai_replies_skipped || 0),
+      aiEscalations: Number(audit.ai_escalations || 0),
       aiReplyErrors: Number(audit.ai_reply_errors || 0),
+      platformDispatchErrors: Number(audit.platform_dispatch_errors || 0),
+      bookingCreated: Number(audit.booking_created || 0),
+      bookingReplayed: Number(audit.booking_replayed || 0),
+      bookingConflicts: Number(audit.booking_conflicts || 0),
       adminReviewDecisions: Number(audit.admin_review_decisions || 0),
       auditEvents: Number(audit.audit_events || 0)
+    },
+    signals: {
+      escalationReasons: escalationReasonResult.rows.map((row) => ({
+        reasonCode: row.reason_code || "unknown",
+        count: Number(row.count || 0)
+      })),
+      bookingsByStatus: Object.entries(bookingByStatus)
+        .map(([status, count]) => ({ status, count }))
+        .sort((a, b) => b.count - a.count || a.status.localeCompare(b.status)),
+      bookingsByPlatform: Object.entries(bookingByPlatform)
+        .map(([platform, count]) => ({ platform, count }))
+        .sort((a, b) => b.count - a.count || a.platform.localeCompare(b.platform)),
+      platformFailures: platformFailureResult.rows.map((row) => ({
+        platform: row.platform || "unknown",
+        action: row.action,
+        count: Number(row.count || 0)
+      }))
     },
     recentErrors: recentErrorsResult.rows.map((row) => ({
       id: row.id,

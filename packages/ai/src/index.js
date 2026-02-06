@@ -3,6 +3,7 @@ export {
   detectFollowUp,
   renderTemplate,
   decideReplyEligibility,
-  runReplyPipeline
+  runReplyPipeline,
+  runReplyPipelineWithAI
 } from "./pipeline.js";
 export { evaluateGuardrails } from "./guardrails.js";

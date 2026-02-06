@@ -1,0 +1,165 @@
+name: Critical Path Gates
+
+on:
+  push:
+    paths:
+      - ".github/workflows/critical-gates.yml"
+      - "apps/api/**"
+      - "apps/worker/**"
+      - "apps/web/**"
+      - "packages/**"
+      - "package.json"
+      - "package-lock.json"
+      - "docs/qa/**"
+      - "!docs/qa/evidence/ci-run-metadata.md"
+      - "docs/release/**"
+  pull_request:
+    paths:
+      - ".github/workflows/critical-gates.yml"
+      - "apps/api/**"
+      - "apps/worker/**"
+      - "apps/web/**"
+      - "packages/**"
+      - "package.json"
+      - "package-lock.json"
+      - "docs/qa/**"
+      - "!docs/qa/evidence/ci-run-metadata.md"
+      - "docs/release/**"
+
+permissions:
+  contents: read
+
+jobs:
+  api-tests:
+    name: API Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run API tests
+        run: set -o pipefail && npm test -w @lease-bot/api | tee api-tests.log
+
+      - name: Upload API evidence log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-tests-log
+          path: api-tests.log
+          retention-days: 14
+
+  worker-tests:
+    name: Worker Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run worker tests
+        run: set -o pipefail && npm test -w @lease-bot/worker | tee worker-tests.log
+
+      - name: Upload worker evidence log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-tests-log
+          path: worker-tests.log
+          retention-days: 14
+
+  web-smoke:
+    name: Web Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run web smoke
+        run: set -o pipefail && npm run smoke -w @lease-bot/web | tee web-smoke.log
+
+      - name: Upload web smoke evidence log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-smoke-log
+          path: web-smoke.log
+          retention-days: 14
+
+  ci-run-metadata:
+    name: CI Run Metadata
+    runs-on: ubuntu-latest
+    needs:
+      - api-tests
+      - worker-tests
+      - web-smoke
+    if: always()
+    steps:
+      - name: Generate metadata evidence
+        env:
+          API_STATUS: ${{ needs.api-tests.result }}
+          WORKER_STATUS: ${{ needs.worker-tests.result }}
+          WEB_STATUS: ${{ needs.web-smoke.result }}
+        run: |
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          cat <<EOF > ci-run-metadata.md
+          # CI Run Metadata
+
+          ## Release candidate
+
+          - Date (UTC): ${{ github.run_started_at }}
+          - Branch/Ref: ${{ github.ref_name }}
+          - Commit SHA: ${{ github.sha }}
+          - Workflow: ${{ github.workflow }}
+          - Run ID: ${{ github.run_id }}
+          - Run URL: ${run_url}
+
+          ## Required workflow checks
+
+          | Check | Job status | Evidence artifact |
+          | --- | --- | --- |
+          | API tests (\`npm test -w @lease-bot/api\`) | ${API_STATUS} | api-tests-log |
+          | Worker tests (\`npm test -w @lease-bot/worker\`) | ${WORKER_STATUS} | worker-tests-log |
+          | Web smoke (\`npm run smoke -w @lease-bot/web\`) | ${WEB_STATUS} | web-smoke-log |
+
+          ## Notes
+
+          - Branch protection gate result: record from repository checks UI
+          - Any reruns needed: fill during release review
+          - Incident/ref links: fill if any check fails or is rerun
+          EOF
+
+      - name: Upload CI metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-run-metadata
+          path: ci-run-metadata.md
+          retention-days: 14

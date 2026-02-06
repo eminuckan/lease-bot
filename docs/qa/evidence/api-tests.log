@@ -1,0 +1,176 @@
+
+> @lease-bot/api@0.1.0 test
+> node --test
+
+TAP version 13
+# Subtest: rejects nonexistent local times during DST spring-forward gap
+ok 1 - rejects nonexistent local times during DST spring-forward gap
+  ---
+  duration_ms: 26.281408
+  type: 'test'
+  ...
+# Subtest: uses deterministic earlier instant for ambiguous DST fall-back time
+ok 2 - uses deterministic earlier instant for ambiguous DST fall-back time
+  ---
+  duration_ms: 21.265232
+  type: 'test'
+  ...
+# Subtest: normalizes message status defaults across directions
+ok 3 - normalizes message status defaults across directions
+  ---
+  duration_ms: 1.476221
+  type: 'test'
+  ...
+# Subtest: parses template variables from csv and array
+ok 4 - parses template variables from csv and array
+  ---
+  duration_ms: 1.276269
+  type: 'test'
+  ...
+# Subtest: renders template with unit and slot context
+ok 5 - renders template with unit and slot context
+  ---
+  duration_ms: 0.312502
+  type: 'test'
+  ...
+# Subtest: /api/admin/observability enforces auth guard behavior
+ok 6 - /api/admin/observability enforces auth guard behavior
+  ---
+  duration_ms: 7.986207
+  type: 'test'
+  ...
+# Subtest: /api/admin/observability clamps and handles query params
+ok 7 - /api/admin/observability clamps and handles query params
+  ---
+  duration_ms: 0.959017
+  type: 'test'
+  ...
+# Subtest: /api/admin/observability returns snapshot payload from route wiring
+ok 8 - /api/admin/observability returns snapshot payload from route wiring
+  ---
+  duration_ms: 1.464291
+  type: 'test'
+  ...
+# Subtest: parsePositiveInt clamps values and falls back on invalid values
+ok 9 - parsePositiveInt clamps values and falls back on invalid values
+  ---
+  duration_ms: 1.871153
+  type: 'test'
+  ...
+# Subtest: builds observability payload with core metrics and recent feeds
+ok 10 - builds observability payload with core metrics and recent feeds
+  ---
+  duration_ms: 10.570826
+  type: 'test'
+  ...
+# Subtest: R14: booking endpoint creates showing appointment and returns created payload
+ok 11 - R14: booking endpoint creates showing appointment and returns created payload
+  ---
+  duration_ms: 22.198689
+  type: 'test'
+  ...
+# Subtest: R14: booking endpoint is idempotent and replays existing appointment
+ok 12 - R14: booking endpoint is idempotent and replays existing appointment
+  ---
+  duration_ms: 2.104375
+  type: 'test'
+  ...
+# Subtest: R14: idempotency mismatch returns explicit 409 conflict payload
+ok 13 - R14: idempotency mismatch returns explicit 409 conflict payload
+  ---
+  duration_ms: 7.373862
+  type: 'test'
+  ...
+# Subtest: R14: agent cannot book for another agent
+ok 14 - R14: agent cannot book for another agent
+  ---
+  duration_ms: 0.481773
+  type: 'test'
+  ...
+# Subtest: R16: booking conflict returns alternatives and admin review signal
+ok 15 - R16: booking conflict returns alternatives and admin review signal
+  ---
+  duration_ms: 0.765095
+  type: 'test'
+  ...
+# Subtest: R8: booking failure emits showing_booking_failed audit action
+ok 16 - R8: booking failure emits showing_booking_failed audit action
+  ---
+  duration_ms: 0.790986
+  type: 'test'
+  ...
+# Subtest: R15: showing appointments list validates filters and returns scoped items
+ok 17 - R15: showing appointments list validates filters and returns scoped items
+  ---
+  duration_ms: 1.117898
+  type: 'test'
+  ...
+# Subtest: R15: agent cannot query showing appointments for another agent
+ok 18 - R15: agent cannot query showing appointments for another agent
+  ---
+  duration_ms: 0.294452
+  type: 'test'
+  ...
+# Subtest: R15: agent listing endpoint hard-scopes queries to session agent id
+ok 19 - R15: agent listing endpoint hard-scopes queries to session agent id
+  ---
+  duration_ms: 0.542104
+  type: 'test'
+  ...
+# Subtest: R14/R16: migration declares idempotency and anti-double-booking constraints
+ok 20 - R14/R16: migration declares idempotency and anti-double-booking constraints
+  ---
+  duration_ms: 16.222956
+  type: 'test'
+  ...
+# Subtest: R11: candidate query uses assignment mode gating and priority ordering
+ok 21 - R11: candidate query uses assignment mode gating and priority ordering
+  ---
+  duration_ms: 20.527727
+  type: 'test'
+  ...
+# Subtest: R12: candidate query anti-joins unavailable overlaps
+ok 22 - R12: candidate query anti-joins unavailable overlaps
+  ---
+  duration_ms: 0.239432
+  type: 'test'
+  ...
+# Subtest: R16: API rejects conflicting active priority assignments
+ok 23 - R16: API rejects conflicting active priority assignments
+  ---
+  duration_ms: 4.125409
+  type: 'test'
+  ...
+# Subtest: R16: migration declares overlap/priority conflict-safety constraints
+ok 24 - R16: migration declares overlap/priority conflict-safety constraints
+  ---
+  duration_ms: 21.856277
+  type: 'test'
+  ...
+# Subtest: /api/units/:id/agent-slot-candidates enforces auth
+ok 25 - /api/units/:id/agent-slot-candidates enforces auth
+  ---
+  duration_ms: 9.7615
+  type: 'test'
+  ...
+# Subtest: /api/units/:id/agent-slot-candidates validates timezone
+ok 26 - /api/units/:id/agent-slot-candidates validates timezone
+  ---
+  duration_ms: 21.063001
+  type: 'test'
+  ...
+# Subtest: /api/units/:id/agent-slot-candidates returns candidate payload
+ok 27 - /api/units/:id/agent-slot-candidates returns candidate payload
+  ---
+  duration_ms: 1.525341
+  type: 'test'
+  ...
+1..27
+# tests 27
+# suites 0
+# pass 27
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 685.454302

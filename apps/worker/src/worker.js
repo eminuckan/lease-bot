@@ -1,7 +1,9 @@
 import { fileURLToPath } from "node:url";
 
 import { createClient } from "../../../packages/db/src/index.js";
-import { createPostgresQueueAdapter, processPendingMessages } from "../../../packages/integrations/src/index.js";
+import { createPostgresQueueAdapter } from "../../../packages/integrations/src/index.js";
+
+import { processPendingMessagesWithAi } from "./decision-pipeline.js";
 
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS || 15000);
 const queueBatchSize = Number(process.env.WORKER_QUEUE_BATCH_SIZE || 20);
@@ -25,6 +27,10 @@ export async function runWorkerCycle(client, logger = console) {
   });
 
   return result;
+}
+
+export async function processPendingMessages(params) {
+  return processPendingMessagesWithAi(params);
 }
 
 export async function startWorker() {

@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/worker.js",
-    "start": "node src/worker.js",
+    "dev": "node --env-file=../../.env --watch src/worker.js",
+    "start": "node --env-file=../../.env src/worker.js",
     "build": "node -e \"console.log('worker build: no-op')\"",
     "test": "node --test"
   }
