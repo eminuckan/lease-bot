@@ -1,90 +1,33 @@
-import { createRoute } from "@tanstack/react-router";
-import { AssignmentPanel } from "../features/assignment-panel";
-import { InboxPanel } from "../features/inbox-panel";
-import { PlatformControlsPanel } from "../features/platform-controls-panel";
-import { ShowingsPanel } from "../features/showings-panel";
-import { Button } from "../components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Navigate, Outlet, createRoute } from "@tanstack/react-router";
 import { useLeaseBot } from "../state/lease-bot-context";
 import { appLayoutRoute } from "./app-layout-route";
-import { useState } from "react";
 
-function AdminPage() {
+function AdminLayout() {
   const { isAdmin } = useLeaseBot();
-  const [panel, setPanel] = useState("inbox");
 
   if (!isAdmin) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Admin Protected Route</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-red-700">403: your role does not allow admin access.</p>
-        </CardContent>
-      </Card>
+      <div className="flex flex-col items-center justify-center gap-2 py-16">
+        <p className="text-sm font-medium text-destructive-text">403 -- your role does not allow admin access.</p>
+      </div>
     );
   }
 
-  return (
-    <section className="space-y-3">
-      <Card>
-        <CardHeader>
-          <CardTitle>Admin View</CardTitle>
-          <CardDescription>Modular route with mobile action clusters and platform policy controls</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4" role="tablist" aria-label="Admin panels" data-testid="admin-panel-switcher">
-            <Button
-              type="button"
-              role="tab"
-              aria-selected={panel === "inbox"}
-              variant={panel === "inbox" ? "default" : "outline"}
-              onClick={() => setPanel("inbox")}
-            >
-              Inbox
-            </Button>
-            <Button
-              type="button"
-              role="tab"
-              aria-selected={panel === "assignment"}
-              variant={panel === "assignment" ? "default" : "outline"}
-              onClick={() => setPanel("assignment")}
-            >
-              Assignment
-            </Button>
-            <Button
-              type="button"
-              role="tab"
-              aria-selected={panel === "showings"}
-              variant={panel === "showings" ? "default" : "outline"}
-              onClick={() => setPanel("showings")}
-            >
-              Showings
-            </Button>
-            <Button
-              type="button"
-              role="tab"
-              aria-selected={panel === "platform"}
-              variant={panel === "platform" ? "default" : "outline"}
-              onClick={() => setPanel("platform")}
-            >
-              Platform controls
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+  return <Outlet />;
+}
 
-      {panel === "inbox" ? <InboxPanel /> : null}
-      {panel === "assignment" ? <AssignmentPanel /> : null}
-      {panel === "showings" ? <ShowingsPanel /> : null}
-      {panel === "platform" ? <PlatformControlsPanel /> : null}
-    </section>
-  );
+function AdminIndex() {
+  return <Navigate to="/admin/inbox" />;
 }
 
 export const adminRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/admin",
-  component: AdminPage
+  component: AdminLayout,
+});
+
+export const adminIndexRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: "/",
+  component: AdminIndex,
 });

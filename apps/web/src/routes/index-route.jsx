@@ -7,11 +7,11 @@ function IndexPage() {
   if (!user) {
     return <Navigate to="/login" />;
   }
-  return <Navigate to={user.role === "admin" ? "/admin" : "/agent"} />;
+  return <Navigate to={user.role === "admin" ? "/admin/inbox" : "/agent/inbox"} />;
 }
 
 export const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: IndexPage
+  component: IndexPage,
 });

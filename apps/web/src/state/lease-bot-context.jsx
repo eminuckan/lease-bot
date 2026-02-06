@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
 const defaultPlatformAccountId = "11111111-1111-1111-1111-111111111111";
@@ -228,10 +229,12 @@ export function LeaseBotProvider({ children }) {
         body: JSON.stringify(updates)
       });
       setMessage(`Platform policy updated: ${updated.platform}`);
+      toast.success("Platform policy updated", { description: updated.platform });
       await refreshAdminPlatformData();
       return updated;
     } catch (error) {
       setApiError(error.message);
+      toast.error("Platform policy update failed", { description: error.message });
       return null;
     }
   }
@@ -285,13 +288,17 @@ export function LeaseBotProvider({ children }) {
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        setAuthError(parseApiError(data, "Authentication failed"));
+        const errorMessage = parseApiError(data, "Authentication failed");
+        setAuthError(errorMessage);
+        toast.error("Sign in failed", { description: errorMessage });
         return null;
       }
 
+      toast.success("Signed in successfully");
       return refreshSession();
     } catch {
       setAuthError("Authentication request failed");
+      toast.error("Sign in failed", { description: "Authentication request failed" });
       return null;
     }
   }
@@ -310,23 +317,32 @@ export function LeaseBotProvider({ children }) {
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        setAuthError(parseApiError(data, "Registration failed"));
+        const errorMessage = parseApiError(data, "Registration failed");
+        setAuthError(errorMessage);
+        toast.error("Registration failed", { description: errorMessage });
         return null;
       }
 
+      toast.success("Account created");
       return refreshSession();
     } catch {
       setAuthError("Registration request failed");
+      toast.error("Registration failed", { description: "Registration request failed" });
       return null;
     }
   }
 
   async function signOut() {
-    await fetch(`${apiBaseUrl}/api/auth/sign-out`, {
-      method: "POST",
-      credentials: "include"
-    });
-    setUser(null);
+    try {
+      await fetch(`${apiBaseUrl}/api/auth/sign-out`, {
+        method: "POST",
+        credentials: "include"
+      });
+      setUser(null);
+      toast.success("Signed out");
+    } catch {
+      toast.error("Sign out failed");
+    }
   }
 
   async function saveAssignment(event) {
@@ -343,9 +359,11 @@ export function LeaseBotProvider({ children }) {
         })
       });
       setMessage("Unit assignment updated");
+      toast.success("Unit assignment updated");
       await refreshData();
     } catch (error) {
       setApiError(error.message);
+      toast.error("Assignment update failed", { description: error.message });
     }
   }
 
@@ -366,10 +384,12 @@ export function LeaseBotProvider({ children }) {
         })
       });
       setMessage(`Message ${result.status}`);
+      toast.success("Draft processed", { description: `Message ${result.status}` });
       setDraftForm((current) => ({ ...current, body: "" }));
       await Promise.all([refreshInbox(selectedInboxStatus), refreshConversationDetail(selectedConversationId)]);
     } catch (error) {
       setApiError(error.message);
+      toast.error("Draft action failed", { description: error.message });
     }
   }
 
@@ -379,9 +399,11 @@ export function LeaseBotProvider({ children }) {
     try {
       await request(`/api/inbox/messages/${messageId}/approve`, { method: "POST" });
       setMessage("Message approved and sent");
+      toast.success("Message approved and sent");
       await Promise.all([refreshInbox(selectedInboxStatus), refreshConversationDetail(selectedConversationId)]);
     } catch (error) {
       setApiError(error.message);
+      toast.error("Approve action failed", { description: error.message });
     }
   }
 
@@ -391,9 +413,11 @@ export function LeaseBotProvider({ children }) {
     try {
       await request(`/api/inbox/messages/${messageId}/reject`, { method: "POST" });
       setMessage("Message moved to hold");
+      toast.success("Message moved to hold");
       await Promise.all([refreshInbox(selectedInboxStatus), refreshConversationDetail(selectedConversationId)]);
     } catch (error) {
       setApiError(error.message);
+      toast.error("Reject action failed", { description: error.message });
     }
   }
 

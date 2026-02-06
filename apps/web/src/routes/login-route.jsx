@@ -3,13 +3,14 @@ import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { ThemeToggle } from "../components/theme-toggle";
 import { useLeaseBot } from "../state/lease-bot-context";
 import { rootRoute } from "./root-route";
 import { useState } from "react";
 
 function LoginPage() {
   const router = useRouter();
-  const { user, health, apiBaseUrl, authError, setAuthError, signInEmail, signUpEmail } = useLeaseBot();
+  const { user, health, apiBaseUrl, setAuthError, signInEmail, signUpEmail } = useLeaseBot();
   const [formMode, setFormMode] = useState("login");
   const [email, setEmail] = useState("agent@example.com");
   const [password, setPassword] = useState("password1234");
@@ -33,16 +34,27 @@ function LoginPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-md items-center px-3 py-6">
-      <Card className="w-full">
+    <main className="mx-auto grid min-h-screen w-full max-w-5xl items-center gap-5 px-4 py-8 sm:px-6 lg:grid-cols-[1.1fr_1fr]">
+      <section className="space-y-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Lease Bot</p>
+        <h2 className="text-2xl font-semibold leading-tight sm:text-3xl">Modern leasing ops, focused workflow.</h2>
+        <p className="max-w-md text-sm text-muted-foreground">
+          Sign in to access agent and admin tools with the same auth and role routing already in place.
+        </p>
+      </section>
+
+      <Card className="w-full space-y-1">
         <CardHeader>
+          <div className="mb-2 flex justify-end">
+            <ThemeToggle />
+          </div>
           <CardTitle className="text-xl">Lease Bot Login</CardTitle>
-          <CardDescription>
+          <CardDescription className="text-sm">
             API health: {health} · Base URL: {apiBaseUrl}
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid grid-cols-2 gap-2">
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-2.5">
             <Button
               type="button"
               variant={formMode === "login" ? "default" : "outline"}
@@ -59,20 +71,20 @@ function LoginPage() {
             </Button>
           </div>
 
-          <form onSubmit={submitAuth} className="space-y-3">
+          <form onSubmit={submitAuth} className="space-y-4" aria-label="Authentication form">
             {formMode === "register" ? (
-              <Label>
+              <Label className="grid gap-1.5 text-sm">
                 Name
                 <Input value={name} onChange={(event) => setName(event.target.value)} required />
               </Label>
             ) : null}
 
-            <Label>
+            <Label className="grid gap-1.5 text-sm">
               Email
               <Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
             </Label>
 
-            <Label>
+            <Label className="grid gap-1.5 text-sm">
               Password
               <Input
                 type="password"
@@ -87,7 +99,6 @@ function LoginPage() {
               {formMode === "register" ? "Create account" : "Sign in"}
             </Button>
           </form>
-          {authError ? <p className="text-sm text-red-700">{authError}</p> : null}
         </CardContent>
       </Card>
     </main>

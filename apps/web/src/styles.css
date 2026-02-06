@@ -1,19 +1,82 @@
 @import "tailwindcss";
 
 :root {
-  --background: oklch(0.98 0.01 95);
-  --foreground: oklch(0.24 0.02 255);
-  --card: oklch(0.99 0.01 95);
-  --card-foreground: oklch(0.24 0.02 255);
-  --primary: oklch(0.58 0.16 30);
-  --primary-foreground: oklch(0.99 0.01 95);
-  --secondary: oklch(0.93 0.02 95);
-  --secondary-foreground: oklch(0.32 0.03 255);
-  --muted: oklch(0.95 0.01 95);
-  --muted-foreground: oklch(0.47 0.02 255);
-  --border: oklch(0.86 0.02 95);
-  --input: oklch(0.86 0.02 95);
-  --ring: oklch(0.58 0.16 30);
+  --background: oklch(0.99 0.002 106.45);
+  --foreground: oklch(0.22 0.007 56.18);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.007 56.18);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.22 0.007 56.18);
+  --primary: oklch(0.32 0.01 56.26);
+  --primary-foreground: oklch(0.98 0.001 106.42);
+  --secondary: oklch(0.96 0.004 56.3);
+  --secondary-foreground: oklch(0.26 0.007 56.22);
+  --muted: oklch(0.96 0.003 56.32);
+  --muted-foreground: oklch(0.48 0.01 56.2);
+  --accent: oklch(0.94 0.005 56.26);
+  --accent-foreground: oklch(0.26 0.007 56.22);
+  --destructive: oklch(0.57 0.2 27.4);
+  --destructive-foreground: oklch(0.98 0 0);
+  --destructive-text: oklch(0.44 0.16 27.3);
+  --border: oklch(0.89 0.005 56.2);
+  --input: oklch(0.89 0.005 56.2);
+  --ring: oklch(0.56 0.01 56.24);
+  --status-pending: oklch(0.94 0.03 87);
+  --status-pending-foreground: oklch(0.38 0.06 80);
+  --status-pending-border: oklch(0.83 0.03 85);
+  --status-confirmed: oklch(0.93 0.03 150);
+  --status-confirmed-foreground: oklch(0.36 0.06 152);
+  --status-confirmed-border: oklch(0.82 0.03 150);
+  --status-cancelled: oklch(0.94 0.03 27.5);
+  --status-cancelled-foreground: oklch(0.44 0.16 27.3);
+  --status-cancelled-border: oklch(0.83 0.03 28);
+  --status-completed: oklch(0.92 0.03 245);
+  --status-completed-foreground: oklch(0.34 0.06 245);
+  --status-completed-border: oklch(0.81 0.03 245);
+  --radius: 0.65rem;
+  --font-sans: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+}
+
+.dark {
+  --background: oklch(0.18 0.004 56.27);
+  --foreground: oklch(0.95 0.002 106.41);
+  --card: oklch(0.23 0.006 56.23);
+  --card-foreground: oklch(0.95 0.002 106.41);
+  --popover: oklch(0.23 0.006 56.23);
+  --popover-foreground: oklch(0.95 0.002 106.41);
+  --primary: oklch(0.89 0.004 56.22);
+  --primary-foreground: oklch(0.22 0.007 56.18);
+  --secondary: oklch(0.3 0.005 56.2);
+  --secondary-foreground: oklch(0.95 0.002 106.41);
+  --muted: oklch(0.28 0.005 56.22);
+  --muted-foreground: oklch(0.74 0.006 56.27);
+  --accent: oklch(0.32 0.006 56.22);
+  --accent-foreground: oklch(0.95 0.002 106.41);
+  --destructive: oklch(0.69 0.17 27.1);
+  --destructive-foreground: oklch(0.95 0.002 106.41);
+  --destructive-text: oklch(0.83 0.12 26.8);
+  --border: oklch(1 0 0 / 14%);
+  --input: oklch(1 0 0 / 18%);
+  --ring: oklch(0.75 0.01 56.22);
+  --status-pending: oklch(0.35 0.03 87);
+  --status-pending-foreground: oklch(0.94 0.02 90);
+  --status-pending-border: oklch(0.55 0.03 87);
+  --status-confirmed: oklch(0.34 0.03 150);
+  --status-confirmed-foreground: oklch(0.92 0.02 150);
+  --status-confirmed-border: oklch(0.53 0.03 150);
+  --status-cancelled: oklch(0.34 0.03 28);
+  --status-cancelled-foreground: oklch(0.93 0.03 27);
+  --status-cancelled-border: oklch(0.54 0.03 28);
+  --status-completed: oklch(0.33 0.03 245);
+  --status-completed-foreground: oklch(0.92 0.02 245);
+  --status-completed-border: oklch(0.52 0.03 245);
 }
 
 @theme inline {
@@ -21,22 +84,127 @@
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-text: var(--destructive-text);
+  --color-status-pending: var(--status-pending);
+  --color-status-pending-foreground: var(--status-pending-foreground);
+  --color-status-pending-border: var(--status-pending-border);
+  --color-status-confirmed: var(--status-confirmed);
+  --color-status-confirmed-foreground: var(--status-confirmed-foreground);
+  --color-status-confirmed-border: var(--status-confirmed-border);
+  --color-status-cancelled: var(--status-cancelled);
+  --color-status-cancelled-foreground: var(--status-cancelled-foreground);
+  --color-status-cancelled-border: var(--status-cancelled-border);
+  --color-status-completed: var(--status-completed);
+  --color-status-completed-foreground: var(--status-completed-foreground);
+  --color-status-completed-border: var(--status-completed-border);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 0.125rem);
+  --radius-md: calc(var(--radius) - 0.0625rem);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 0.125rem);
 }
 
-body {
-  @apply min-h-screen bg-background text-foreground antialiased;
-  background-image: radial-gradient(circle at top, rgba(246, 207, 173, 0.35), transparent 45%);
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  html {
+    color-scheme: light;
+    font-family: var(--font-sans);
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply min-h-screen bg-background text-foreground antialiased;
+    line-height: 1.5;
+    background-image: radial-gradient(circle at top right, oklch(0.88 0.01 106.44 / 0.45), transparent 42%);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    letter-spacing: -0.01em;
+  }
 }
 
 #root {
   @apply min-h-screen;
+}
+
+.rdp-leasebot {
+  --rdp-accent-color: var(--primary);
+  --rdp-accent-background-color: color-mix(in oklch, var(--primary) 15%, transparent);
+  --rdp-day_button-border-radius: 0.45rem;
+  --rdp-day_button-width: 2.75rem;
+  --rdp-day_button-height: 2.75rem;
+  --rdp-day-height: 2.75rem;
+  --rdp-day-width: 2.75rem;
+  --rdp-months-gap: 0.5rem;
+  margin: 0;
+}
+
+.rdp-leasebot .rdp-month_caption {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.rdp-leasebot .rdp-weekday {
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  font-weight: 600;
+}
+
+.rdp-leasebot .rdp-day_button {
+  border: 1px solid transparent;
+  font-size: 0.85rem;
+}
+
+.rdp-leasebot .rdp-day_button:hover {
+  background: var(--accent);
+}
+
+.rdp-leasebot .rdp-selected .rdp-day_button {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.rdp-leasebot .rdp-today:not(.rdp-selected) .rdp-day_button {
+  border-color: var(--border);
+  background: var(--muted);
+}
+
+.rdp-leasebot .rdp-day_available:not(.rdp-selected) .rdp-day_button {
+  border-color: var(--status-confirmed-border);
+  background: color-mix(in oklch, var(--status-confirmed) 72%, var(--background));
+  color: var(--status-confirmed-foreground);
+}
+
+.rdp-leasebot .rdp-day_empty:not(.rdp-selected) .rdp-day_button {
+  border-color: var(--border);
+  background: color-mix(in oklch, var(--muted) 70%, var(--background));
+  color: var(--muted-foreground);
 }

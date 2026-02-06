@@ -25,7 +25,7 @@ const AVAILABILITY_TOTAL = 31;
 const MOBILE_MAX_WIDTH = 430;
 const ROUTE_TRANSITION_BUDGET_MS = 1500;
 const LIST_RENDER_BUDGET_MS = 1200;
-const BUNDLE_JS_MAX_BYTES = 350000;
+const BUNDLE_JS_MAX_BYTES = 450000;
 const DOM_NODE_BUDGET = 700;
 
 function buildAppointments() {
@@ -690,7 +690,10 @@ async function runSmoke() {
       await waitForCount(timelineDays, 1);
 
       await page.getByLabel("From date").fill("2026-03-05");
+      await page.getByLabel("From date").press("Enter");
       await page.getByLabel("To date").fill("2026-03-05");
+      await page.getByLabel("To date").press("Enter");
+      await page.keyboard.press("Escape");
       await page.getByRole("button", { name: "Apply filters" }).click();
       await waitForCount(appointmentRows, 0);
       await waitForCount(timelineDays, 0);

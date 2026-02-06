@@ -1723,7 +1723,7 @@ async function fetchPlatformHealthSnapshot(client) {
               )
                 FROM "AuditLogs" al
                WHERE al.action = 'platform_policy_updated'
-                 AND al.entity_id = pa.id
+                 AND al.entity_id = pa.id::text
                  AND (
                    al.details->>'isActive' = 'false'
                    OR al.details#>>'{updates,isActive}' = 'false'

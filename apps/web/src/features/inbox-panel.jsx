@@ -1,6 +1,7 @@
+import { RefreshCw, ChevronLeft, ChevronRight, Send } from "lucide-react";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Label } from "../components/ui/label";
 import { Select } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
@@ -12,6 +13,7 @@ const INBOX_PAGE_SIZE = 20;
 
 export function InboxPanel() {
   const {
+    apiError,
     inboxItems,
     selectedInboxStatus,
     setSelectedInboxStatus,
@@ -23,9 +25,10 @@ export function InboxPanel() {
     createDraft,
     approveMessage,
     rejectMessage,
-    refreshInbox
+    refreshInbox,
   } = useLeaseBot();
   const [inboxPage, setInboxPage] = useState(1);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const inboxPageCount = Math.max(1, Math.ceil(inboxItems.length / INBOX_PAGE_SIZE));
   const pagedInboxItems = useMemo(() => {
     const start = (inboxPage - 1) * INBOX_PAGE_SIZE;
@@ -42,133 +45,212 @@ export function InboxPanel() {
     }
   }, [inboxPage, inboxPageCount]);
 
-  return (
-    <section className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-base font-semibold">Inbox + Conversation</h3>
-        <Badge>Status flow: new, draft, sent, hold</Badge>
-      </div>
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,18rem)_1fr]">
-        <Card>
-          <CardHeader>
-            <CardTitle>Inbox list</CardTitle>
-            <CardDescription>Card fallback for mobile screens</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <Label>
-              Filter
-              <Select value={selectedInboxStatus} onChange={(event) => setSelectedInboxStatus(event.target.value)}>
-                <option value="all">all</option>
-                <option value="new">new</option>
-                <option value="draft">draft</option>
-                <option value="sent">sent</option>
-                <option value="hold">hold</option>
-              </Select>
-            </Label>
-            <Button type="button" variant="outline" className="w-full" onClick={() => refreshInbox(selectedInboxStatus, false)}>
-              Refresh inbox
-            </Button>
-            <div className="space-y-2" data-testid="inbox-card-list">
-              {pagedInboxItems.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  data-testid="inbox-row"
-                  className={`w-full rounded-md border p-3 text-left ${
-                    selectedConversationId === item.id ? "border-primary bg-secondary" : "border-border"
-                  }`}
-                  onClick={() => setSelectedConversationId(item.id)}
-                >
-                  <div className="text-sm font-semibold">{item.leadName || item.externalThreadId || "Unknown lead"}</div>
-                  <div className="text-xs text-muted-foreground">{item.unit || "No unit assigned"}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">Latest: {item.latestMessage || "n/a"}</div>
-                </button>
-              ))}
-              {inboxItems.length === 0 ? <p className="text-sm text-muted-foreground">No inbox rows yet.</p> : null}
-              {inboxItems.length > 0 ? (
-                <div className="space-y-2 rounded-md border border-border p-2" data-testid="inbox-pagination-summary">
-                  <p className="text-xs text-muted-foreground">
-                    Showing {pagedInboxItems.length} of {inboxItems.length} inbox threads (page {inboxPage} of {inboxPageCount})
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={inboxPage <= 1}
-                      onClick={() => setInboxPage((current) => Math.max(1, current - 1))}
-                    >
-                      Previous page
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={inboxPage >= inboxPageCount}
-                      onClick={() => setInboxPage((current) => Math.min(inboxPageCount, current + 1))}
-                    >
-                      Next page
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          </CardContent>
-        </Card>
+  async function handleRefreshInbox() {
+    setIsRefreshing(true);
+    try {
+      await refreshInbox(selectedInboxStatus, false);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
 
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Inbox</h2>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={handleRefreshInbox}
+          disabled={isRefreshing}
+        >
+          <RefreshCw className={`mr-2 h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+          Refresh
+        </Button>
+      </div>
+
+      {apiError ? (
+        <p
+          className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-text"
+          role="alert"
+        >
+          {apiError}
+        </p>
+      ) : null}
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,20rem)_1fr]">
+        {/* Thread list */}
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Select
+              value={selectedInboxStatus}
+              onChange={(event) => setSelectedInboxStatus(event.target.value)}
+              className="flex-1"
+            >
+              <option value="all">All threads</option>
+              <option value="new">New</option>
+              <option value="draft">Draft</option>
+              <option value="sent">Sent</option>
+              <option value="hold">Hold</option>
+            </Select>
+            <Badge variant="secondary">{inboxItems.length}</Badge>
+          </div>
+
+          <div className="space-y-1" data-testid="inbox-card-list">
+            {pagedInboxItems.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                data-testid="inbox-row"
+                className={`w-full cursor-pointer rounded-lg border p-3 text-left transition-colors ${
+                  selectedConversationId === item.id
+                    ? "border-primary/50 bg-primary/5"
+                    : "border-transparent hover:bg-muted"
+                }`}
+                onClick={() => setSelectedConversationId(item.id)}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-sm font-medium">
+                    {item.leadName || item.externalThreadId || "Unknown lead"}
+                  </span>
+                </div>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {item.unit || "No unit assigned"}
+                </p>
+                <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">
+                  {item.latestMessage || "No messages yet"}
+                </p>
+              </button>
+            ))}
+            {inboxItems.length === 0 ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">
+                No conversations yet.
+              </p>
+            ) : null}
+          </div>
+
+          {inboxItems.length > INBOX_PAGE_SIZE ? (
+            <div className="flex items-center justify-between pt-1" data-testid="inbox-pagination-summary">
+              <p className="text-xs text-muted-foreground">
+                Page {inboxPage} of {inboxPageCount}
+              </p>
+              <div className="flex gap-1">
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  className="h-7 w-7"
+                  disabled={inboxPage <= 1}
+                  onClick={() => setInboxPage((current) => Math.max(1, current - 1))}
+                  aria-label="Previous page"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="outline"
+                  className="h-7 w-7"
+                  disabled={inboxPage >= inboxPageCount}
+                  onClick={() => setInboxPage((current) => Math.min(inboxPageCount, current + 1))}
+                  aria-label="Next page"
+                >
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        {/* Conversation detail */}
         <Card>
           <CardHeader>
-            <CardTitle>Conversation detail</CardTitle>
-            <CardDescription>One-handed actions with sticky composer</CardDescription>
+            <CardTitle className="text-base">
+              {conversationDetail
+                ? conversationDetail.conversation.leadName || "Conversation"
+                : "Conversation"}
+            </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="space-y-4">
             {conversationDetail ? (
               <>
-                <div className="rounded-md bg-muted p-3 text-sm">
-                  <p className="font-semibold">{conversationDetail.conversation.leadName || "Unknown lead"}</p>
-                  <p className="text-muted-foreground">Unit: {conversationDetail.conversation.unit || "n/a"}</p>
+                <div className="rounded-md bg-muted/50 p-3 text-sm">
                   <p className="text-muted-foreground">
-                    Variables: unit={conversationDetail.templateContext?.unit || ""} slot={conversationDetail.templateContext?.slot || ""}
+                    Unit: {conversationDetail.conversation.unit || "n/a"}
                   </p>
+                  {conversationDetail.templateContext?.slot ? (
+                    <p className="text-muted-foreground">
+                      Slot: {conversationDetail.templateContext.slot}
+                    </p>
+                  ) : null}
                 </div>
+
                 <div className="space-y-2">
+                  {(conversationDetail.messages || []).length === 0 ? (
+                    <p className="py-4 text-center text-sm text-muted-foreground">
+                      No messages in this thread.
+                    </p>
+                  ) : null}
                   {(conversationDetail.messages || []).map((item) => (
-                    <div key={item.id} className="rounded-md border border-border p-3">
-                      <p className="text-sm font-medium">
-                        {item.direction} [{item.status}]
+                    <div
+                      key={item.id}
+                      className={`rounded-lg border p-3 ${
+                        item.direction === "outbound"
+                          ? "ml-4 border-primary/20 bg-primary/5"
+                          : "mr-4"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-medium capitalize text-muted-foreground">
+                          {item.direction}
+                        </span>
+                        <Badge variant="secondary" className="text-[10px]">
+                          {item.status}
+                        </Badge>
+                      </div>
+                      <p className="mt-1.5 text-sm">{item.body}</p>
+                      <p className="mt-1.5 text-[11px] text-muted-foreground">
+                        {formatTimestamp(item.createdAt)}
                       </p>
-                      <p className="mt-1 text-sm">{item.body}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">{formatTimestamp(item.createdAt)}</p>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {item.status === "draft" ? (
-                          <>
-                            <Button type="button" size="sm" onClick={() => approveMessage(item.id)}>
-                              Approve
-                            </Button>
-                            <Button type="button" size="sm" variant="outline" onClick={() => rejectMessage(item.id)}>
-                              Reject
-                            </Button>
-                          </>
-                        ) : null}
-                        {item.status === "hold" ? (
+                      {item.status === "draft" || item.status === "hold" ? (
+                        <div className="mt-2 flex gap-2">
                           <Button type="button" size="sm" onClick={() => approveMessage(item.id)}>
                             Approve
                           </Button>
-                        ) : null}
-                      </div>
+                          {item.status === "draft" ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => rejectMessage(item.id)}
+                            >
+                              Reject
+                            </Button>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
 
-                <form onSubmit={createDraft} className="sticky bottom-0 z-10 space-y-2 rounded-md border border-border bg-card p-3">
-                  <Label>
-                    Template
+                <form
+                  onSubmit={createDraft}
+                  className="sticky bottom-0 z-10 space-y-3 rounded-lg border border-border bg-card p-3"
+                >
+                  <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
                     <Select
                       value={draftForm.templateId}
                       onChange={(event) => {
                         const templateId = event.target.value;
-                        const template = (conversationDetail.templates || []).find((item) => item.id === templateId);
-                        setDraftForm((current) => ({ ...current, templateId, body: template ? template.body : current.body }));
+                        const template = (conversationDetail.templates || []).find(
+                          (item) => item.id === templateId
+                        );
+                        setDraftForm((current) => ({
+                          ...current,
+                          templateId,
+                          body: template ? template.body : current.body,
+                        }));
                       }}
                     >
                       <option value="">No template</option>
@@ -178,27 +260,29 @@ export function InboxPanel() {
                         </option>
                       ))}
                     </Select>
-                  </Label>
-                  <Label>
-                    Message body
-                    <Textarea
-                      rows={3}
-                      placeholder="Optional manual body"
-                      value={draftForm.body}
-                      onChange={(event) => setDraftForm((current) => ({ ...current, body: event.target.value }))}
-                    />
-                  </Label>
-                  <Button type="submit" className="w-full">
-                    Create draft / send
+                  </div>
+                  <Textarea
+                    rows={2}
+                    placeholder="Type your message..."
+                    value={draftForm.body}
+                    onChange={(event) =>
+                      setDraftForm((current) => ({ ...current, body: event.target.value }))
+                    }
+                  />
+                  <Button type="submit" className="w-full" size="sm">
+                    <Send className="mr-2 h-3.5 w-3.5" />
+                    Send draft
                   </Button>
                 </form>
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">Select a conversation to see detail.</p>
+              <p className="py-12 text-center text-sm text-muted-foreground">
+                Select a conversation to view details.
+              </p>
             )}
           </CardContent>
         </Card>
       </div>
-    </section>
+    </div>
   );
 }
