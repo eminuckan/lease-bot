@@ -8,9 +8,10 @@ import {
   LogOut,
   PanelLeftClose,
   PanelLeft,
-  Activity,
+  Menu,
+  X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ThemeToggle } from "../components/theme-toggle";
 import { Button } from "../components/ui/button";
 import { useLeaseBot } from "../state/lease-bot-context";
@@ -34,6 +35,7 @@ function AppLayout() {
   const matches = useMatches();
   const { user, health, signOut, isAdmin } = useLeaseBot();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   if (!user) {
     return <Navigate to="/login" />;
@@ -46,14 +48,104 @@ function AppLayout() {
 
   function handleNavigate(to) {
     router.navigate({ to });
+    setMobileMenuOpen(false);
+  }
+
+  // Close mobile menu on route change
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [currentPath]);
+
+  // Lock body scroll when mobile menu is open
+  useEffect(() => {
+    if (mobileMenuOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => { document.body.style.overflow = ""; };
+  }, [mobileMenuOpen]);
+
+  function renderNavItems(showLabels) {
+    return (
+      <>
+        {showAdminNav ? (
+          <>
+            {showLabels ? (
+              <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Admin
+              </p>
+            ) : null}
+            {adminNav.map((item) => {
+              const Icon = item.icon;
+              const isActive = currentPath === item.to || currentPath.startsWith(item.to + "/");
+              return (
+                <button
+                  key={item.to}
+                  type="button"
+                  onClick={() => handleNavigate(item.to)}
+                  className={cn(
+                    "flex w-full cursor-pointer items-center rounded-md text-sm font-medium transition-colors",
+                    showLabels ? "gap-2 px-2 py-2" : "justify-center p-2.5",
+                    isActive
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  )}
+                  title={showLabels ? undefined : item.label}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {showLabels ? <span className="truncate">{item.label}</span> : null}
+                </button>
+              );
+            })}
+          </>
+        ) : null}
+
+        {showAdminNav && showAgentNav ? (
+          <div className="my-2 border-t border-border" />
+        ) : null}
+
+        {showAgentNav ? (
+          <>
+            {showLabels ? (
+              <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Agent
+              </p>
+            ) : null}
+            {agentNav.map((item) => {
+              const Icon = item.icon;
+              const isActive = currentPath === item.to || currentPath.startsWith(item.to + "/");
+              return (
+                <button
+                  key={item.to}
+                  type="button"
+                  onClick={() => handleNavigate(item.to)}
+                  className={cn(
+                    "flex w-full cursor-pointer items-center rounded-md text-sm font-medium transition-colors",
+                    showLabels ? "gap-2 px-2 py-2" : "justify-center p-2.5",
+                    isActive
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  )}
+                  title={showLabels ? undefined : item.label}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {showLabels ? <span className="truncate">{item.label}</span> : null}
+                </button>
+              );
+            })}
+          </>
+        ) : null}
+      </>
+    );
   }
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
-      {/* Sidebar */}
+      {/* Desktop sidebar - hidden on mobile */}
       <aside
         className={cn(
-          "flex flex-col border-r border-border bg-card transition-all duration-200",
+          "hidden flex-col border-r border-border bg-card transition-all duration-200 md:flex",
           sidebarOpen ? "w-56" : "w-14"
         )}
       >
@@ -75,71 +167,7 @@ function AppLayout() {
 
         {/* Navigation */}
         <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3" aria-label="Main navigation">
-          {showAdminNav ? (
-            <>
-              {sidebarOpen ? (
-                <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                  Admin
-                </p>
-              ) : null}
-              {adminNav.map((item) => {
-                const Icon = item.icon;
-                const isActive = currentPath === item.to || currentPath.startsWith(item.to + "/");
-                return (
-                  <button
-                    key={item.to}
-                    type="button"
-                    onClick={() => handleNavigate(item.to)}
-                    className={cn(
-                      "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm font-medium transition-colors",
-                      isActive
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                    )}
-                    title={sidebarOpen ? undefined : item.label}
-                  >
-                    <Icon className="h-4 w-4 shrink-0" />
-                    {sidebarOpen ? <span className="truncate">{item.label}</span> : null}
-                  </button>
-                );
-              })}
-            </>
-          ) : null}
-
-          {showAdminNav && showAgentNav ? (
-            <div className="my-2 border-t border-border" />
-          ) : null}
-
-          {showAgentNav ? (
-            <>
-              {sidebarOpen ? (
-                <p className="mb-1 px-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                  Agent
-                </p>
-              ) : null}
-              {agentNav.map((item) => {
-                const Icon = item.icon;
-                const isActive = currentPath === item.to || currentPath.startsWith(item.to + "/");
-                return (
-                  <button
-                    key={item.to}
-                    type="button"
-                    onClick={() => handleNavigate(item.to)}
-                    className={cn(
-                      "flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm font-medium transition-colors",
-                      isActive
-                        ? "bg-primary text-primary-foreground"
-                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                    )}
-                    title={sidebarOpen ? undefined : item.label}
-                  >
-                    <Icon className="h-4 w-4 shrink-0" />
-                    {sidebarOpen ? <span className="truncate">{item.label}</span> : null}
-                  </button>
-                );
-              })}
-            </>
-          ) : null}
+          {renderNavItems(sidebarOpen)}
         </nav>
 
         {/* Bottom section */}
@@ -159,11 +187,63 @@ function AppLayout() {
         </div>
       </aside>
 
+      {/* Mobile overlay */}
+      {mobileMenuOpen ? (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          onClick={() => setMobileMenuOpen(false)}
+        />
+      ) : null}
+
+      {/* Mobile drawer */}
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-border bg-card transition-transform duration-200 md:hidden",
+          mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
+        )}
+      >
+        <div className="flex h-14 items-center justify-between border-b border-border px-4">
+          <span className="text-sm font-semibold tracking-tight">Lease Bot</span>
+          <button
+            type="button"
+            onClick={() => setMobileMenuOpen(false)}
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3" aria-label="Mobile navigation">
+          {renderNavItems(true)}
+        </nav>
+
+        <div className="border-t border-border p-3">
+          <div className="flex items-center gap-2">
+            <div
+              className={cn(
+                "h-2 w-2 shrink-0 rounded-full",
+                health === "ok" ? "bg-emerald-500" : health === "loading" ? "bg-amber-500" : "bg-red-500"
+              )}
+            />
+            <span className="text-[11px] text-muted-foreground">API {health}</span>
+          </div>
+        </div>
+      </aside>
+
       {/* Main content area */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top header bar */}
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card/80 px-4 backdrop-blur">
           <div className="flex items-center gap-3">
+            {/* Mobile hamburger */}
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen(true)}
+              className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground md:hidden"
+              aria-label="Open menu"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
             <div>
               <p className="text-sm font-medium">{user.email}</p>
               <p className="text-xs text-muted-foreground capitalize">{user.role}</p>
@@ -189,10 +269,8 @@ function AppLayout() {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6">
-          <div className="mx-auto max-w-6xl">
-            <Outlet />
-          </div>
+        <main className="flex-1 overflow-y-auto">
+          <Outlet />
         </main>
       </div>
     </div>

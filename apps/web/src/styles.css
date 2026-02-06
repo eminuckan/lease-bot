@@ -208,3 +208,21 @@
   background: color-mix(in oklch, var(--muted) 70%, var(--background));
   color: var(--muted-foreground);
 }
+
+/* Shrink calendar cells on small screens to prevent overflow */
+@media (max-width: 374px) {
+  .rdp-leasebot {
+    --rdp-day_button-width: 2rem;
+    --rdp-day_button-height: 2rem;
+    --rdp-day-height: 2rem;
+    --rdp-day-width: 2rem;
+  }
+
+  .rdp-leasebot .rdp-day_button {
+    font-size: 0.75rem;
+  }
+
+  .rdp-leasebot .rdp-month_caption {
+    font-size: 0.8rem;
+  }
+}
