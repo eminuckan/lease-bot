@@ -53,14 +53,14 @@ export function PlatformControlsPanel() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <span className="rounded-full bg-muted px-3 py-1 font-medium">{globalPlatformSendMode}</span>
+            <div className="rounded-full bg-muted px-3 py-1 font-medium">{globalPlatformSendMode}</div>
             <span>Last snapshot: {formatHealthTimestamp(platformHealthGeneratedAt)}</span>
           </div>
           <button
             type="button"
             onClick={handleRefreshPlatformControls}
             disabled={isRefreshing}
-            className="rounded-xl bg-muted p-2.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            className="rounded-md bg-muted p-2.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
             title="Refresh"
           >
             <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
@@ -70,7 +70,7 @@ export function PlatformControlsPanel() {
         {/* Platform accounts */}
         <div className="space-y-4" data-testid="platform-controls-list">
           {platformPolicies.length === 0 ? (
-            <div className="rounded-2xl bg-card px-4 py-12 text-center text-sm text-muted-foreground shadow-card">
+            <div className="rounded-lg bg-card px-4 py-12 text-center text-sm text-muted-foreground shadow-card">
               No platform accounts configured.
             </div>
           ) : null}
@@ -84,13 +84,13 @@ export function PlatformControlsPanel() {
               <div
                 key={item.id}
                 data-testid="platform-policy-row"
-                className="rounded-2xl bg-card shadow-card"
+                className="rounded-lg bg-card shadow-card"
               >
                 {/* Account header */}
                 <div className="flex items-center justify-between p-5">
                   <div className="flex items-center gap-3">
                     <div className={cn(
-                      "flex h-10 w-10 items-center justify-center rounded-xl",
+                      "flex h-10 w-10 items-center justify-center rounded-md",
                       item.isActive ? "bg-primary/10" : "bg-muted"
                     )}>
                       <Zap className={cn(
@@ -118,7 +118,7 @@ export function PlatformControlsPanel() {
                 {/* Controls */}
                 <div className="space-y-1 px-3 pb-3">
                   <div className="grid gap-1 sm:grid-cols-2">
-                    <div className="flex items-center justify-between rounded-xl bg-muted px-4 py-3">
+                    <div className="flex items-center justify-between rounded-md bg-muted px-4 py-3">
                       <Label htmlFor={`platform-active-${item.id}`} className="text-sm">
                         Platform active
                       </Label>
@@ -132,7 +132,7 @@ export function PlatformControlsPanel() {
                         }
                       />
                     </div>
-                    <div className="flex items-center gap-3 rounded-xl bg-muted px-4 py-3">
+                    <div className="flex items-center gap-3 rounded-md bg-muted px-4 py-3">
                       <Label className="shrink-0 text-sm">Send mode</Label>
                       <Select
                         value={item.sendModeOverride || "inherit"}
@@ -157,19 +157,19 @@ export function PlatformControlsPanel() {
 
                   {/* Health stats */}
                   <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
-                    <div className="rounded-xl bg-muted px-4 py-2.5">
+                    <div className="rounded-md bg-muted px-4 py-2.5">
                       <p className="text-[11px] text-muted-foreground">Effective mode</p>
                       <p className="text-xs font-medium">{health?.sendMode || item.sendMode}</p>
                     </div>
-                    <div className="rounded-xl bg-muted px-4 py-2.5">
+                    <div className="rounded-md bg-muted px-4 py-2.5">
                       <p className="text-[11px] text-muted-foreground">Last ingest</p>
                       <p className="text-xs font-medium">{formatHealthTimestamp(health?.lastSuccessfulIngestAt)}</p>
                     </div>
-                    <div className="rounded-xl bg-muted px-4 py-2.5">
+                    <div className="rounded-md bg-muted px-4 py-2.5">
                       <p className="text-[11px] text-muted-foreground">Last send</p>
                       <p className="text-xs font-medium">{formatHealthTimestamp(health?.lastSuccessfulSendAt)}</p>
                     </div>
-                    <div className={cn("rounded-xl px-4 py-2.5", hasErrors ? "bg-destructive/10" : "bg-muted")}>
+                    <div className={cn("rounded-md px-4 py-2.5", hasErrors ? "bg-destructive/10" : "bg-muted")}>
                       <p className="text-[11px] text-muted-foreground">Errors (24h)</p>
                       <p className={cn("text-xs font-medium", hasErrors && "text-destructive-text")}>
                         {hasErrors ? (
@@ -186,7 +186,8 @@ export function PlatformControlsPanel() {
                 </div>
 
                 {health?.disableReason ? (
-                  <div className="mx-3 mb-3 rounded-xl bg-destructive/10 px-4 py-2.5 text-xs text-destructive-text">
+                  <div className="mx-3 mb-3 flex items-center gap-2 rounded-md border border-destructive/20 bg-destructive/10 px-4 py-3 text-xs font-medium text-destructive-text">
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                     {health.disableReason}
                   </div>
                 ) : null}

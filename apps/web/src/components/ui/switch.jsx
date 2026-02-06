@@ -15,8 +15,8 @@ export const Switch = forwardRef(function Switch(
       data-disabled={disabled ? "true" : undefined}
       disabled={disabled}
       className={cn(
-        "peer inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
-        checked ? "bg-primary" : "bg-muted",
+        "peer inline-flex h-6 w-11 shrink-0 items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+        checked ? "bg-primary" : "bg-border",
         className
       )}
       onClick={() => {
@@ -28,8 +28,8 @@ export const Switch = forwardRef(function Switch(
       <span
         data-state={checked ? "checked" : "unchecked"}
         className={cn(
-          "pointer-events-none block h-5 w-5 rounded-full bg-card shadow-card transition-transform",
-          checked ? "translate-x-5" : "translate-x-0.5"
+          "pointer-events-none block h-5 w-5 rounded-full bg-background shadow-sm transition-transform",
+          checked ? "translate-x-5" : "translate-x-0"
         )}
       />
     </button>

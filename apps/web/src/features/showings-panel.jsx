@@ -103,7 +103,7 @@ export function ShowingsPanel() {
             type="button"
             onClick={handleRefreshShowings}
             disabled={isRefreshing}
-            className="mb-px rounded-xl bg-muted p-2.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+            className="mb-px rounded-md bg-muted p-2.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
             title="Refresh"
           >
             <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
@@ -121,7 +121,7 @@ export function ShowingsPanel() {
               </div>
               <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">{weeklyRules.length}</span>
             </div>
-            <div className="rounded-2xl bg-card shadow-card" data-testid="weekly-rules-card-list">
+            <div className="rounded-lg bg-card shadow-card" data-testid="weekly-rules-card-list">
               {weeklyRules.length === 0 ? (
                 <div className="px-4 py-10 text-center text-sm text-muted-foreground">
                   No recurring rules
@@ -132,7 +132,7 @@ export function ShowingsPanel() {
                     <div
                       key={item.ruleId}
                       data-testid="weekly-rule-row"
-                      className="rounded-xl bg-muted px-4 py-3"
+                      className="rounded-md bg-muted px-4 py-3"
                     >
                       <div className="flex items-center justify-between">
                         <span className="font-mono text-xs text-muted-foreground">{item.ruleId.slice(0, 8)}</span>
@@ -163,7 +163,7 @@ export function ShowingsPanel() {
               </div>
               <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">{availability.length}</span>
             </div>
-            <div className="rounded-2xl bg-card shadow-card" data-testid="availability-card-list">
+            <div className="rounded-lg bg-card shadow-card" data-testid="availability-card-list">
               {availability.length === 0 ? (
                 <div className="px-4 py-10 text-center text-sm text-muted-foreground">
                   No slots loaded
@@ -174,7 +174,7 @@ export function ShowingsPanel() {
                     <div
                       key={item.id}
                       data-testid="availability-row"
-                      className="rounded-xl bg-muted px-4 py-3"
+                      className="rounded-md bg-muted px-4 py-3"
                     >
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-medium">{item.source}</span>

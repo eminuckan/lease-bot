@@ -129,7 +129,7 @@ export function AgentAppointmentsPanel() {
     <div className="p-6">
       <div className="mx-auto max-w-6xl space-y-6">
         {/* Filters bar */}
-        <div className="rounded-2xl bg-card shadow-card">
+        <div className="rounded-lg bg-card shadow-card">
           <div className="grid items-end gap-4 p-5 sm:grid-cols-2 lg:grid-cols-5">
             <div>
               <Label className="text-xs text-muted-foreground">Status</Label>
@@ -172,7 +172,7 @@ export function AgentAppointmentsPanel() {
                 type="date"
                 value={appointmentFilters.fromDate || ""}
                 onChange={(e) => updateFilter("fromDate", e.target.value)}
-                className="mt-1.5 h-9 w-full rounded-xl bg-muted px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1.5 h-9 w-full rounded-md bg-muted px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
             <div>
@@ -181,7 +181,7 @@ export function AgentAppointmentsPanel() {
                 type="date"
                 value={appointmentFilters.toDate || ""}
                 onChange={(e) => updateFilter("toDate", e.target.value)}
-                className="mt-1.5 h-9 w-full rounded-xl bg-muted px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1.5 h-9 w-full rounded-md bg-muted px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               />
             </div>
           </div>
@@ -209,7 +209,7 @@ export function AgentAppointmentsPanel() {
               </div>
               <span className="text-xs text-muted-foreground">{unitContext}</span>
             </div>
-            <div className="rounded-2xl bg-card p-4 shadow-card">
+            <div className="rounded-lg bg-card p-4 shadow-card">
               <Calendar
                 mode="single"
                 month={calendarMonth}
@@ -247,7 +247,7 @@ export function AgentAppointmentsPanel() {
               <h3 className="text-sm font-semibold">Appointments</h3>
               <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">{appointments.length}</span>
             </div>
-            <div className="rounded-2xl bg-card shadow-card" data-testid="agent-appointments-card-list">
+            <div className="rounded-lg bg-card shadow-card" data-testid="agent-appointments-card-list">
               {appointments.length === 0 ? (
                 <div className="px-4 py-12 text-center text-sm text-muted-foreground">
                   No appointments for selected filters.
@@ -255,7 +255,7 @@ export function AgentAppointmentsPanel() {
               ) : (
                 <div className="space-y-1 p-2">
                   {appointments.map((item) => (
-                    <div key={item.id} className="rounded-xl bg-muted px-4 py-3.5" data-testid="agent-appointment-row">
+                    <div key={item.id} className="rounded-md bg-muted px-4 py-3.5" data-testid="agent-appointment-row">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
@@ -304,7 +304,7 @@ export function AgentAppointmentsPanel() {
                     {bucket.items.map((item) => (
                       <div
                         key={item.id}
-                        className="rounded-2xl bg-card px-4 py-3 shadow-card"
+                        className="rounded-lg bg-card px-4 py-3 shadow-card"
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-sm font-medium tabular-nums">

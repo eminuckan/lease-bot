@@ -90,7 +90,7 @@ export function InboxPanel() {
               type="button"
               onClick={handleRefreshInbox}
               disabled={isRefreshing}
-              className="rounded-xl p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+              className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
               title="Refresh"
             >
               <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
@@ -105,7 +105,7 @@ export function InboxPanel() {
                 type="button"
                 data-testid="inbox-row"
                 className={cn(
-                  "flex w-full cursor-pointer flex-col rounded-xl px-3 py-3 text-left transition-all mb-0.5",
+                  "flex w-full cursor-pointer flex-col rounded-md px-3 py-3 text-left transition-all mb-0.5",
                   selectedConversationId === item.id
                     ? "bg-primary text-primary-foreground"
                     : "hover:bg-muted"
@@ -190,7 +190,7 @@ export function InboxPanel() {
                 <button
                   type="button"
                   onClick={() => setMobileShowDetail(false)}
-                  className="rounded-xl p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground md:hidden"
+                  className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground md:hidden"
                   aria-label="Back to threads"
                 >
                   <ArrowLeft className="h-5 w-5" />
@@ -233,7 +233,7 @@ export function InboxPanel() {
                       >
                         <div
                           className={cn(
-                            "max-w-[85%] rounded-2xl px-4 py-3 md:max-w-[75%]",
+                            "max-w-[85%] rounded-lg px-4 py-3 md:max-w-[75%]",
                             isOutbound
                               ? "bg-primary text-primary-foreground"
                               : "bg-card shadow-card"
