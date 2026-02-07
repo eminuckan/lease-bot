@@ -4,6 +4,7 @@ import { toNodeHandler } from "better-auth/node";
 import { Pool } from "pg";
 
 import { getAuth, hasAnyRole, normalizeRole, roles } from "@lease-bot/auth";
+import { createConnectorRegistry } from "../../../packages/integrations/src/index.js";
 import { LocalTimeValidationError, formatInTimezone, zonedTimeToUtc } from "./availability-timezone.js";
 import {
   extractVariablesFromBody,
@@ -25,6 +26,7 @@ if (!databaseUrl) {
 }
 
 const pool = new Pool({ connectionString: databaseUrl });
+const connectorRegistry = createConnectorRegistry();
 
 const allowedOrigins = new Set(
   (process.env.BETTER_AUTH_TRUSTED_ORIGINS || process.env.WEB_BASE_URL || "http://localhost:5173")
@@ -144,6 +146,14 @@ function enforceAgentSelfScope(res, access, requestedAgentId) {
   }
 
   return sessionAgentId;
+}
+
+function isConversationInAgentScope(conversation, agentId) {
+  if (!conversation || !agentId) {
+    return false;
+  }
+
+  return conversation.assignedAgentId === agentId || conversation.followUpOwnerAgentId === agentId;
 }
 
 function badRequest(res, message, details = null) {
@@ -551,7 +561,37 @@ function validateAgentDailyOverridePayload(payload) {
   return errors;
 }
 
-const showingAppointmentStatuses = new Set(["pending", "confirmed", "cancelled", "completed"]);
+const showingAppointmentStatuses = new Set(["pending", "confirmed", "reschedule_requested", "cancelled", "completed", "no_show"]);
+const conversationWorkflowStates = new Set(["lead", "showing", "follow_up_1", "follow_up_2", "outcome"]);
+const conversationWorkflowOutcomes = new Set([
+  "not_interested",
+  "wants_reschedule",
+  "no_reply",
+  "showing_confirmed",
+  "general_question",
+  "human_required",
+  "no_show",
+  "completed"
+]);
+const followUpStages = new Set(["follow_up_1", "follow_up_2"]);
+const followUpStatuses = new Set(["pending", "completed", "cancelled"]);
+
+const workflowStateTransitionMap = {
+  lead: new Set(["lead", "showing", "follow_up_1", "outcome"]),
+  showing: new Set(["showing", "follow_up_1", "outcome"]),
+  follow_up_1: new Set(["follow_up_1", "follow_up_2", "outcome"]),
+  follow_up_2: new Set(["follow_up_2", "outcome"]),
+  outcome: new Set(["outcome", "lead"])
+};
+
+const showingStateTransitionMap = {
+  pending: new Set(["pending", "confirmed", "reschedule_requested", "cancelled", "no_show"]),
+  confirmed: new Set(["confirmed", "reschedule_requested", "cancelled", "completed", "no_show"]),
+  reschedule_requested: new Set(["reschedule_requested", "pending", "confirmed", "cancelled", "no_show"]),
+  cancelled: new Set(["cancelled"]),
+  completed: new Set(["completed"]),
+  no_show: new Set(["no_show"])
+};
 
 function isIsoDateTime(value) {
   if (typeof value !== "string") {
@@ -592,13 +632,285 @@ function validateShowingBookingPayload(payload) {
     errors.push("timezone must be a valid IANA timezone");
   }
   if (payload.status !== undefined && !showingAppointmentStatuses.has(payload.status)) {
-    errors.push("status must be one of pending, confirmed, cancelled, completed");
+    errors.push("status must be one of pending, confirmed, reschedule_requested, cancelled, completed, no_show");
   }
   if (payload.metadata !== undefined && (payload.metadata === null || Array.isArray(payload.metadata) || typeof payload.metadata !== "object")) {
     errors.push("metadata must be an object");
   }
 
   return errors;
+}
+
+function isAllowedTransition(map, fromState, toState) {
+  if (toState === undefined || toState === null) {
+    return true;
+  }
+  if (fromState === null || fromState === undefined) {
+    return true;
+  }
+  const allowed = map[fromState];
+  if (!allowed) {
+    return false;
+  }
+  return allowed.has(toState);
+}
+
+function normalizeIsoDateTimeOrNull(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  if (!isIsoDateTime(value)) {
+    return null;
+  }
+  return new Date(value).toISOString();
+}
+
+function doesCandidateCoverSelection(candidate, payload) {
+  if (!candidate || candidate.agentId !== payload.agentId) {
+    return false;
+  }
+
+  const candidateStartsAt = new Date(candidate.startsAt).toISOString();
+  const candidateEndsAt = new Date(candidate.endsAt).toISOString();
+  const selectedStartsAt = new Date(payload.startsAt).toISOString();
+  const selectedEndsAt = new Date(payload.endsAt).toISOString();
+
+  return candidateStartsAt <= selectedStartsAt && candidateEndsAt >= selectedEndsAt;
+}
+
+async function validateBookingSlotSelection(client, payload, fetchCandidatesRunner) {
+  const date = payload.startsAt.slice(0, 10);
+  const candidates = await fetchCandidatesRunner(client, payload.unitId, {
+    fromDate: date,
+    toDate: date,
+    timezone: payload.timezone,
+    includePassive: true
+  });
+
+  const hasMatchingCandidate = candidates.some((candidate) => doesCandidateCoverSelection(candidate, payload));
+  return {
+    ok: hasMatchingCandidate,
+    alternatives: candidates
+  };
+}
+
+async function fetchConversationWorkflow(client, conversationId) {
+  const result = await client.query(
+    `SELECT id,
+            assigned_agent_id,
+            workflow_state,
+            workflow_outcome,
+            showing_state,
+            follow_up_stage,
+            follow_up_due_at,
+            follow_up_owner_agent_id,
+            follow_up_status,
+            workflow_updated_at,
+            updated_at
+       FROM "Conversations"
+      WHERE id = $1::uuid
+      LIMIT 1`,
+    [conversationId]
+  );
+
+  if (result.rowCount === 0) {
+    return null;
+  }
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    assignedAgentId: row.assigned_agent_id,
+    workflowState: row.workflow_state,
+    workflowOutcome: row.workflow_outcome,
+    showingState: row.showing_state,
+    followUpStage: row.follow_up_stage,
+    followUpDueAt: row.follow_up_due_at,
+    followUpOwnerAgentId: row.follow_up_owner_agent_id,
+    followUpStatus: row.follow_up_status,
+    workflowUpdatedAt: row.workflow_updated_at,
+    updatedAt: row.updated_at
+  };
+}
+
+async function transitionConversationWorkflow(client, conversationId, payload, access) {
+  const current = await fetchConversationWorkflow(client, conversationId);
+  if (!current) {
+    return { error: "not_found" };
+  }
+
+  if (access.role === roles.agent && !isConversationInAgentScope(current, access.session.user.id)) {
+    return { error: "forbidden" };
+  }
+
+  const errors = [];
+  const requestedState = payload.workflowState;
+  const requestedOutcome = payload.workflowOutcome;
+  const requestedShowingState = payload.showingState;
+  const requestedFollowUpStage = payload.followUpStage;
+  const requestedFollowUpDueAt = payload.followUpDueAt;
+  const requestedFollowUpOwnerAgentId = payload.followUpOwnerAgentId;
+  const requestedFollowUpStatus = payload.followUpStatus;
+
+  if (requestedState !== undefined && !conversationWorkflowStates.has(requestedState)) {
+    errors.push("workflowState must be one of lead, showing, follow_up_1, follow_up_2, outcome");
+  }
+  if (requestedOutcome !== undefined && requestedOutcome !== null && !conversationWorkflowOutcomes.has(requestedOutcome)) {
+    errors.push("workflowOutcome must be one of not_interested, wants_reschedule, no_reply, showing_confirmed, general_question, human_required, no_show, completed");
+  }
+  if (requestedShowingState !== undefined && requestedShowingState !== null && !showingAppointmentStatuses.has(requestedShowingState)) {
+    errors.push("showingState must be one of pending, confirmed, reschedule_requested, cancelled, completed, no_show");
+  }
+  if (requestedFollowUpStage !== undefined && requestedFollowUpStage !== null && !followUpStages.has(requestedFollowUpStage)) {
+    errors.push("followUpStage must be one of follow_up_1, follow_up_2");
+  }
+  if (requestedFollowUpStatus !== undefined && !followUpStatuses.has(requestedFollowUpStatus)) {
+    errors.push("followUpStatus must be one of pending, completed, cancelled");
+  }
+  if (requestedFollowUpOwnerAgentId !== undefined && requestedFollowUpOwnerAgentId !== null && !isUuid(requestedFollowUpOwnerAgentId)) {
+    errors.push("followUpOwnerAgentId must be a UUID");
+  }
+  if (requestedFollowUpDueAt !== undefined && requestedFollowUpDueAt !== null && !isIsoDateTime(requestedFollowUpDueAt)) {
+    errors.push("followUpDueAt must be a valid ISO datetime string");
+  }
+  if (errors.length > 0) {
+    return { error: "validation_error", details: errors };
+  }
+
+  let nextWorkflowState = requestedState ?? current.workflowState;
+  const nextWorkflowOutcome = Object.prototype.hasOwnProperty.call(payload, "workflowOutcome")
+    ? requestedOutcome
+    : current.workflowOutcome;
+  const nextShowingState = Object.prototype.hasOwnProperty.call(payload, "showingState")
+    ? requestedShowingState
+    : current.showingState;
+  const nextFollowUpStage = Object.prototype.hasOwnProperty.call(payload, "followUpStage")
+    ? requestedFollowUpStage
+    : current.followUpStage;
+  const nextFollowUpDueAt = Object.prototype.hasOwnProperty.call(payload, "followUpDueAt")
+    ? normalizeIsoDateTimeOrNull(requestedFollowUpDueAt)
+    : current.followUpDueAt;
+  const nextFollowUpOwnerAgentId = Object.prototype.hasOwnProperty.call(payload, "followUpOwnerAgentId")
+    ? requestedFollowUpOwnerAgentId
+    : current.followUpOwnerAgentId;
+  const nextFollowUpStatus = Object.prototype.hasOwnProperty.call(payload, "followUpStatus")
+    ? requestedFollowUpStatus
+    : current.followUpStatus;
+
+  if (requestedState === undefined && requestedOutcome) {
+    nextWorkflowState = requestedOutcome === "showing_confirmed" ? "showing" : "outcome";
+  }
+  if (requestedState === undefined && requestedFollowUpStage) {
+    nextWorkflowState = requestedFollowUpStage;
+  }
+
+  if (!isAllowedTransition(workflowStateTransitionMap, current.workflowState, nextWorkflowState)) {
+    return {
+      error: "invalid_transition",
+      message: `Invalid workflowState transition from ${current.workflowState} to ${nextWorkflowState}`
+    };
+  }
+  if (!isAllowedTransition(showingStateTransitionMap, current.showingState, nextShowingState)) {
+    return {
+      error: "invalid_transition",
+      message: `Invalid showingState transition from ${current.showingState} to ${nextShowingState}`
+    };
+  }
+
+  if (current.followUpStage === "follow_up_1" && nextFollowUpStage === null) {
+    return { error: "invalid_transition", message: "followUpStage cannot transition from follow_up_1 to null" };
+  }
+  if (current.followUpStage === "follow_up_2" && nextFollowUpStage !== "follow_up_2" && nextWorkflowState !== "outcome") {
+    return { error: "invalid_transition", message: "followUpStage cannot regress after follow_up_2" };
+  }
+  if (nextFollowUpStage === "follow_up_2" && current.followUpStage !== "follow_up_1" && current.followUpStage !== "follow_up_2") {
+    return { error: "invalid_transition", message: "followUpStage follow_up_2 requires follow_up_1 first" };
+  }
+  if (nextFollowUpStage && (!nextFollowUpDueAt || !nextFollowUpOwnerAgentId)) {
+    return {
+      error: "validation_error",
+      details: ["followUpStage requires followUpDueAt and followUpOwnerAgentId"]
+    };
+  }
+
+  const updated = await client.query(
+    `UPDATE "Conversations"
+        SET workflow_state = $2,
+            workflow_outcome = $3,
+            showing_state = $4,
+            follow_up_stage = $5,
+            follow_up_due_at = $6::timestamptz,
+            follow_up_owner_agent_id = $7::uuid,
+            follow_up_status = $8,
+            workflow_updated_at = NOW(),
+            updated_at = NOW()
+      WHERE id = $1::uuid
+      RETURNING id,
+                assigned_agent_id,
+                workflow_state,
+                workflow_outcome,
+                showing_state,
+                follow_up_stage,
+                follow_up_due_at,
+                follow_up_owner_agent_id,
+                follow_up_status,
+                workflow_updated_at,
+                updated_at`,
+    [
+      conversationId,
+      nextWorkflowState,
+      nextWorkflowOutcome,
+      nextShowingState,
+      nextFollowUpStage,
+      nextFollowUpDueAt,
+      nextFollowUpOwnerAgentId,
+      nextFollowUpStatus
+    ]
+  );
+
+  await recordAuditLog(client, {
+    actorType: access.role === roles.admin ? "admin" : "agent",
+    actorId: access.session.user.id,
+    entityType: "conversation",
+    entityId: conversationId,
+    action: "workflow_state_transitioned",
+    details: {
+      previous: {
+        workflowState: current.workflowState,
+        workflowOutcome: current.workflowOutcome,
+        showingState: current.showingState,
+        followUpStage: current.followUpStage,
+        followUpDueAt: current.followUpDueAt,
+        followUpOwnerAgentId: current.followUpOwnerAgentId,
+        followUpStatus: current.followUpStatus
+      },
+      next: {
+        workflowState: nextWorkflowState,
+        workflowOutcome: nextWorkflowOutcome,
+        showingState: nextShowingState,
+        followUpStage: nextFollowUpStage,
+        followUpDueAt: nextFollowUpDueAt,
+        followUpOwnerAgentId: nextFollowUpOwnerAgentId,
+        followUpStatus: nextFollowUpStatus
+      }
+    }
+  });
+
+  return {
+    item: {
+      id: updated.rows[0].id,
+      assignedAgentId: updated.rows[0].assigned_agent_id,
+      workflowState: updated.rows[0].workflow_state,
+      workflowOutcome: updated.rows[0].workflow_outcome,
+      showingState: updated.rows[0].showing_state,
+      followUpStage: updated.rows[0].follow_up_stage,
+      followUpDueAt: updated.rows[0].follow_up_due_at,
+      followUpOwnerAgentId: updated.rows[0].follow_up_owner_agent_id,
+      followUpStatus: updated.rows[0].follow_up_status,
+      workflowUpdatedAt: updated.rows[0].workflow_updated_at,
+      updatedAt: updated.rows[0].updated_at
+    }
+  };
 }
 
 async function withClient(task) {
@@ -1215,16 +1527,16 @@ async function fetchUnitAgentSlotCandidates(client, unitId, { fromDate, toDate, 
                     '[)'
                   )
           )
-          AND NOT EXISTS (
-            SELECT 1
-              FROM "ShowingAppointments" appt
-             WHERE appt.agent_id = ua.agent_id
-               AND appt.status IN ('pending', 'confirmed')
-               AND tstzrange(appt.starts_at, appt.ends_at, '[)')
-                   && tstzrange(
-                     GREATEST(unit_slot.starts_at, agent_slot.starts_at),
-                     LEAST(unit_slot.ends_at, agent_slot.ends_at),
-                     '[)'
+           AND NOT EXISTS (
+             SELECT 1
+               FROM "ShowingAppointments" appt
+              WHERE appt.agent_id = ua.agent_id
+                AND appt.status IN ('pending', 'confirmed', 'reschedule_requested')
+                AND tstzrange(appt.starts_at, appt.ends_at, '[)')
+                    && tstzrange(
+                      GREATEST(unit_slot.starts_at, agent_slot.starts_at),
+                      LEAST(unit_slot.ends_at, agent_slot.ends_at),
+                      '[)'
                    )
           )
           ${fromToPredicate}
@@ -1286,6 +1598,42 @@ function toShowingAppointmentDto(row, displayTimezone = null) {
   };
 }
 
+async function fetchShowingAppointmentByIdempotencyKey(client, idempotencyKey) {
+  const result = await client.query(
+    `SELECT sa.id,
+            sa.idempotency_key,
+            sa.platform_account_id,
+            sa.conversation_id,
+            sa.unit_id,
+            sa.listing_id,
+            sa.agent_id,
+            sa.starts_at,
+            sa.ends_at,
+            sa.timezone,
+            sa.status,
+            sa.source,
+            sa.external_booking_ref,
+            sa.notes,
+            sa.metadata,
+            sa.created_at,
+            sa.updated_at,
+            u.property_name,
+            u.unit_number,
+            a.full_name AS agent_name,
+            c.external_thread_id,
+            c.lead_name
+       FROM "ShowingAppointments" sa
+       JOIN "Units" u ON u.id = sa.unit_id
+       JOIN "Agents" a ON a.id = sa.agent_id
+  LEFT JOIN "Conversations" c ON c.id = sa.conversation_id
+      WHERE sa.idempotency_key = $1
+      LIMIT 1`,
+    [idempotencyKey]
+  );
+
+  return result.rowCount > 0 ? result.rows[0] : null;
+}
+
 function matchesIdempotentBooking(existingRow, payload) {
   return (
     existingRow.platform_account_id === payload.platformAccountId &&
@@ -1296,6 +1644,25 @@ function matchesIdempotentBooking(existingRow, payload) {
     (existingRow.listing_id || null) === (payload.listingId || null) &&
     (existingRow.conversation_id || null) === (payload.conversationId || null)
   );
+}
+
+async function resolveShowingBookingIdempotency(client, payload) {
+  const existing = await fetchShowingAppointmentByIdempotencyKey(client, payload.idempotencyKey.trim());
+  if (!existing) {
+    return null;
+  }
+
+  if (!matchesIdempotentBooking(existing, payload)) {
+    return {
+      error: "idempotency_payload_mismatch",
+      appointment: toShowingAppointmentDto(existing)
+    };
+  }
+
+  return {
+    appointment: toShowingAppointmentDto(existing),
+    idempotentReplay: true
+  };
 }
 
 async function fetchShowingAppointments(client, { agentId = null, status = null, unitId = null, fromDate = null, toDate = null, timezone = null }) {
@@ -1365,40 +1732,8 @@ async function createShowingAppointment(client, payload) {
 
   await client.query("BEGIN");
   try {
-    const existing = await client.query(
-      `SELECT sa.id,
-              sa.idempotency_key,
-              sa.platform_account_id,
-              sa.conversation_id,
-              sa.unit_id,
-              sa.listing_id,
-              sa.agent_id,
-              sa.starts_at,
-              sa.ends_at,
-              sa.timezone,
-              sa.status,
-              sa.source,
-              sa.external_booking_ref,
-              sa.notes,
-              sa.metadata,
-              sa.created_at,
-              sa.updated_at,
-              u.property_name,
-              u.unit_number,
-              a.full_name AS agent_name,
-              c.external_thread_id,
-              c.lead_name
-         FROM "ShowingAppointments" sa
-         JOIN "Units" u ON u.id = sa.unit_id
-         JOIN "Agents" a ON a.id = sa.agent_id
-    LEFT JOIN "Conversations" c ON c.id = sa.conversation_id
-        WHERE sa.idempotency_key = $1
-        LIMIT 1`,
-      [payload.idempotencyKey.trim()]
-    );
-
-    if (existing.rowCount > 0) {
-      const existingRow = existing.rows[0];
+    const existingRow = await fetchShowingAppointmentByIdempotencyKey(client, payload.idempotencyKey.trim());
+    if (existingRow) {
       if (!matchesIdempotentBooking(existingRow, payload)) {
         await client.query("ROLLBACK");
         return {
@@ -1506,41 +1841,10 @@ async function createShowingAppointment(client, payload) {
     await client.query("ROLLBACK");
 
     if (error?.code === "23505") {
-      const replay = await client.query(
-        `SELECT sa.id,
-                sa.idempotency_key,
-                sa.platform_account_id,
-                sa.conversation_id,
-                sa.unit_id,
-                sa.listing_id,
-                sa.agent_id,
-                sa.starts_at,
-                sa.ends_at,
-                sa.timezone,
-                sa.status,
-                sa.source,
-                sa.external_booking_ref,
-                sa.notes,
-                sa.metadata,
-                sa.created_at,
-                sa.updated_at,
-                u.property_name,
-                u.unit_number,
-                a.full_name AS agent_name,
-                c.external_thread_id,
-                c.lead_name
-           FROM "ShowingAppointments" sa
-           JOIN "Units" u ON u.id = sa.unit_id
-           JOIN "Agents" a ON a.id = sa.agent_id
-      LEFT JOIN "Conversations" c ON c.id = sa.conversation_id
-          WHERE sa.idempotency_key = $1
-          LIMIT 1`,
-        [payload.idempotencyKey.trim()]
-      );
-
-      if (replay.rowCount > 0 && matchesIdempotentBooking(replay.rows[0], payload)) {
+      const replay = await fetchShowingAppointmentByIdempotencyKey(client, payload.idempotencyKey.trim());
+      if (replay && matchesIdempotentBooking(replay, payload)) {
         return {
-          appointment: toShowingAppointmentDto(replay.rows[0]),
+          appointment: toShowingAppointmentDto(replay),
           idempotentReplay: true
         };
       }
@@ -1657,6 +1961,30 @@ async function fetchPlatformSendPolicy(client, platformAccountId) {
   };
 }
 
+async function fetchPlatformDispatchAccount(client, platformAccountId) {
+  const result = await client.query(
+    `SELECT id, platform, credentials, is_active, send_mode
+       FROM "PlatformAccounts"
+      WHERE id = $1::uuid
+      LIMIT 1`,
+    [platformAccountId]
+  );
+
+  if (result.rowCount === 0) {
+    return null;
+  }
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    platform: row.platform,
+    credentials: row.credentials || {},
+    isActive: Boolean(row.is_active),
+    sendMode: row.send_mode || globalDefaultSendMode,
+    sendModeOverride: row.send_mode
+  };
+}
+
 function collectGuardrailReviewReasons(metadata) {
   if (!isObject(metadata)) {
     return [];
@@ -1688,6 +2016,7 @@ async function fetchPlatformHealthSnapshot(client) {
             pa.account_external_id,
             pa.is_active,
             pa.send_mode,
+            pa.integration_mode,
             (
               SELECT MAX(m.sent_at)
                 FROM "Messages" m
@@ -1713,8 +2042,20 @@ async function fetchPlatformHealthSnapshot(client) {
                    NULLIF(al.details#>>'{delivery,platform}', ''),
                    'unknown'
                  ) = pa.platform
-                 AND al.action IN ('platform_dispatch_error', 'ai_reply_error', 'api_error', 'inbox_draft_error', 'inbox_message_error')
+                  AND al.action IN ('platform_dispatch_error', 'ai_reply_error', 'api_error', 'inbox_draft_error', 'inbox_message_error')
             ) AS error_count_24h,
+            (
+              SELECT MAX(al.created_at)
+                FROM "AuditLogs" al
+               WHERE al.created_at >= NOW() - INTERVAL '24 hours'
+                 AND COALESCE(
+                   NULLIF(al.details->>'platform', ''),
+                   NULLIF(al.details#>>'{platformPolicy,platform}', ''),
+                   NULLIF(al.details#>>'{delivery,platform}', ''),
+                   'unknown'
+                 ) = pa.platform
+                 AND al.action IN ('platform_dispatch_error', 'ai_reply_error', 'api_error', 'inbox_draft_error', 'inbox_message_error')
+            ) AS last_error_at,
             (
               SELECT COALESCE(
                 NULLIF(al.details->>'disableReason', ''),
@@ -1735,23 +2076,52 @@ async function fetchPlatformHealthSnapshot(client) {
       ORDER BY pa.platform ASC, pa.account_name ASC`
   );
 
-  return result.rows.map((row) => ({
-    id: row.id,
-    platform: row.platform,
-    accountName: row.account_name,
-    accountExternalId: row.account_external_id,
-    isActive: Boolean(row.is_active),
-    sendMode: row.send_mode || globalDefaultSendMode,
-    sendModeOverride: row.send_mode,
-    globalDefaultSendMode,
-    lastSuccessfulIngestAt: row.last_successful_ingest_at,
-    lastSuccessfulSendAt: row.last_successful_send_at,
-    errorCount24h: Number(row.error_count_24h || 0),
-    disableReason: row.is_active ? null : row.disable_reason || "disabled_by_admin_policy"
-  }));
+  return result.rows.map((row) => {
+    const isActive = Boolean(row.is_active);
+    const errorCount24h = Number(row.error_count_24h || 0);
+    const health = !isActive
+      ? "inactive"
+      : errorCount24h > 0
+        ? "degraded"
+        : "healthy";
+
+    return {
+      id: row.id,
+      platform: row.platform,
+      accountName: row.account_name,
+      accountExternalId: row.account_external_id,
+      isActive,
+      sendMode: row.send_mode || globalDefaultSendMode,
+      sendModeOverride: row.send_mode,
+      integrationMode: row.integration_mode,
+      globalDefaultSendMode,
+      lastSuccessfulIngestAt: row.last_successful_ingest_at,
+      lastSuccessfulSendAt: row.last_successful_send_at,
+      errorCount24h,
+      disableReason: isActive ? null : row.disable_reason || "disabled_by_admin_policy",
+      health,
+      error: {
+        count24h: errorCount24h,
+        lastErrorAt: row.last_error_at
+      }
+    };
+  });
 }
 
-async function fetchInboxList(client, statusFilter = null) {
+async function fetchInboxList(client, statusFilter = null, access = null) {
+  const where = [];
+  const params = [];
+
+  if (access?.role === roles.agent) {
+    const sessionAgentId = access.session?.user?.id;
+    if (!isUuid(sessionAgentId)) {
+      return [];
+    }
+    params.push(sessionAgentId);
+    where.push(`(c.assigned_agent_id = $${params.length}::uuid OR c.follow_up_owner_agent_id = $${params.length}::uuid)`);
+  }
+
+  const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
   const result = await client.query(
     `SELECT c.id,
             c.platform_account_id,
@@ -1761,6 +2131,14 @@ async function fetchInboxList(client, statusFilter = null) {
             c.lead_name,
             c.lead_contact,
             c.status AS conversation_status,
+            c.workflow_state,
+            c.workflow_outcome,
+            c.showing_state,
+            c.follow_up_stage,
+            c.follow_up_due_at,
+            c.follow_up_owner_agent_id,
+            c.follow_up_status,
+            c.workflow_updated_at,
             c.last_message_at,
             c.updated_at,
             u.property_name,
@@ -1798,7 +2176,9 @@ async function fetchInboxList(client, statusFilter = null) {
            FROM "Messages" m
           WHERE m.conversation_id = c.id
        ) counts ON TRUE
-      ORDER BY c.last_message_at DESC NULLS LAST, c.updated_at DESC`
+       ${whereClause}
+       ORDER BY c.last_message_at DESC NULLS LAST, c.updated_at DESC`,
+    params
   );
 
   const items = result.rows.map((row) => {
@@ -1818,6 +2198,14 @@ async function fetchInboxList(client, statusFilter = null) {
       leadName: row.lead_name,
       leadContact: row.lead_contact || {},
       conversationStatus: row.conversation_status,
+      workflowState: row.workflow_state,
+      workflowOutcome: row.workflow_outcome,
+      showingState: row.showing_state,
+      followUpStage: row.follow_up_stage,
+      followUpDueAt: row.follow_up_due_at,
+      followUpOwnerAgentId: row.follow_up_owner_agent_id,
+      followUpStatus: row.follow_up_status,
+      workflowUpdatedAt: row.workflow_updated_at,
       messageStatus: summarizeConversationStatus(counts),
       counts,
       unit: row.property_name && row.unit_number ? `${row.property_name} ${row.unit_number}` : null,
@@ -1835,7 +2223,19 @@ async function fetchInboxList(client, statusFilter = null) {
   return items.filter((item) => item.messageStatus === statusFilter);
 }
 
-async function fetchConversationDetail(client, conversationId) {
+async function fetchConversationDetail(client, conversationId, access = null) {
+  const queryParams = [conversationId];
+  const scopePredicates = ["c.id = $1::uuid"];
+
+  if (access?.role === roles.agent) {
+    const sessionAgentId = access.session?.user?.id;
+    if (!isUuid(sessionAgentId)) {
+      return null;
+    }
+    queryParams.push(sessionAgentId);
+    scopePredicates.push(`(c.assigned_agent_id = $${queryParams.length}::uuid OR c.follow_up_owner_agent_id = $${queryParams.length}::uuid)`);
+  }
+
   const conversationResult = await client.query(
     `SELECT c.id,
             c.platform_account_id,
@@ -1845,6 +2245,14 @@ async function fetchConversationDetail(client, conversationId) {
             c.lead_name,
             c.lead_contact,
             c.status,
+            c.workflow_state,
+            c.workflow_outcome,
+            c.showing_state,
+            c.follow_up_stage,
+            c.follow_up_due_at,
+            c.follow_up_owner_agent_id,
+            c.follow_up_status,
+            c.workflow_updated_at,
             c.last_message_at,
             c.updated_at,
             u.property_name,
@@ -1853,9 +2261,9 @@ async function fetchConversationDetail(client, conversationId) {
        FROM "Conversations" c
        LEFT JOIN "Listings" l ON l.id = c.listing_id
        LEFT JOIN "Units" u ON u.id = l.unit_id
-      WHERE c.id = $1::uuid
-      LIMIT 1`,
-    [conversationId]
+       WHERE ${scopePredicates.join(" AND ")}
+       LIMIT 1`,
+    queryParams
   );
 
   if (conversationResult.rowCount === 0) {
@@ -1930,6 +2338,14 @@ async function fetchConversationDetail(client, conversationId) {
       leadName: conversation.lead_name,
       leadContact: conversation.lead_contact || {},
       status: conversation.status,
+      workflowState: conversation.workflow_state,
+      workflowOutcome: conversation.workflow_outcome,
+      showingState: conversation.showing_state,
+      followUpStage: conversation.follow_up_stage,
+      followUpDueAt: conversation.follow_up_due_at,
+      followUpOwnerAgentId: conversation.follow_up_owner_agent_id,
+      followUpStatus: conversation.follow_up_status,
+      workflowUpdatedAt: conversation.workflow_updated_at,
       unit: templateContext.unit,
       lastMessageAt: conversation.last_message_at,
       updatedAt: conversation.updated_at
@@ -2009,6 +2425,7 @@ export async function routeApi(req, res, url) {
     const windowHours = parsePositiveInt(url.searchParams.get("windowHours"), 24, { min: 1, max: 168 });
     const auditLimit = parsePositiveInt(url.searchParams.get("auditLimit"), 50, { min: 1, max: 200 });
     const errorLimit = parsePositiveInt(url.searchParams.get("errorLimit"), 25, { min: 1, max: 200 });
+    const signalLimit = parsePositiveInt(url.searchParams.get("signalLimit"), 25, { min: 1, max: 100 });
 
     const withClientRunner = routeTestOverrides?.withClient || withClient;
     const fetchObservabilitySnapshotRunner = routeTestOverrides?.fetchObservabilitySnapshot || fetchObservabilitySnapshot;
@@ -2017,7 +2434,8 @@ export async function routeApi(req, res, url) {
       fetchObservabilitySnapshotRunner(client, {
         windowHours,
         auditLimit,
-        errorLimit
+        errorLimit,
+        signalLimit
       })
     );
 
@@ -2430,7 +2848,8 @@ export async function routeApi(req, res, url) {
       return;
     }
 
-    const items = await withClient((client) => fetchInboxList(client, status));
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const items = await withClientRunner((client) => fetchInboxList(client, status, access));
     json(res, 200, { items });
     return;
   }
@@ -2448,7 +2867,8 @@ export async function routeApi(req, res, url) {
       return;
     }
 
-    const payload = await withClient((client) => fetchConversationDetail(client, conversationId));
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const payload = await withClientRunner((client) => fetchConversationDetail(client, conversationId, access));
     if (!payload) {
       notFound(res);
       return;
@@ -2479,15 +2899,16 @@ export async function routeApi(req, res, url) {
       return;
     }
 
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
     let result;
     try {
-      result = await withClient(async (client) => {
-        const detail = await fetchConversationDetail(client, conversationId);
+      result = await withClientRunner(async (client) => {
+        const detail = await fetchConversationDetail(client, conversationId, access);
         if (!detail) {
           return { error: "not_found" };
         }
 
-        const platformPolicy = await fetchPlatformSendPolicy(client, detail.conversation.platformAccountId);
+        const platformPolicy = await fetchPlatformDispatchAccount(client, detail.conversation.platformAccountId);
         if (!platformPolicy) {
           return { error: "platform_policy_not_found" };
         }
@@ -2495,6 +2916,7 @@ export async function routeApi(req, res, url) {
           return { error: "platform_inactive" };
         }
         const autoSendEnabled = platformPolicy.sendMode === "auto_send";
+        const manualDispatchRequested = payload.dispatchNow !== false;
 
         let messageBody = payload.body;
         let templateId = null;
@@ -2520,13 +2942,53 @@ export async function routeApi(req, res, url) {
 
         const guardrailReviewReasons = collectGuardrailReviewReasons(payload.metadata);
         const requiresAdminReview = guardrailReviewReasons.length > 0;
-        const status = autoSendEnabled && !requiresAdminReview ? "sent" : "draft";
+        const shouldDispatch = (manualDispatchRequested || autoSendEnabled) && !requiresAdminReview;
+        const status = shouldDispatch ? "sent" : "draft";
+        let delivery = null;
+
+        if (shouldDispatch) {
+          if (!detail.conversation.externalThreadId) {
+            return { error: "external_thread_required" };
+          }
+
+          const dispatchOutboundMessage = routeTestOverrides?.dispatchOutboundMessage
+            || ((dispatchPayload) =>
+              connectorRegistry.sendMessageForAccount({
+                account: {
+                  id: platformPolicy.id,
+                  platform: platformPolicy.platform,
+                  credentials: platformPolicy.credentials
+                },
+                outbound: {
+                  externalThreadId: dispatchPayload.externalThreadId,
+                  body: dispatchPayload.body
+                }
+              }));
+
+          try {
+            delivery = await dispatchOutboundMessage({
+              platformAccountId: platformPolicy.id,
+              platform: platformPolicy.platform,
+              externalThreadId: detail.conversation.externalThreadId,
+              body: messageBody,
+              metadata: payload.metadata || {}
+            });
+          } catch (error) {
+            return {
+              error: "platform_dispatch_failed",
+              message: error instanceof Error ? error.message : String(error)
+            };
+          }
+        }
+
         const metadata = {
           ...(payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {}),
           reviewStatus: status,
           reviewRequired: requiresAdminReview,
+          dispatchRequested: manualDispatchRequested,
           ...(guardrailReviewReasons.length > 0 ? { guardrailReviewReasons } : {}),
-          ...(templateId ? { templateId } : {})
+          ...(templateId ? { templateId } : {}),
+          ...(delivery ? { delivery } : {})
         };
 
         const inserted = await client.query(
@@ -2534,14 +2996,15 @@ export async function routeApi(req, res, url) {
              conversation_id,
              sender_type,
              sender_agent_id,
+             external_message_id,
              direction,
              channel,
              body,
              metadata,
              sent_at
-           ) VALUES ($1::uuid, 'agent', $2::uuid, 'outbound', 'in_app', $3, $4::jsonb, NOW())
-           RETURNING id`,
-          [conversationId, detail.conversation.assignedAgentId, messageBody, JSON.stringify(metadata)]
+           ) VALUES ($1::uuid, 'agent', $2::uuid, $3, 'outbound', 'in_app', $4, $5::jsonb, NOW())
+            RETURNING id`,
+          [conversationId, access.session.user.id, delivery?.externalMessageId || null, messageBody, JSON.stringify(metadata)]
         );
 
         await client.query(
@@ -2557,21 +3020,26 @@ export async function routeApi(req, res, url) {
           actorId: access.session.user.id,
           entityType: "message",
           entityId: inserted.rows[0].id,
-          action: status === "sent" ? "inbox_draft_sent" : "inbox_draft_saved",
+          action: shouldDispatch ? "inbox_manual_reply_dispatched" : "inbox_draft_saved",
           details: {
             conversationId,
             templateId,
             autoSendEnabled,
+            manualDispatchRequested,
             platformPolicy,
             requiresAdminReview,
             guardrailReviewReasons,
-            reviewStatus: status
+            reviewStatus: status,
+            externalThreadId: detail.conversation.externalThreadId || null,
+            delivery
           }
         });
 
         return {
           id: inserted.rows[0].id,
           status,
+          dispatched: shouldDispatch,
+          delivery,
           autoSendEnabled,
           effectiveSendMode: platformPolicy.sendMode,
           requiresAdminReview,
@@ -2579,7 +3047,7 @@ export async function routeApi(req, res, url) {
         };
       });
     } catch (error) {
-      await withClient((client) =>
+      await withClientRunner((client) =>
         recordAuditLog(client, {
           actorType: access.role === roles.admin ? "admin" : "agent",
           actorId: access.session.user.id,
@@ -2621,8 +3089,71 @@ export async function routeApi(req, res, url) {
       });
       return;
     }
+    if (result.error === "external_thread_required") {
+      json(res, 409, {
+        error: "platform_thread_missing",
+        message: "conversation is missing external thread id for dispatch"
+      });
+      return;
+    }
+    if (result.error === "platform_dispatch_failed") {
+      json(res, 502, {
+        error: "platform_dispatch_failed",
+        message: result.message || "failed to dispatch outbound message"
+      });
+      return;
+    }
 
     json(res, 201, result);
+    return;
+  }
+
+  const conversationWorkflowMatch = url.pathname.match(/^\/api\/conversations\/([0-9a-f\-]+)\/workflow-state$/i);
+  if (conversationWorkflowMatch && req.method === "POST") {
+    const access = await requireRole(req, res, [roles.agent, roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const conversationId = conversationWorkflowMatch[1];
+    if (!isUuid(conversationId)) {
+      badRequest(res, "conversationId must be a UUID");
+      return;
+    }
+
+    let payload;
+    try {
+      payload = await readJsonBody(req);
+    } catch {
+      badRequest(res, "Request body must be valid JSON");
+      return;
+    }
+
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const transitionRunner = routeTestOverrides?.transitionConversationWorkflow || transitionConversationWorkflow;
+    const result = await withClientRunner((client) => transitionRunner(client, conversationId, payload || {}, access));
+
+    if (result?.error === "not_found") {
+      notFound(res);
+      return;
+    }
+    if (result?.error === "forbidden") {
+      json(res, 403, { error: "forbidden", message: "agents may only update their own assigned conversation workflows" });
+      return;
+    }
+    if (result?.error === "validation_error") {
+      badRequest(res, "Invalid workflow transition payload", result.details || null);
+      return;
+    }
+    if (result?.error === "invalid_transition") {
+      json(res, 409, {
+        error: "invalid_transition",
+        message: result.message || "workflow transition is not allowed"
+      });
+      return;
+    }
+
+    json(res, 200, result);
     return;
   }
 
@@ -3189,7 +3720,7 @@ export async function routeApi(req, res, url) {
     const agentIdParam = url.searchParams.get("agentId");
 
     if (status && !showingAppointmentStatuses.has(status)) {
-      badRequest(res, "status must be one of pending, confirmed, cancelled, completed");
+      badRequest(res, "status must be one of pending, confirmed, reschedule_requested, cancelled, completed, no_show");
       return;
     }
     if (unitId && !isUuid(unitId)) {
@@ -3268,6 +3799,7 @@ export async function routeApi(req, res, url) {
 
     const withClientRunner = routeTestOverrides?.withClient || withClient;
     const createShowingAppointmentRunner = routeTestOverrides?.createShowingAppointment || createShowingAppointment;
+    const resolveBookingIdempotencyRunner = routeTestOverrides?.resolveShowingBookingIdempotency || resolveShowingBookingIdempotency;
     const fetchCandidates = routeTestOverrides?.fetchUnitAgentSlotCandidates || fetchUnitAgentSlotCandidates;
     const recordAuditLogRunner = routeTestOverrides?.recordAuditLog || recordAuditLog;
 
@@ -3306,7 +3838,32 @@ export async function routeApi(req, res, url) {
 
     let bookingResult;
     try {
-      bookingResult = await withClientRunner((client) => createShowingAppointmentRunner(client, payload));
+      bookingResult = await withClientRunner((client) => {
+        if (resolveBookingIdempotencyRunner === resolveShowingBookingIdempotency && typeof client?.query !== "function") {
+          return null;
+        }
+
+        return resolveBookingIdempotencyRunner(client, payload);
+      });
+
+      if (!bookingResult) {
+        const slotSelection = await withClientRunner((client) => validateBookingSlotSelection(client, payload, fetchCandidates));
+        if (!slotSelection.ok) {
+          await writeBookingAuditLog("showing_booking_slot_unavailable", {
+            rejectionReason: "assignment_availability_conflict",
+            alternativesCount: slotSelection.alternatives.length
+          });
+          json(res, 409, {
+            error: "slot_unavailable",
+            message: "Selected slot is not available for this agent assignment and availability window",
+            alternatives: slotSelection.alternatives,
+            adminReviewRequired: true
+          });
+          return;
+        }
+
+        bookingResult = await withClientRunner((client) => createShowingAppointmentRunner(client, payload));
+      }
     } catch (error) {
       if (handleShowingConflictError(error)) {
         const date = payload.startsAt.slice(0, 10);
@@ -4299,6 +4856,7 @@ export function resetRouteTestOverrides() {
 
 export const __testables = {
   fetchUnitAgentSlotCandidates,
+  fetchPlatformHealthSnapshot,
   collectGuardrailReviewReasons
 };
 

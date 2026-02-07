@@ -1,11 +1,14 @@
 import { runReplyPipeline } from "../../ai/src/index.js";
 import { createConnectorRegistry, listSupportedPlatforms, resolvePlatformCredentials } from "./connectors.js";
+import { createPlaywrightRpaRunner, createRpaRunner } from "./rpa-runner.js";
+import { createPlatformAdapterRegistry, REQUIRED_RPA_PLATFORMS } from "./platform-adapters.js";
 import { calculateBackoffDelay, isRetryableError, withRetry } from "./retry.js";
 
 const allowedSendModes = new Set(["auto_send", "draft_only"]);
 const defaultPlatformSendMode = allowedSendModes.has(process.env.PLATFORM_DEFAULT_SEND_MODE)
   ? process.env.PLATFORM_DEFAULT_SEND_MODE
   : "draft_only";
+const defaultWorkerClaimTtlMs = Number(process.env.WORKER_CLAIM_TTL_MS || 60000);
 
 function formatSlotWindow(slot) {
   const timezone = slot.timezone || "UTC";
@@ -238,42 +241,81 @@ export function createPostgresQueueAdapter(client) {
   };
 
   return {
-    async fetchPendingMessages(limit) {
-      const result = await client.query(
-        `SELECT m.id,
-                m.conversation_id,
-                m.body,
-                m.metadata,
-                c.platform_account_id,
-                pa.platform,
-                pa.credentials AS platform_credentials,
-                pa.is_active AS platform_is_active,
-                pa.send_mode AS platform_send_mode_override,
-                COALESCE(pa.send_mode, $2) AS platform_effective_send_mode,
-                c.assigned_agent_id,
-                c.external_thread_id,
-                c.lead_name,
-                u.id AS unit_id,
-                u.property_name,
-                u.unit_number,
-                EXISTS (
-                  SELECT 1
-                    FROM "Messages" mo
-                   WHERE mo.conversation_id = m.conversation_id
-                     AND mo.direction = 'outbound'
-                     AND mo.sent_at < m.sent_at
-                ) AS has_recent_outbound
-           FROM "Messages" m
-           JOIN "Conversations" c ON c.id = m.conversation_id
-           JOIN "PlatformAccounts" pa ON pa.id = c.platform_account_id
-      LEFT JOIN "Listings" l ON l.id = c.listing_id
-      LEFT JOIN "Units" u ON u.id = l.unit_id
-           WHERE m.direction = 'inbound'
-             AND NOT (COALESCE(m.metadata, '{}'::jsonb) ? 'aiProcessedAt')
-           ORDER BY m.sent_at ASC, m.created_at ASC
-           LIMIT $1`,
-        [limit, defaultPlatformSendMode]
-      );
+    async fetchPendingMessages(request = {}) {
+      const normalizedRequest = typeof request === "number" ? { limit: request } : request;
+      const limit = Number(normalizedRequest.limit || 20);
+      const claimedAt = normalizedRequest.now || new Date().toISOString();
+      const claimTtlMs = Math.max(Number(normalizedRequest.claimTtlMs || defaultWorkerClaimTtlMs), 1000);
+      const claimExpiresAt = new Date(Date.parse(claimedAt) + claimTtlMs).toISOString();
+      const workerId = normalizedRequest.workerId || process.env.WORKER_INSTANCE_ID || `worker-${process.pid}`;
+
+      await client.query("BEGIN");
+      let result;
+      try {
+        result = await client.query(
+          `WITH claimable AS (
+             SELECT m.id
+               FROM "Messages" m
+              WHERE m.direction = 'inbound'
+                AND NOT (COALESCE(m.metadata, '{}'::jsonb) ? 'aiProcessedAt')
+                AND (
+                  COALESCE(NULLIF(COALESCE(m.metadata#>>'{workerClaim,claimExpiresAt}', ''), '')::timestamptz, to_timestamp(0)) <= $2::timestamptz
+                )
+              ORDER BY m.sent_at ASC, m.created_at ASC
+              FOR UPDATE SKIP LOCKED
+              LIMIT $1
+           ),
+           claimed AS (
+             UPDATE "Messages" m
+                SET metadata = COALESCE(m.metadata, '{}'::jsonb) || jsonb_build_object(
+                  'workerClaim',
+                  jsonb_build_object(
+                    'workerId', $3,
+                    'claimedAt', $2,
+                    'claimExpiresAt', $4
+                  )
+                )
+               FROM claimable
+              WHERE m.id = claimable.id
+              RETURNING m.id
+           )
+           SELECT m.id,
+                  m.conversation_id,
+                  m.body,
+                  m.metadata,
+                  c.platform_account_id,
+                  pa.platform,
+                  pa.credentials AS platform_credentials,
+                  pa.is_active AS platform_is_active,
+                  pa.send_mode AS platform_send_mode_override,
+                  COALESCE(pa.send_mode, $5) AS platform_effective_send_mode,
+                  c.assigned_agent_id,
+                  c.external_thread_id,
+                  c.lead_name,
+                  u.id AS unit_id,
+                  u.property_name,
+                  u.unit_number,
+                  EXISTS (
+                    SELECT 1
+                      FROM "Messages" mo
+                     WHERE mo.conversation_id = m.conversation_id
+                       AND mo.direction = 'outbound'
+                       AND mo.sent_at < m.sent_at
+                  ) AS has_recent_outbound
+             FROM claimed cl
+             JOIN "Messages" m ON m.id = cl.id
+             JOIN "Conversations" c ON c.id = m.conversation_id
+             JOIN "PlatformAccounts" pa ON pa.id = c.platform_account_id
+        LEFT JOIN "Listings" l ON l.id = c.listing_id
+        LEFT JOIN "Units" u ON u.id = l.unit_id
+            ORDER BY m.sent_at ASC, m.created_at ASC`,
+          [limit, claimedAt, workerId, claimExpiresAt, defaultPlatformSendMode]
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
 
       return result.rows.map((row) => ({
         id: row.id,
@@ -474,27 +516,37 @@ export function createPostgresQueueAdapter(client) {
     },
 
     async failDispatchAttempt({ messageId, stage, error, now, retry = {} }) {
+      const retryExhausted = retry?.retryExhausted === true;
       await client.query(
         `UPDATE "Messages"
             SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
               'dispatch',
               COALESCE(metadata->'dispatch', '{}'::jsonb) || jsonb_build_object(
-                'state', 'failed',
+                'state', $6,
                 'failedStage', $2,
                 'lastError', $3,
                 'failedAt', $4,
-                'retry', $5::jsonb
+                'retry', $5::jsonb,
+                'dlqQueuedAt', CASE WHEN $6 = 'dlq' THEN $4 ELSE NULL END,
+                'escalationReason', CASE WHEN $6 = 'dlq' THEN 'escalate_dispatch_retry_exhausted' ELSE NULL END
               )
             )
           WHERE id = $1::uuid`,
-        [messageId, stage || "dispatch_outbound_message", error || "dispatch_failed", now || new Date().toISOString(), JSON.stringify(retry || {})]
+        [
+          messageId,
+          stage || "dispatch_outbound_message",
+          error || "dispatch_failed",
+          now || new Date().toISOString(),
+          JSON.stringify(retry || {}),
+          retryExhausted ? "dlq" : "failed"
+        ]
       );
     },
 
     async markInboundProcessed({ messageId, metadataPatch }) {
       await client.query(
         `UPDATE "Messages"
-            SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+            SET metadata = (COALESCE(metadata, '{}'::jsonb) - 'workerClaim') || $2::jsonb
           WHERE id = $1::uuid`,
         [messageId, JSON.stringify(metadataPatch)]
       );
@@ -597,4 +649,15 @@ export function createPostgresQueueAdapter(client) {
   };
 }
 
-export { createConnectorRegistry, listSupportedPlatforms, resolvePlatformCredentials, withRetry, isRetryableError, calculateBackoffDelay };
+export {
+  createConnectorRegistry,
+  listSupportedPlatforms,
+  resolvePlatformCredentials,
+  createPlaywrightRpaRunner,
+  createRpaRunner,
+  createPlatformAdapterRegistry,
+  REQUIRED_RPA_PLATFORMS,
+  withRetry,
+  isRetryableError,
+  calculateBackoffDelay
+};

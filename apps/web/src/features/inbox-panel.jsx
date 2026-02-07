@@ -28,9 +28,11 @@ export function InboxPanel() {
     draftForm,
     setDraftForm,
     createDraft,
+    updateConversationWorkflow,
     approveMessage,
     rejectMessage,
     refreshInbox,
+    appointments,
   } = useLeaseBot();
   const [inboxPage, setInboxPage] = useState(1);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -40,6 +42,21 @@ export function InboxPanel() {
     const start = (inboxPage - 1) * INBOX_PAGE_SIZE;
     return inboxItems.slice(start, start + INBOX_PAGE_SIZE);
   }, [inboxItems, inboxPage]);
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const humanRequiredQueue = useMemo(
+    () => inboxItems.filter((item) => item.workflowOutcome === "human_required" || item.latestStatus === "hold"),
+    [inboxItems]
+  );
+  const followUpQueue = useMemo(
+    () => inboxItems
+      .filter((item) => item.followUpStatus === "pending" && item.followUpDueAt)
+      .sort((a, b) => new Date(a.followUpDueAt).getTime() - new Date(b.followUpDueAt).getTime()),
+    [inboxItems]
+  );
+  const todaysShowings = useMemo(
+    () => appointments.filter((item) => (item.startsAt || "").slice(0, 10) === todayKey),
+    [appointments, todayKey]
+  );
 
   useEffect(() => {
     setInboxPage(1);
@@ -65,6 +82,28 @@ export function InboxPanel() {
     }
   }
 
+  async function handleOneClickOutcome(outcome) {
+    if (!conversationDetail?.conversation?.id) {
+      return;
+    }
+
+    const payloadByOutcome = {
+      not_interested: { workflowOutcome: "not_interested" },
+      wants_reschedule: { workflowOutcome: "wants_reschedule", showingState: "reschedule_requested" },
+      no_show: { workflowOutcome: "no_show", showingState: "no_show" },
+      completed: { workflowOutcome: "completed", showingState: "completed" }
+    };
+
+    const labelByOutcome = {
+      not_interested: "Outcome updated: not interested",
+      wants_reschedule: "Outcome updated: wants reschedule",
+      no_show: "Outcome updated: no show",
+      completed: "Outcome updated: completed"
+    };
+
+    await updateConversationWorkflow(conversationDetail.conversation.id, payloadByOutcome[outcome], labelByOutcome[outcome]);
+  }
+
   return (
     <div className="flex h-[calc(100vh-3.5rem)] flex-col overflow-hidden">
       <div className="flex min-h-0 flex-1">
@@ -75,7 +114,7 @@ export function InboxPanel() {
           mobileShowDetail && "hidden md:flex"
         )}>
           {/* Thread list header */}
-          <div className="flex items-center gap-2 px-4 py-3">
+          <div className="flex items-center gap-2 px-2 py-3">
             <Select value={selectedInboxStatus} onValueChange={setSelectedInboxStatus}>
               <SelectTrigger className="h-9 flex-1 text-sm">
                 <SelectValue />
@@ -95,6 +134,30 @@ export function InboxPanel() {
             >
               <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
             </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 px-2 pb-2">
+            <div className="rounded-md bg-muted px-2 py-2">
+              <p className="text-[11px] text-muted-foreground">Human required</p>
+              <p className="text-sm font-semibold">{humanRequiredQueue.length}</p>
+            </div>
+            <div className="rounded-md bg-muted px-2 py-2">
+              <p className="text-[11px] text-muted-foreground">Today showings</p>
+              <p className="text-sm font-semibold">{todaysShowings.length}</p>
+            </div>
+            <div className="rounded-md bg-muted px-2 py-2">
+              <p className="text-[11px] text-muted-foreground">Follow-up queue</p>
+              <p className="text-sm font-semibold">{followUpQueue.length}</p>
+            </div>
+            <div className="rounded-md bg-muted px-2 py-2">
+              <p className="text-[11px] text-muted-foreground">Daily plan</p>
+              <p className="text-sm font-semibold">{humanRequiredQueue.length + todaysShowings.length + followUpQueue.length}</p>
+            </div>
+          </div>
+
+          <div className="space-y-2 px-2 pb-2">
+            <QueuePreview title="Human required" items={humanRequiredQueue} onSelect={handleSelectConversation} />
+            <QueuePreview title="Follow-up due" items={followUpQueue} onSelect={handleSelectConversation} />
           </div>
 
           {/* Thread list */}
@@ -122,7 +185,7 @@ export function InboxPanel() {
                       ? "bg-primary-foreground/15 text-primary-foreground"
                       : "bg-muted text-muted-foreground"
                   )}>
-                    {item.status}
+                    {item.conversationStatus || item.messageStatus || item.status || "unknown"}
                   </span>
                 </div>
                 <span className={cn(
@@ -214,6 +277,18 @@ export function InboxPanel() {
                     ) : null}
                   </div>
                 </div>
+                <div className="hidden items-center gap-1 md:flex">
+                  <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("not_interested")}>Not interested</Button>
+                  <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("wants_reschedule")}>Reschedule</Button>
+                  <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("no_show")}>No show</Button>
+                  <Button type="button" size="sm" onClick={() => handleOneClickOutcome("completed")}>Completed</Button>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 border-b border-dashed border-border bg-card px-4 py-2 md:hidden">
+                <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("not_interested")}>Not interested</Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("wants_reschedule")}>Reschedule</Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("no_show")}>No show</Button>
+                <Button type="button" size="sm" onClick={() => handleOneClickOutcome("completed")}>Completed</Button>
               </div>
 
               {/* Messages */}
@@ -344,5 +419,33 @@ function TemplateSelect({ templates, value, onChange }) {
         ))}
       </SelectContent>
     </Select>
+  );
+}
+
+function QueuePreview({ title, items, onSelect }) {
+  const preview = items.slice(0, 3);
+  return (
+    <div className="rounded-md border border-dashed border-border p-2">
+      <div className="mb-1 flex items-center justify-between">
+        <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{title}</p>
+        <span className="text-[11px] text-muted-foreground">{items.length}</span>
+      </div>
+      {preview.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No items</p>
+      ) : (
+        <div className="space-y-1">
+          {preview.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onSelect(item.id)}
+              className="w-full truncate rounded bg-muted px-2 py-1 text-left text-xs text-foreground hover:bg-accent"
+            >
+              {item.leadName || item.externalThreadId || "Conversation"}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

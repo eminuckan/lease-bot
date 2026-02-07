@@ -379,17 +379,46 @@ export function LeaseBotProvider({ children }) {
       const result = await request(`/api/inbox/${selectedConversationId}/draft`, {
         method: "POST",
         body: JSON.stringify({
+          dispatchNow: true,
           templateId: draftForm.templateId || null,
           body: draftForm.body || null
         })
       });
-      setMessage(`Message ${result.status}`);
-      toast.success("Draft processed", { description: `Message ${result.status}` });
+      const outcomeLabel = result.dispatched ? "Message sent to platform" : `Message ${result.status}`;
+      setMessage(outcomeLabel);
+      toast.success(result.dispatched ? "Reply sent" : "Draft processed", { description: outcomeLabel });
       setDraftForm((current) => ({ ...current, body: "" }));
       await Promise.all([refreshInbox(selectedInboxStatus), refreshConversationDetail(selectedConversationId)]);
     } catch (error) {
       setApiError(error.message);
       toast.error("Draft action failed", { description: error.message });
+    }
+  }
+
+  async function updateConversationWorkflow(conversationId, updates, successLabel = "Workflow updated") {
+    if (!conversationId) {
+      return null;
+    }
+
+    setApiError("");
+    setMessage("");
+    try {
+      const result = await request(`/api/conversations/${conversationId}/workflow-state`, {
+        method: "POST",
+        body: JSON.stringify(updates || {})
+      });
+      setMessage(successLabel);
+      toast.success(successLabel);
+      await Promise.all([
+        refreshInbox(selectedInboxStatus),
+        refreshConversationDetail(conversationId),
+        refreshAppointments(appointmentFilters)
+      ]);
+      return result;
+    } catch (error) {
+      setApiError(error.message);
+      toast.error("Workflow update failed", { description: error.message });
+      return null;
     }
   }
 
@@ -485,6 +514,7 @@ export function LeaseBotProvider({ children }) {
     signOut,
     saveAssignment,
     createDraft,
+    updateConversationWorkflow,
     approveMessage,
     rejectMessage,
     updatePlatformPolicy

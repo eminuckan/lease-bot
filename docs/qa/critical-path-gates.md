@@ -1,6 +1,6 @@
-# Critical Path QA Gates (R13, R14, R15)
+# Critical Path QA Gates (R18, R28, R29, R30)
 
-This document defines the release-blocking quality gates for API, worker, web, and platform integration/e2e critical paths.
+This document defines the release-blocking quality gates for API, worker, web, and critical e2e paths.
 
 ## Context7 references used
 
@@ -53,7 +53,7 @@ npm run smoke -w @lease-bot/web
 
 Smoke assertions are release-blocking for:
 
-- R18 list caps and bounded rendering (inbox <=20 rows, showings lists <=12 rows, summary-count parity).
+- R17 list caps and bounded rendering (inbox <=20 rows, showings lists <=12 rows, summary-count parity).
 - Explicit mobile card-list fallback checks for critical lists (inbox, weekly rules, availability, agent appointments).
 - Performance proxies: login/admin->agent route transition duration, list render settle duration, and main JS payload budget.
 
@@ -69,12 +69,25 @@ Platform suite assertions are release-blocking for:
 - At least one ingest and one outbound contract assertion per required platform.
 - API contract parity for `requiredPlatforms` and `missingPlatforms` fields.
 
+5. Release critical e2e package gate (platform + human handoff + lifecycle)
+
+```bash
+node --test apps/api/test/platform-contract-e2e.test.js apps/worker/test/platform-contract-e2e.test.js apps/api/test/showing-booking.test.js apps/api/test/platform-policy-routes.test.js apps/worker/test/worker.test.js
+```
+
+Release critical e2e assertions are release-blocking for:
+
+- Human handoff routing (`human_required`) remains deterministic and suppresses unintended auto-send paths.
+- Showing lifecycle transitions (workflow + showing states via admin/agent routes) keep terminal-state locks and preserve API contract behavior.
+- Platform contract assertions and handoff/lifecycle assertions all pass in the same release gate run (100% package pass requirement).
+
 ## Evidence artifact paths
 
 - `docs/qa/evidence/api-tests.log`
 - `docs/qa/evidence/worker-tests.log`
 - `docs/qa/evidence/web-smoke.log`
 - `docs/qa/evidence/platform-integration-e2e.log`
+- `docs/qa/evidence/release-critical-e2e.log`
 - `docs/qa/evidence/ci-run-metadata.md`
 
 ## CI metadata evidence process
@@ -82,12 +95,13 @@ Platform suite assertions are release-blocking for:
 The `Critical Path Gates` workflow uploads a `ci-run-metadata` artifact for each run. This artifact includes run ID, URL, SHA, branch, and per-check job status sourced from the actual GitHub Actions execution.
 
 1. Open the workflow run in GitHub Actions for the release candidate commit.
-2. Download artifacts: `api-tests-log`, `worker-tests-log`, `web-smoke-log`, `platform-integration-e2e-log`, and `ci-run-metadata`.
+2. Download artifacts: `api-tests-log`, `worker-tests-log`, `web-smoke-log`, `platform-integration-e2e-log`, `release-critical-e2e-log`, and `ci-run-metadata`.
 3. Copy the metadata artifact contents into `docs/qa/evidence/ci-run-metadata.md` and keep the run URL and status fields unchanged.
 4. Keep this file aligned with release candidate evidence when branch protection gates are evaluated.
 
 ## Acceptance mapping
 
-- R13: platform integration/e2e suite verifies ingest+outbound contracts for each required platform.
-- R14: CI requires API tests + worker tests + web smoke + platform integration/e2e to pass.
-- R15: this gate set is tied to staged rollout decisions in `docs/release/release-checklist.md`.
+- R18: admin platform visibility remains release-blocking with explicit checks for `isActive`/`sendMode`/`integrationMode` and health/error visibility from authenticated admin routes/tests.
+- R28: observability gate consumes platform/agent/conversation audit dimensions for rollout decisions.
+- R29: CI requires all critical e2e packages (platform + handoff + lifecycle) to pass in release gate.
+- R30: these gates are hard-linked to staged rollout and rollback decisions in `docs/release/release-checklist.md`.

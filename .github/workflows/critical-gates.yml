@@ -144,6 +144,41 @@ jobs:
           path: platform-integration-e2e.log
           retention-days: 14
 
+  release-critical-e2e:
+    name: Release Critical E2E
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run release critical e2e package gate
+        run: >-
+          set -o pipefail &&
+          node --test
+          apps/api/test/platform-contract-e2e.test.js
+          apps/worker/test/platform-contract-e2e.test.js
+          apps/api/test/showing-booking.test.js
+          apps/api/test/platform-policy-routes.test.js
+          apps/worker/test/worker.test.js
+          | tee release-critical-e2e.log
+
+      - name: Upload release critical e2e evidence log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-critical-e2e-log
+          path: release-critical-e2e.log
+          retention-days: 14
+
   ci-run-metadata:
     name: CI Run Metadata
     runs-on: ubuntu-latest
@@ -152,6 +187,7 @@ jobs:
       - worker-tests
       - web-smoke
       - platform-integration-e2e
+      - release-critical-e2e
     if: always()
     steps:
       - name: Generate metadata evidence
@@ -160,6 +196,7 @@ jobs:
           WORKER_STATUS: ${{ needs.worker-tests.result }}
           WEB_STATUS: ${{ needs.web-smoke.result }}
           PLATFORM_E2E_STATUS: ${{ needs.platform-integration-e2e.result }}
+          RELEASE_CRITICAL_E2E_STATUS: ${{ needs.release-critical-e2e.result }}
         run: |
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           cat <<EOF > ci-run-metadata.md
@@ -182,6 +219,7 @@ jobs:
           | Worker tests (\`npm test -w @lease-bot/worker\`) | ${WORKER_STATUS} | worker-tests-log |
           | Web smoke (\`npm run smoke -w @lease-bot/web\`) | ${WEB_STATUS} | web-smoke-log |
           | Platform integration/e2e (\`node --test apps/api/test/platform-contract-e2e.test.js apps/worker/test/platform-contract-e2e.test.js\`) | ${PLATFORM_E2E_STATUS} | platform-integration-e2e-log |
+          | Release critical e2e (\`node --test apps/api/test/platform-contract-e2e.test.js apps/worker/test/platform-contract-e2e.test.js apps/api/test/showing-booking.test.js apps/api/test/platform-policy-routes.test.js apps/worker/test/worker.test.js\`) | ${RELEASE_CRITICAL_E2E_STATUS} | release-critical-e2e-log |
 
           ## Notes
 

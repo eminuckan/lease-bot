@@ -26,7 +26,7 @@ const adminNav = [
 ];
 
 const agentNav = [
-  { to: "/agent/inbox", label: "Inbox", icon: Inbox },
+  { to: "/agent/inbox", label: "Workboard", icon: Inbox },
   { to: "/agent/appointments", label: "My Showings", icon: CalendarClock },
 ];
 

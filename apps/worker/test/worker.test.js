@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyIntent, detectFollowUp, runReplyPipelineWithAI } from "../../../packages/ai/src/index.js";
-import { processPendingMessages } from "../src/worker.js";
+import { classifyIntent, detectFollowUp, listWorkflowOutcomes, runReplyPipelineWithAI } from "../../../packages/ai/src/index.js";
+import { processPendingMessages, runWorkerCycle } from "../src/worker.js";
 import {
   createConnectorRegistry,
   resolvePlatformCredentials,
@@ -111,6 +111,18 @@ test("classifies intent and follow-up signals", () => {
   assert.equal(classifyIntent("What is the monthly rent?"), "pricing_question");
   assert.equal(detectFollowUp("Just checking in, any update?", true), true);
   assert.equal(detectFollowUp("Just checking in, any update?", false), false);
+});
+
+test("R7: workflow outcome classifier exposes required outcome set", () => {
+  const outcomes = listWorkflowOutcomes().sort();
+  assert.deepEqual(outcomes, [
+    "general_question",
+    "human_required",
+    "no_reply",
+    "not_interested",
+    "showing_confirmed",
+    "wants_reschedule"
+  ]);
 });
 
 test("policy gating prefers AI intent over heuristic intent", async () => {
@@ -469,9 +481,219 @@ test("guardrails block unsafe messages and still record logs", async () => {
   assert.equal(fixture.outbound.length, 0);
   assert.equal(fixture.processed[0].metadataPatch.replyEligible, false);
   assert.match(fixture.processed[0].metadataPatch.replyDecisionReason, /^escalate_/);
-  assert.equal(fixture.logs[0].action, "ai_reply_decision");
-  assert.equal(fixture.logs[1].action, "ai_reply_escalated");
-  assert.equal(fixture.logs[2].action, "ai_reply_skipped");
+  assert.equal(fixture.processed[0].metadataPatch.reviewStatus, "hold");
+  assert.equal(fixture.logs.some((entry) => entry.action === "ai_reply_decision"), true);
+  assert.equal(fixture.logs.some((entry) => entry.action === "ai_reply_escalated"), true);
+  assert.equal(fixture.logs.some((entry) => entry.action === "ai_reply_human_required_queued"), true);
+  assert.equal(fixture.logs.some((entry) => entry.action === "ai_reply_skipped"), true);
+});
+
+test("human_required AI outcome queues agent action instead of auto-send", async () => {
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m12",
+        conversationId: "c12",
+        body: "Can you explain the process?",
+        metadata: {},
+        platform: "leasebreak",
+        platformAccountId: "p12",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        unitNumber: "4B",
+        hasRecentOutbound: false
+      }
+    ],
+    ruleByIntent: {
+      tour_request: {
+        id: "r1",
+        enabled: true,
+        actionConfig: { template: "tour_invite_v1" }
+      }
+    },
+    templatesByName: {
+      tour_invite_v1: {
+        id: "t1",
+        body: "Tours for {{unit_number}}"
+      }
+    },
+    slotOptionsByUnit: {
+      u1: [
+        {
+          starts_at: "2026-02-10T17:00:00.000Z",
+          ends_at: "2026-02-10T17:30:00.000Z",
+          timezone: "UTC"
+        }
+      ]
+    }
+  });
+
+  const result = await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-06T10:00:00.000Z")
+  });
+
+  assert.equal(result.repliesCreated, 0);
+  assert.equal(result.metrics.sends.sent, 0);
+  assert.equal(fixture.outbound.length, 0);
+  assert.equal(fixture.processed[0].metadataPatch.workflowOutcome, "human_required");
+  assert.equal(fixture.processed[0].metadataPatch.reviewStatus, "hold");
+  assert.equal(fixture.processed[0].metadataPatch.actionQueue, "agent_action");
+  assert.equal(fixture.logs.some((entry) => entry.action === "ai_reply_human_required_queued"), true);
+});
+
+test("R14: low-confidence AI decision routes to human_required queue and suppresses auto-send", async () => {
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m13",
+        conversationId: "c13",
+        body: "Can you share more details about this place?",
+        metadata: {},
+        platform: "leasebreak",
+        platformAccountId: "p13",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        unitNumber: "4B",
+        hasRecentOutbound: false
+      }
+    ],
+    ruleByIntent: {
+      tour_request: {
+        id: "r1",
+        enabled: true,
+        actionConfig: { template: "tour_invite_v1" }
+      }
+    },
+    templatesByName: {
+      tour_invite_v1: {
+        id: "t1",
+        body: "Tours for {{unit_number}}"
+      }
+    },
+    slotOptionsByUnit: {
+      u1: [
+        {
+          starts_at: "2026-02-10T17:00:00.000Z",
+          ends_at: "2026-02-10T17:30:00.000Z",
+          timezone: "UTC"
+        }
+      ]
+    }
+  });
+
+  const result = await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-06T10:00:00.000Z"),
+    aiClassifier: async () => ({
+      intent: "tour_request",
+      ambiguity: false,
+      suggestedReply: "I can share details and upcoming tour slots.",
+      reasonCode: null,
+      workflowOutcome: "general_question",
+      confidence: 0.32,
+      riskLevel: "low"
+    })
+  });
+
+  assert.equal(result.repliesCreated, 0);
+  assert.equal(result.metrics.sends.sent, 0);
+  assert.equal(result.metrics.decisions.ineligible, 1);
+  assert.equal(fixture.outbound.length, 0);
+  assert.equal(fixture.processed[0].metadataPatch.workflowOutcome, "human_required");
+  assert.equal(fixture.processed[0].metadataPatch.reviewStatus, "hold");
+  assert.equal(fixture.processed[0].metadataPatch.actionQueue, "agent_action");
+  assert.equal(fixture.logs.some((entry) => entry.action === "ai_reply_human_required_queued"), true);
+});
+
+test("R14: high and critical AI risk route to human_required queue without auto-send", async () => {
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m14",
+        conversationId: "c14",
+        body: "Can I book a tour this week?",
+        metadata: {},
+        platform: "leasebreak",
+        platformAccountId: "p14",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        unitNumber: "4B",
+        hasRecentOutbound: false
+      },
+      {
+        id: "m15",
+        conversationId: "c15",
+        body: "Please help me tour this unit.",
+        metadata: {},
+        platform: "leasebreak",
+        platformAccountId: "p15",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        unitNumber: "4B",
+        hasRecentOutbound: false
+      }
+    ],
+    ruleByIntent: {
+      tour_request: {
+        id: "r1",
+        enabled: true,
+        actionConfig: { template: "tour_invite_v1" }
+      }
+    },
+    templatesByName: {
+      tour_invite_v1: {
+        id: "t1",
+        body: "Tours for {{unit_number}}"
+      }
+    },
+    slotOptionsByUnit: {
+      u1: [
+        {
+          starts_at: "2026-02-10T17:00:00.000Z",
+          ends_at: "2026-02-10T17:30:00.000Z",
+          timezone: "UTC"
+        }
+      ]
+    }
+  });
+
+  const riskLevels = ["high", "critical"];
+  const result = await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-06T10:00:00.000Z"),
+    aiClassifier: async ({ inboundBody }) => ({
+      intent: "tour_request",
+      ambiguity: false,
+      suggestedReply: "Tours are available this week.",
+      reasonCode: null,
+      workflowOutcome: "showing_confirmed",
+      confidence: 0.92,
+      riskLevel: inboundBody.includes("Please") ? "critical" : "high"
+    })
+  });
+
+  assert.equal(result.repliesCreated, 0);
+  assert.equal(result.metrics.sends.sent, 0);
+  assert.equal(result.metrics.decisions.ineligible, 2);
+  assert.equal(fixture.outbound.length, 0);
+  for (const [index, processed] of fixture.processed.entries()) {
+    assert.equal(processed.metadataPatch.workflowOutcome, "human_required");
+    assert.equal(processed.metadataPatch.reviewStatus, "hold");
+    assert.equal(processed.metadataPatch.actionQueue, "agent_action");
+    assert.equal(processed.metadataPatch.riskLevel, riskLevels[index]);
+  }
+  const queuedLogs = fixture.logs.filter((entry) => entry.action === "ai_reply_human_required_queued");
+  assert.equal(queuedLogs.length, 2);
+  assert.equal(queuedLogs.some((entry) => entry.details.riskLevel === "high"), true);
+  assert.equal(queuedLogs.some((entry) => entry.details.riskLevel === "critical"), true);
 });
 
 test("processing failures are captured in metrics and error logs", async () => {
@@ -657,6 +879,141 @@ test("dispatch duplicate suppression prevents double-send for the same dispatch 
   assert.equal(secondRun.metrics.dispatch.duplicatesSuppressed, 1);
   assert.equal(fixture.outbound.length, 1);
   assert.equal(fixture.logs.some((entry) => entry.action === "ai_reply_dispatch_duplicate_suppressed"), true);
+});
+
+test("multi-worker concurrent cycles suppress duplicate outbound sends", async () => {
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m9-race",
+        conversationId: "c9-race",
+        body: "Can I tour this unit this weekend?",
+        metadata: {},
+        platform: "leasebreak",
+        platformAccountId: "p9",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        propertyName: "Atlas Apartments",
+        unitNumber: "4B",
+        hasRecentOutbound: false
+      }
+    ],
+    ruleByIntent: {
+      tour_request: {
+        id: "r1",
+        enabled: true,
+        actionConfig: { template: "tour_invite_v1" }
+      }
+    },
+    templatesByName: {
+      tour_invite_v1: {
+        id: "t1",
+        body: "Tours for {{unit_number}}"
+      }
+    },
+    slotOptionsByUnit: {
+      u1: [
+        {
+          starts_at: "2026-02-10T17:00:00.000Z",
+          ends_at: "2026-02-10T17:30:00.000Z",
+          timezone: "UTC"
+        }
+      ]
+    }
+  });
+
+  let dispatchCalls = 0;
+  fixture.adapter.dispatchOutboundMessage = async () => {
+    dispatchCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return {
+      externalMessageId: "ext-race",
+      channel: "in_app",
+      providerStatus: "sent"
+    };
+  };
+
+  const [firstRun, secondRun] = await Promise.all([
+    processPendingMessages({
+      adapter: fixture.adapter,
+      logger: console,
+      now: new Date("2026-02-06T10:00:00.000Z")
+    }),
+    processPendingMessages({
+      adapter: fixture.adapter,
+      logger: console,
+      now: new Date("2026-02-06T10:00:00.000Z")
+    })
+  ]);
+
+  assert.equal(dispatchCalls, 1);
+  assert.equal(fixture.outbound.length, 1);
+  assert.equal(firstRun.metrics.dispatch.duplicatesSuppressed + secondRun.metrics.dispatch.duplicatesSuppressed, 1);
+});
+
+test("decision stage fetches pending messages with worker claim metadata", async () => {
+  const fetchCalls = [];
+  const adapter = {
+    async fetchPendingMessages(payload) {
+      fetchCalls.push(payload);
+      return [];
+    }
+  };
+
+  const now = new Date("2026-02-06T10:00:00.000Z");
+  const result = await processPendingMessages({
+    adapter,
+    logger: console,
+    now,
+    limit: 7,
+    workerId: "worker-a",
+    claimTtlMs: 90000
+  });
+
+  assert.equal(result.scanned, 0);
+  assert.equal(fetchCalls.length, 1);
+  assert.deepEqual(fetchCalls[0], {
+    limit: 7,
+    now: now.toISOString(),
+    workerId: "worker-a",
+    claimTtlMs: 90000
+  });
+});
+
+test("worker cycle orchestrates ingest then decision-dispatch chain", async () => {
+  const callOrder = [];
+  const adapter = {
+    async ingestInboundMessages() {
+      callOrder.push("ingest");
+      return {
+        scanned: 3,
+        ingested: 2,
+        platforms: ["leasebreak"]
+      };
+    },
+    async fetchPendingMessages() {
+      callOrder.push("decision_fetch");
+      return [];
+    }
+  };
+
+  const result = await runWorkerCycle(
+    {},
+    {
+      log: () => {},
+      error: () => {}
+    },
+    {
+      adapter,
+      now: new Date("2026-02-06T10:00:00.000Z")
+    }
+  );
+
+  assert.deepEqual(callOrder, ["ingest", "decision_fetch"]);
+  assert.equal(result.ingest.scanned, 3);
+  assert.equal(result.ingest.ingested, 2);
+  assert.equal(result.scanned, 0);
 });
 
 test("retry-exhausted dispatch failures emit DLQ and escalation observability", async () => {

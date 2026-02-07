@@ -69,7 +69,7 @@ test("/api/admin/observability enforces auth guard behavior", async () => {
 });
 
 test("/api/admin/observability clamps and handles query params", async () => {
-  const req = createGetRequest("/api/admin/observability?windowHours=0&auditLimit=999&errorLimit=bad");
+  const req = createGetRequest("/api/admin/observability?windowHours=0&auditLimit=999&errorLimit=bad&signalLimit=999");
   const res = createResponseCapture();
   let snapshotArgs = null;
 
@@ -94,13 +94,14 @@ test("/api/admin/observability clamps and handles query params", async () => {
   assert.deepEqual(snapshotArgs, {
     windowHours: 1,
     auditLimit: 200,
-    errorLimit: 25
+    errorLimit: 25,
+    signalLimit: 100
   });
   assert.equal(parseJsonBody(res).windowHours, 1);
 });
 
 test("/api/admin/observability returns snapshot payload from route wiring", async () => {
-  const req = createGetRequest("/api/admin/observability?windowHours=48&auditLimit=3&errorLimit=2");
+  const req = createGetRequest("/api/admin/observability?windowHours=48&auditLimit=3&errorLimit=2&signalLimit=5");
   const res = createResponseCapture();
   const fakeClient = { id: "client-1" };
   let clientReceived = null;
@@ -131,7 +132,10 @@ test("/api/admin/observability returns snapshot payload from route wiring", asyn
       escalationReasons: [{ reasonCode: "escalate_no_slot_candidates", count: 2 }],
       bookingsByStatus: [{ status: "confirmed", count: 3 }],
       bookingsByPlatform: [{ platform: "leasebreak", count: 3 }],
-      platformFailures: [{ platform: "leasebreak", stage: "dispatch_outbound_message", action: "platform_dispatch_error", count: 1 }]
+      platformFailures: [{ platform: "leasebreak", stage: "dispatch_outbound_message", action: "platform_dispatch_error", count: 1 }],
+      auditByPlatform: [{ platform: "leasebreak", count: 4 }],
+      auditByAgent: [{ agentId: "u1", actorType: "agent", count: 4 }],
+      auditByConversation: [{ conversationId: "conv-1", count: 4 }]
     },
     recentErrors: [{ id: "err-1" }],
     recentAudit: [{ id: "aud-1" }]

@@ -91,8 +91,30 @@ function getRetryDetails(error) {
   };
 }
 
-export async function processPendingMessagesWithAi({ adapter, logger = console, limit = 20, now = new Date() }) {
-  const pendingMessages = await adapter.fetchPendingMessages(limit);
+function requiresHumanAction(pipeline) {
+  if (pipeline.workflowOutcome === "human_required") {
+    return true;
+  }
+  return typeof pipeline.escalationReasonCode === "string" && pipeline.escalationReasonCode.includes("human_required");
+}
+
+export async function processPendingMessagesWithAi({
+  adapter,
+  logger = console,
+  limit = 20,
+  now = new Date(),
+  workerId = null,
+  claimTtlMs = null,
+  aiClassifier,
+  aiEnabled,
+  geminiModel
+}) {
+  const pendingMessages = await adapter.fetchPendingMessages({
+    limit,
+    now: now.toISOString(),
+    workerId,
+    claimTtlMs
+  });
   let repliesCreated = 0;
   const metrics = createMetricsSnapshot();
 
@@ -163,8 +185,12 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
         rule,
         template,
         templateContext,
-        autoSendEnabled: Boolean(rule?.enabled) && platformPolicy.sendMode === "auto_send"
+        autoSendEnabled: Boolean(rule?.enabled) && platformPolicy.sendMode === "auto_send",
+        aiClassifier,
+        aiEnabled,
+        geminiModel
       });
+      const humanActionRequired = requiresHumanAction(pipeline);
 
       await adapter.recordLog({
         actorType: "worker",
@@ -177,6 +203,9 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
           followUp: pipeline.followUp,
           provider: pipeline.provider,
           outcome: pipeline.outcome,
+          workflowOutcome: pipeline.workflowOutcome,
+          confidence: pipeline.confidence,
+          riskLevel: pipeline.riskLevel,
           decision: pipeline.eligibility,
           escalationReasonCode: pipeline.escalationReasonCode,
           platformPolicy,
@@ -205,6 +234,9 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
             effectiveIntent: pipeline.effectiveIntent,
             followUp: pipeline.followUp,
             provider: pipeline.provider,
+            workflowOutcome: pipeline.workflowOutcome,
+            confidence: pipeline.confidence,
+            riskLevel: pipeline.riskLevel,
             escalationReasonCode: pipeline.escalationReasonCode,
             decision: pipeline.eligibility,
             platformPolicy,
@@ -212,6 +244,24 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
           }
         });
         metrics.auditLogsWritten += 1;
+
+        if (humanActionRequired) {
+          await adapter.recordLog({
+            actorType: "worker",
+            entityType: "message",
+            entityId: message.id,
+            action: "ai_reply_human_required_queued",
+            details: {
+              platform,
+              reason: pipeline.escalationReasonCode || pipeline.eligibility.reason,
+              workflowOutcome: pipeline.workflowOutcome,
+              confidence: pipeline.confidence,
+              riskLevel: pipeline.riskLevel,
+              queue: "agent_action"
+            }
+          });
+          metrics.auditLogsWritten += 1;
+        }
       }
 
       if (pipeline.eligibility.eligible) {
@@ -343,12 +393,16 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
         effectiveIntent: pipeline.effectiveIntent,
         followUp: pipeline.followUp,
         provider: pipeline.provider,
+        workflowOutcome: pipeline.workflowOutcome,
+        confidence: pipeline.confidence,
+        riskLevel: pipeline.riskLevel,
         replyEligible: pipeline.eligibility.eligible,
         replyDecisionReason: pipeline.eligibility.reason,
         outcome: pipeline.outcome,
         escalationReasonCode: pipeline.escalationReasonCode,
         platformPolicy,
-        guardrails: pipeline.guardrails.reasons
+        guardrails: pipeline.guardrails.reasons,
+        ...(humanActionRequired ? { reviewStatus: "hold", actionQueue: "agent_action" } : {})
       };
 
       await adapter.markInboundProcessed({
@@ -369,6 +423,9 @@ export async function processPendingMessagesWithAi({ adapter, logger = console, 
           followUp: pipeline.followUp,
           provider: pipeline.provider,
           outcome: pipeline.outcome,
+          workflowOutcome: pipeline.workflowOutcome,
+          confidence: pipeline.confidence,
+          riskLevel: pipeline.riskLevel,
           decision: pipeline.eligibility,
           escalationReasonCode: pipeline.escalationReasonCode,
           platformPolicy,

@@ -7,26 +7,47 @@ import { processPendingMessagesWithAi } from "./decision-pipeline.js";
 
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS || 15000);
 const queueBatchSize = Number(process.env.WORKER_QUEUE_BATCH_SIZE || 20);
+const ingestBatchSize = Number(process.env.WORKER_INGEST_BATCH_SIZE || 50);
+const claimTtlMs = Number(process.env.WORKER_CLAIM_TTL_MS || Math.max(pollIntervalMs * 4, 60000));
+const workerInstanceId = process.env.WORKER_INSTANCE_ID || `worker-${process.pid}`;
+const ingestPlatforms = process.env.WORKER_INGEST_PLATFORMS
+  ? process.env.WORKER_INGEST_PLATFORMS.split(",").map((platform) => platform.trim()).filter(Boolean)
+  : null;
 const task = process.env.WORKER_TASK || "ai-triage-reply";
 const runOnce = process.env.WORKER_RUN_ONCE === "1";
 
-export async function runWorkerCycle(client, logger = console) {
-  const adapter = createPostgresQueueAdapter(client);
+export async function runWorkerCycle(client, logger = console, options = {}) {
+  const adapter = options.adapter || createPostgresQueueAdapter(client);
   const startedAt = Date.now();
+  const now = options.now || new Date();
+  const ingestResult = typeof adapter.ingestInboundMessages === "function"
+    ? await adapter.ingestInboundMessages({
+        limit: ingestBatchSize,
+        platforms: ingestPlatforms
+      })
+    : { scanned: 0, ingested: 0, platforms: [] };
+
   const result = await processPendingMessages({
     adapter,
     logger,
     limit: queueBatchSize,
-    now: new Date()
+    now,
+    workerId: workerInstanceId,
+    claimTtlMs
   });
 
   logger.log("[worker] cycle complete", {
+    ingestScanned: ingestResult.scanned,
+    ingestIngested: ingestResult.ingested,
     scanned: result.scanned,
     repliesCreated: result.repliesCreated,
     durationMs: Date.now() - startedAt
   });
 
-  return result;
+  return {
+    ...result,
+    ingest: ingestResult
+  };
 }
 
 export async function processPendingMessages(params) {

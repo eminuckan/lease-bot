@@ -1,6 +1,8 @@
 import { isRetryableError, withRetry } from "./retry.js";
+import { REQUIRED_RPA_PLATFORMS } from "./platform-adapters.js";
+import { createRpaRunner } from "./rpa-runner.js";
 
-const SUPPORTED_PLATFORMS = ["spareroom", "roomies", "leasebreak", "renthop", "furnishedfinder"];
+const SUPPORTED_PLATFORMS = [...REQUIRED_RPA_PLATFORMS];
 
 const DEFAULT_RETRY_POLICY = {
   retries: 3,
@@ -21,6 +23,18 @@ const DEFAULT_CIRCUIT_BREAKER_POLICY = {
   failureThreshold: 3,
   cooldownMs: 30_000
 };
+
+const DEFAULT_INGEST_METRICS_POLICY = {
+  p95TargetMs: 60_000
+};
+
+function normalizeP95TargetMs(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_INGEST_METRICS_POLICY.p95TargetMs;
+  }
+  return Math.round(parsed);
+}
 
 const PLATFORM_ANTI_BOT_POLICIES = {
   spareroom: {
@@ -242,16 +256,34 @@ function createRpaConnector({
   config,
   rpaRunner,
   logger,
+  observabilityHook,
   retry,
   sleep,
   sessionManager,
   antiBotPolicy,
   circuitBreakerPolicy,
+  ingestMetricsPolicy,
   nowMs,
   random,
   pacingState,
   circuitState
 }) {
+  const normalizedIngestP95TargetMs = normalizeP95TargetMs(ingestMetricsPolicy?.p95TargetMs);
+
+  function emitReliabilityEvent(event) {
+    logger.info?.("[integrations] rpa reliability event", event);
+    if (typeof observabilityHook === "function") {
+      try {
+        observabilityHook(event);
+      } catch (hookError) {
+        logger.warn?.("[integrations] rpa reliability hook failed", {
+          platform,
+          error: hookError instanceof Error ? hookError.message : String(hookError)
+        });
+      }
+    }
+  }
+
   async function enforcePacing(account, action) {
     const accountId = account?.id || account?.account_external_id || "unknown";
     const pacingKey = `${platform}:${accountId}:${action}`;
@@ -286,6 +318,13 @@ function createRpaConnector({
     if (breaker.state === "open") {
       const elapsedMs = now - breaker.openedAtMs;
       if (elapsedMs < cooldownMs) {
+        emitReliabilityEvent({
+          type: "rpa_circuit_open_fail_fast",
+          platform,
+          accountId,
+          action,
+          retryAfterMs: Math.max(0, cooldownMs - elapsedMs)
+        });
         throw createCircuitOpenError({
           platform,
           accountId,
@@ -296,9 +335,23 @@ function createRpaConnector({
 
       breaker.state = "half_open";
       breaker.halfOpenInFlight = true;
+      emitReliabilityEvent({
+        type: "rpa_circuit_half_open_probe",
+        platform,
+        accountId,
+        action,
+        cooldownMs
+      });
       circuitState.set(breakerKey, breaker);
     } else if (breaker.state === "half_open") {
       if (breaker.halfOpenInFlight) {
+        emitReliabilityEvent({
+          type: "rpa_circuit_half_open_busy",
+          platform,
+          accountId,
+          action,
+          retryAfterMs: cooldownMs
+        });
         throw createCircuitOpenError({
           platform,
           accountId,
@@ -339,11 +392,21 @@ function createRpaConnector({
             });
           } catch (error) {
             if (isSessionExpiredError(error) || isCaptchaError(error)) {
+              const refreshReason = isCaptchaError(error) ? "captcha_or_bot_challenge" : "session_expired";
+              emitReliabilityEvent({
+                type: "rpa_session_refresh_requested",
+                platform,
+                accountId,
+                action,
+                attempt,
+                reason: refreshReason,
+                error: error.message
+              });
               await sessionManager.refresh({
                 platform,
                 account,
                 action,
-                reason: isCaptchaError(error) ? "captcha_or_bot_challenge" : "session_expired",
+                reason: refreshReason,
                 error
               });
             }
@@ -371,13 +434,24 @@ function createRpaConnector({
             return isRetryableError(error, attempt);
           },
           onRetry: ({ delayMs, error, attempt }) => {
+            const reason = isCaptchaError(error) ? "captcha_or_challenge" : isSessionExpiredError(error) ? "session_refresh" : "transient_failure";
+            emitReliabilityEvent({
+              type: "rpa_retry_scheduled",
+              platform,
+              accountId: account.id,
+              action,
+              attempt,
+              delayMs,
+              reason,
+              error: error.message
+            });
             logger.warn?.("[integrations] anti-bot retry", {
               platform,
               accountId: account.id,
               action,
               attempt,
               delayMs,
-              reason: isCaptchaError(error) ? "captcha_or_challenge" : isSessionExpiredError(error) ? "session_refresh" : "transient_failure",
+              reason,
               error: error.message
             });
           }
@@ -388,21 +462,42 @@ function createRpaConnector({
       breaker.failureCount = 0;
       breaker.openedAtMs = 0;
       breaker.halfOpenInFlight = false;
+      emitReliabilityEvent({
+        type: "rpa_circuit_closed",
+        platform,
+        accountId,
+        action
+      });
       circuitState.set(breakerKey, breaker);
       return result;
     } catch (error) {
+      let opened = false;
       if (breaker.state === "half_open") {
         breaker.state = "open";
         breaker.failureCount = failureThreshold;
         breaker.openedAtMs = nowMs();
         breaker.halfOpenInFlight = false;
+        opened = true;
       } else {
         breaker.failureCount += 1;
         if (breaker.failureCount >= failureThreshold) {
           breaker.state = "open";
           breaker.openedAtMs = nowMs();
           breaker.halfOpenInFlight = false;
+          opened = true;
         }
+      }
+
+      if (opened) {
+        emitReliabilityEvent({
+          type: "rpa_circuit_opened",
+          platform,
+          accountId,
+          action,
+          failureCount: breaker.failureCount,
+          failureThreshold,
+          error: error?.message || String(error)
+        });
       }
 
       circuitState.set(breakerKey, breaker);
@@ -414,11 +509,33 @@ function createRpaConnector({
     id: platform,
     mode: config.mode,
     async ingest({ account }) {
+      const startedAtMs = nowMs();
       const result = await runWithAutomationResilience({
         account,
         action: "ingest",
         payload: null
       });
+      const durationMs = Math.max(0, nowMs() - startedAtMs);
+      const targetExceeded = durationMs > normalizedIngestP95TargetMs;
+      emitReliabilityEvent({
+        type: "rpa_ingest_latency_measured",
+        platform,
+        accountId: account?.id || account?.account_external_id || "unknown",
+        action: "ingest",
+        durationMs,
+        p95TargetMs: normalizedIngestP95TargetMs,
+        targetExceeded
+      });
+      if (targetExceeded) {
+        emitReliabilityEvent({
+          type: "rpa_ingest_latency_target_exceeded",
+          platform,
+          accountId: account?.id || account?.account_external_id || "unknown",
+          action: "ingest",
+          durationMs,
+          p95TargetMs: normalizedIngestP95TargetMs
+        });
+      }
 
       const messages = Array.isArray(result?.messages) ? result.messages : [];
       return messages.map((message) => normalizeInboundMessage(message));
@@ -464,19 +581,7 @@ function createNoopTransport() {
 }
 
 function createNoopRpaRunner() {
-  return {
-    async run({ action }) {
-      if (action === "ingest") {
-        return { messages: [] };
-      }
-
-      return {
-        externalMessageId: `rpa_${Date.now()}_${Math.random().toString(16).slice(2, 6)}`,
-        status: "sent",
-        channel: "in_app"
-      };
-    }
-  };
+  return createRpaRunner({ runtimeMode: "mock" });
 }
 
 function createNoopSessionManager() {
@@ -493,11 +598,25 @@ function createNoopSessionManager() {
 export function createConnectorRegistry(options = {}) {
   const env = options.env || process.env;
   const logger = options.logger || console;
+  const ingestMetrics = options.ingestMetrics || {};
+  const defaultIngestP95TargetMs = normalizeP95TargetMs(
+    ingestMetrics.p95TargetMs ?? env.LEASE_BOT_INGEST_P95_TARGET_MS
+  );
   const transport = options.transport || createNoopTransport();
-  const rpaRunner = options.rpaRunner || createNoopRpaRunner();
+  const rpaRunner = options.rpaRunner || createRpaRunner({
+    runtimeMode: options.rpaRuntimeMode || env.LEASE_BOT_RPA_RUNTIME || "mock",
+    logger,
+    adapterOverrides: options.platformAdapters,
+    hooks: {
+      onEvent(event) {
+        logger.info?.("[integrations] rpa runtime event", event);
+      }
+    }
+  });
   const retry = options.retry || {};
   const sleep = options.sleep || retry.sleep || sleepWithTimeout;
   const sessionManager = options.sessionManager || createNoopSessionManager();
+  const observabilityHook = options.observabilityHook || options.hooks?.onReliabilityEvent;
   const nowMs = options.nowMs || (() => Date.now());
   const random = options.random || Math.random;
   const pacingState = new Map();
@@ -515,6 +634,12 @@ export function createConnectorRegistry(options = {}) {
       ...DEFAULT_CIRCUIT_BREAKER_POLICY,
       ...(options.circuitBreaker?.[platform] || {})
     };
+    const ingestMetricsPolicy = {
+      ...DEFAULT_INGEST_METRICS_POLICY,
+      p95TargetMs: normalizeP95TargetMs(
+        options.ingestMetrics?.[platform]?.p95TargetMs ?? defaultIngestP95TargetMs
+      )
+    };
 
     const connector = config.mode === "api"
       ? createApiConnector({ platform, config, transport })
@@ -523,11 +648,13 @@ export function createConnectorRegistry(options = {}) {
           config,
           rpaRunner,
           logger,
+          observabilityHook,
           retry,
           sleep,
           sessionManager,
           antiBotPolicy,
           circuitBreakerPolicy,
+          ingestMetricsPolicy,
           nowMs,
           random,
           pacingState,

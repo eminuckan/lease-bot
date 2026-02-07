@@ -61,6 +61,20 @@ async function callRoute(method, path, { role = "agent", sessionUserId = "222222
   resetRouteTestOverrides();
   setRouteTestOverrides({
     getSession: async () => ({ user: { id: sessionUserId, role } }),
+    fetchUnitAgentSlotCandidates: async (_client, unitId) => {
+      if (!body?.startsAt || !body?.endsAt || !body?.agentId) {
+        return [];
+      }
+
+      return [
+        {
+          unitId,
+          agentId: body.agentId,
+          startsAt: body.startsAt,
+          endsAt: body.endsAt
+        }
+      ];
+    },
     ...overrides
   });
 
@@ -143,6 +157,52 @@ test("R14: booking endpoint is idempotent and replays existing appointment", asy
   assert.equal(auditCapture.entries.at(-1)?.action, "showing_booking_replayed");
 });
 
+test("R10: idempotency replay resolves before slot validation false negatives", async () => {
+  let candidateChecks = 0;
+  let createCalled = false;
+  const auditCapture = createAuditCapture();
+
+  const response = await callRoute("POST", "/api/showing-appointments/book", {
+    body: {
+      idempotencyKey: "booking-thread-r10-priority",
+      platformAccountId: "11111111-1111-4111-8111-111111111111",
+      unitId: "33333333-3333-4333-8333-333333333333",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      startsAt: "2026-03-02T18:00:00.000Z",
+      endsAt: "2026-03-02T18:30:00.000Z",
+      timezone: "America/Chicago"
+    },
+    overrides: {
+      withClient: async (task) => task({ id: "client-1" }),
+      recordAuditLog: auditCapture.recordAuditLog,
+      resolveShowingBookingIdempotency: async () => ({
+        appointment: {
+          id: "acacacac-acac-4cac-8cac-acacacacacac",
+          status: "confirmed"
+        },
+        idempotentReplay: true
+      }),
+      fetchUnitAgentSlotCandidates: async () => {
+        candidateChecks += 1;
+        return [];
+      },
+      createShowingAppointment: async () => {
+        createCalled = true;
+        return {
+          appointment: { id: "never-called", status: "confirmed" },
+          idempotentReplay: false
+        };
+      }
+    }
+  });
+
+  assert.equal(response.res.statusCode, 200);
+  assert.equal(response.json.idempotentReplay, true);
+  assert.equal(candidateChecks, 0);
+  assert.equal(createCalled, false);
+  assert.equal(auditCapture.entries.at(-1)?.action, "showing_booking_replayed");
+});
+
 test("R14: idempotency mismatch returns explicit 409 conflict payload", async () => {
   const auditCapture = createAuditCapture();
   const response = await callRoute("POST", "/api/showing-appointments/book", {
@@ -203,8 +263,108 @@ test("R14: agent cannot book for another agent", async () => {
   assert.equal(createCalled, false);
 });
 
+test("R9: booking enforces assignment+availability slot selection before insert", async () => {
+  let createCalled = false;
+  let candidateArgs = null;
+  const auditCapture = createAuditCapture();
+
+  const response = await callRoute("POST", "/api/showing-appointments/book", {
+    body: {
+      idempotencyKey: "booking-thread-r9-reject",
+      platformAccountId: "11111111-1111-4111-8111-111111111111",
+      unitId: "33333333-3333-4333-8333-333333333333",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      startsAt: "2026-03-06T18:00:00.000Z",
+      endsAt: "2026-03-06T18:30:00.000Z",
+      timezone: "America/Chicago"
+    },
+    overrides: {
+      withClient: async (task) => task({ id: "client-1" }),
+      recordAuditLog: auditCapture.recordAuditLog,
+      fetchUnitAgentSlotCandidates: async (_client, unitId, options) => {
+        candidateArgs = { unitId, ...options };
+        return [
+          {
+            unitId,
+            agentId: "99999999-9999-4999-8999-999999999999",
+            startsAt: "2026-03-06T18:00:00.000Z",
+            endsAt: "2026-03-06T18:30:00.000Z"
+          }
+        ];
+      },
+      createShowingAppointment: async () => {
+        createCalled = true;
+        return {
+          appointment: {
+            id: "never-called",
+            status: "confirmed"
+          },
+          idempotentReplay: false
+        };
+      }
+    }
+  });
+
+  assert.equal(response.res.statusCode, 409);
+  assert.equal(response.json.error, "slot_unavailable");
+  assert.equal(response.json.adminReviewRequired, true);
+  assert.equal(response.json.alternatives.length, 1);
+  assert.equal(candidateArgs.unitId, "33333333-3333-4333-8333-333333333333");
+  assert.equal(candidateArgs.fromDate, "2026-03-06");
+  assert.equal(candidateArgs.includePassive, true);
+  assert.equal(createCalled, false);
+  assert.equal(auditCapture.entries.at(-1)?.action, "showing_booking_slot_unavailable");
+});
+
+test("R9/R10: booking accepts candidate that covers requested selection", async () => {
+  let createCalled = false;
+  let createdPayload = null;
+
+  const response = await callRoute("POST", "/api/showing-appointments/book", {
+    body: {
+      idempotencyKey: "booking-thread-r9-allow",
+      platformAccountId: "11111111-1111-4111-8111-111111111111",
+      unitId: "33333333-3333-4333-8333-333333333333",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      startsAt: "2026-03-07T18:00:00.000Z",
+      endsAt: "2026-03-07T18:30:00.000Z",
+      timezone: "America/Chicago"
+    },
+    overrides: {
+      withClient: async (task) => task({ id: "client-1" }),
+      fetchUnitAgentSlotCandidates: async (_client, unitId) => [
+        {
+          unitId,
+          agentId: "22222222-2222-4222-8222-222222222222",
+          startsAt: "2026-03-07T17:30:00.000Z",
+          endsAt: "2026-03-07T18:45:00.000Z"
+        }
+      ],
+      createShowingAppointment: async (_client, payload) => {
+        createCalled = true;
+        createdPayload = payload;
+        return {
+          appointment: {
+            id: "adadadad-adad-4dad-8dad-adadadadadad",
+            idempotencyKey: payload.idempotencyKey,
+            status: "confirmed"
+          },
+          idempotentReplay: false
+        };
+      }
+    }
+  });
+
+  assert.equal(response.res.statusCode, 201);
+  assert.equal(response.json.idempotentReplay, false);
+  assert.equal(response.json.appointment.status, "confirmed");
+  assert.equal(createCalled, true);
+  assert.equal(createdPayload.idempotencyKey, "booking-thread-r9-allow");
+});
+
 test("R16: booking conflict returns alternatives and admin review signal", async () => {
   let candidateArgs = null;
+  let candidateCallCount = 0;
   const auditCapture = createAuditCapture();
   const response = await callRoute("POST", "/api/showing-appointments/book", {
     body: {
@@ -225,7 +385,19 @@ test("R16: booking conflict returns alternatives and admin review signal", async
         throw error;
       },
       fetchUnitAgentSlotCandidates: async (_client, unitId, options) => {
+        candidateCallCount += 1;
         candidateArgs = { unitId, ...options };
+        if (candidateCallCount === 1) {
+          return [
+            {
+              unitId,
+              agentId: "22222222-2222-4222-8222-222222222222",
+              startsAt: "2026-03-03T18:00:00.000Z",
+              endsAt: "2026-03-03T18:30:00.000Z"
+            }
+          ];
+        }
+
         return [{ unitId, agentId: "33333333-3333-4333-8333-333333333333" }];
       }
     }

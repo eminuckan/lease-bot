@@ -74,6 +74,24 @@ test("builds observability payload with core metrics and recent feeds", async ()
       ]
     },
     {
+      rows: [
+        { platform: "leasebreak", count: "7" },
+        { platform: "spareroom", count: "4" }
+      ]
+    },
+    {
+      rows: [
+        { agent_id: "11111111-1111-1111-1111-111111111111", actor_type: "agent", count: "5" },
+        { agent_id: "unknown", actor_type: "system", count: "2" }
+      ]
+    },
+    {
+      rows: [
+        { conversation_id: "conv-1", count: "6" },
+        { conversation_id: "conv-2", count: "2" }
+      ]
+    },
+    {
       rows: [{
         id: "err-1",
         actor_type: "system",
@@ -143,6 +161,18 @@ test("builds observability payload with core metrics and recent feeds", async ()
     { platform: "leasebreak", stage: "dispatch_outbound_message", action: "platform_dispatch_dlq", count: 1 },
     { platform: "unknown", stage: "unknown", action: "api_error", count: 1 }
   ]);
+  assert.deepEqual(payload.signals.auditByPlatform, [
+    { platform: "leasebreak", count: 7 },
+    { platform: "spareroom", count: 4 }
+  ]);
+  assert.deepEqual(payload.signals.auditByAgent, [
+    { agentId: "11111111-1111-1111-1111-111111111111", actorType: "agent", count: 5 },
+    { agentId: "unknown", actorType: "system", count: 2 }
+  ]);
+  assert.deepEqual(payload.signals.auditByConversation, [
+    { conversationId: "conv-1", count: 6 },
+    { conversationId: "conv-2", count: 2 }
+  ]);
   assert.equal(payload.recentErrors.length, 1);
   assert.deepEqual(payload.recentErrors[0], {
     id: "err-1",
@@ -166,14 +196,29 @@ test("builds observability payload with core metrics and recent feeds", async ()
     createdAt: "2026-02-06T10:01:00.000Z"
   });
 
-  assert.equal(client.calls.length, 7);
+  assert.equal(client.calls.length, 10);
   assert.deepEqual(client.calls[0].params, [36]);
   assert.deepEqual(client.calls[1].params, [36]);
   assert.deepEqual(client.calls[2].params, [36]);
   assert.deepEqual(client.calls[3].params, [36]);
   assert.deepEqual(client.calls[4].params, [36]);
-  assert.deepEqual(client.calls[5].params, [10]);
-  assert.deepEqual(client.calls[6].params, [20]);
+  assert.equal(client.calls[5].params[0], 36);
+  assert.equal(Array.isArray(client.calls[5].params[1]), true);
+  assert.equal(client.calls[5].params[1].includes("workflow_state_transitioned"), true);
+  assert.equal(client.calls[5].params[1].includes("inbox_manual_reply_dispatched"), true);
+  assert.equal(client.calls[5].params[2], 25);
+  assert.equal(client.calls[6].params[0], 36);
+  assert.equal(Array.isArray(client.calls[6].params[1]), true);
+  assert.equal(client.calls[6].params[1].includes("workflow_state_transitioned"), true);
+  assert.equal(client.calls[6].params[1].includes("inbox_manual_reply_dispatched"), true);
+  assert.equal(client.calls[6].params[2], 25);
+  assert.equal(client.calls[7].params[0], 36);
+  assert.equal(Array.isArray(client.calls[7].params[1]), true);
+  assert.equal(client.calls[7].params[1].includes("workflow_state_transitioned"), true);
+  assert.equal(client.calls[7].params[1].includes("inbox_manual_reply_dispatched"), true);
+  assert.equal(client.calls[7].params[2], 25);
+  assert.deepEqual(client.calls[8].params, [10]);
+  assert.deepEqual(client.calls[9].params, [20]);
 
   assert.match(client.calls[1].sql, /showing_booking_created/);
   assert.match(client.calls[1].sql, /showing_booking_replayed/);
@@ -181,5 +226,8 @@ test("builds observability payload with core metrics and recent feeds", async ()
   assert.match(client.calls[1].sql, /showing_booking_idempotency_conflict/);
   assert.match(client.calls[1].sql, /showing_booking_failed/);
   assert.match(client.calls[4].sql, /showing_booking_failed/);
-  assert.match(client.calls[5].sql, /showing_booking_failed/);
+  assert.match(client.calls[5].sql, /action = ANY/);
+  assert.match(client.calls[6].sql, /agent_id/);
+  assert.match(client.calls[7].sql, /conversation_id/);
+  assert.match(client.calls[8].sql, /showing_booking_failed/);
 });

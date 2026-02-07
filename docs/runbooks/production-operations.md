@@ -1,6 +1,6 @@
 # Production Operations Runbook
 
-This runbook captures required runtime configuration for AI/provider/platform integration and day-2 operation checks.
+This runbook captures required runtime configuration, observability checks, and staged rollout operations for production.
 
 ## Context7 references used
 
@@ -48,6 +48,89 @@ Use `env:VAR_NAME` refs in platform account credential fields so secret values s
 2. Confirm `AI_DECISION_PROVIDER` matches rollout intent (`heuristic` for safe baseline, `gemini` for AI rollout).
 3. Confirm CI evidence logs exist under `docs/qa/evidence/` from the current candidate.
 4. Confirm mobile-first smoke coverage and scheduling flow checks passed (`npm run smoke -w @lease-bot/web`).
+5. Confirm release critical e2e package gate passed in CI metadata (`release-critical-e2e-log`) using:
+
+```bash
+node --test apps/api/test/platform-contract-e2e.test.js apps/worker/test/platform-contract-e2e.test.js apps/api/test/showing-booking.test.js apps/api/test/platform-policy-routes.test.js apps/worker/test/worker.test.js
+```
+
+## Observability snapshot checks (R28)
+
+Use the authenticated admin observability endpoint before and during rollout:
+
+```bash
+curl -sS \
+  -H "Cookie: ${ADMIN_OBSERVABILITY_COOKIE}" \
+  "${API_BASE_URL}/api/admin/observability?windowHours=24&auditLimit=50&errorLimit=25&signalLimit=25"
+```
+
+`ADMIN_OBSERVABILITY_COOKIE` must be an authenticated Better Auth session cookie captured from an admin login session in the target environment.
+
+Required rollout visibility in the snapshot payload:
+
+- `signals.auditByPlatform`: top critical actions by platform.
+- `signals.auditByAgent`: top critical actions by actor/agent.
+- `signals.auditByConversation`: top critical actions by conversation.
+- Critical action coverage includes lifecycle/manual interventions: `workflow_state_transitioned`, `inbox_manual_reply_dispatched`.
+- `signals.platformFailures`: per-stage failure concentration for dispatch/booking/api actions.
+
+Promotion from canary to full requires two consecutive checks with no sustained 2x+ increase in critical error actions compared to shadow baseline.
+
+## Rollout operations (shadow -> canary -> full)
+
+1. Shadow
+   - Deploy API and worker with outbound impact isolated to `draft_only` behavior.
+   - Verify rollout completion:
+
+```bash
+kubectl rollout status deployment/lease-bot-api --timeout 10m
+kubectl rollout status deployment/lease-bot-worker --timeout 10m
+```
+
+2. Canary
+   - Enable canary cohort and rerun smoke + critical e2e gates.
+   - Review observability snapshot with `windowHours=2`.
+
+3. Full
+   - Promote only after shadow and canary checks are green.
+   - Watch rollout status and snapshot (`windowHours=1`) for at least one worker poll interval.
+
+## Rollback conditions and commands (R30)
+
+Rollback immediately when one of the following occurs:
+
+- Any required CI/release gate fails.
+- Required platform parity breaks (`missingPlatforms` non-empty).
+- Critical error actions show sustained 2x+ spike vs shadow baseline.
+- Human handoff or showing lifecycle checks regress in canary.
+
+Rollback commands:
+
+```bash
+kubectl rollout undo deployment/lease-bot-api
+kubectl rollout undo deployment/lease-bot-worker
+kubectl rollout undo deployment/lease-bot-api --to-revision=<n>
+kubectl rollout undo deployment/lease-bot-worker --to-revision=<n>
+```
+
+## Rollout and rollback drill evidence (R30)
+
+For each release candidate, run one no-impact drill and capture evidence under `docs/qa/evidence/`.
+
+1. Rollout drill (shadow -> canary simulation)
+   - Record start timestamp and candidate SHA.
+   - Run rollout status checks and one authenticated observability snapshot (`windowHours=2`).
+   - Save command output and snapshot payload to `docs/qa/evidence/rollout-drill-<date>.md`.
+
+2. Rollback drill (revision-targeted simulation)
+   - Capture current deployment revisions: `kubectl rollout history deployment/lease-bot-api` and `kubectl rollout history deployment/lease-bot-worker`.
+   - Execute rollback command in drill context (`kubectl rollout undo ... --to-revision=<n>`), then verify with `kubectl rollout status`.
+   - Save command transcript, chosen revision, and verification output to `docs/qa/evidence/rollback-drill-<date>.md`.
+
+3. Evidence minimums
+   - Include operator, environment, command lines, and exit codes.
+   - Include one authenticated observability payload excerpt proving platform/agent/conversation visibility.
+   - Include explicit pass/fail result and follow-up owner if drill fails.
 
 ## Incident triage quick steps
 
@@ -58,5 +141,7 @@ Use `env:VAR_NAME` refs in platform account credential fields so secret values s
 
 ## Acceptance mapping
 
-- R10: env and runbook guidance include AI/provider/platform variables and secret-handling rules.
-- R9: runbook requires green API/worker/web gates and evidence artifacts before release.
+- R18: runbook requires authenticated admin platform visibility checks for `isActive`, `sendMode`, `integrationMode`, `health`, and `error` fields.
+- R28: runbook operationalizes platform/agent/conversation audit visibility during rollout.
+- R29: runbook requires critical e2e package gate evidence before promotion.
+- R30: runbook defines staged rollout execution and measurable rollback triggers.

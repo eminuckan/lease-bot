@@ -1,6 +1,7 @@
 export {
   classifyIntent,
   detectFollowUp,
+  listWorkflowOutcomes,
   renderTemplate,
   decideReplyEligibility,
   runReplyPipeline,

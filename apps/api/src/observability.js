@@ -6,7 +6,29 @@ export function parsePositiveInt(value, fallback, { min = 1, max = 1000 } = {}) 
   return Math.min(max, Math.max(min, parsed));
 }
 
-export async function fetchObservabilitySnapshot(client, { windowHours = 24, auditLimit = 50, errorLimit = 25 } = {}) {
+const CRITICAL_AUDIT_ACTIONS = [
+  "ai_reply_decision",
+  "ai_reply_created",
+  "ai_reply_skipped",
+  "ai_reply_escalated",
+  "ai_reply_human_required_queued",
+  "ai_reply_error",
+  "platform_dispatch_sent",
+  "platform_dispatch_error",
+  "platform_dispatch_dlq",
+  "showing_booking_created",
+  "showing_booking_replayed",
+  "showing_booking_conflict",
+  "showing_booking_idempotency_conflict",
+  "showing_booking_failed",
+  "workflow_state_transitioned",
+  "inbox_message_approved",
+  "inbox_message_rejected",
+  "inbox_message_error",
+  "inbox_manual_reply_dispatched"
+];
+
+export async function fetchObservabilitySnapshot(client, { windowHours = 24, auditLimit = 50, errorLimit = 25, signalLimit = 25 } = {}) {
   const metricsResult = await client.query(
     `SELECT COUNT(*) FILTER (
               WHERE direction = 'inbound'
@@ -131,6 +153,48 @@ export async function fetchObservabilitySnapshot(client, { windowHours = 24, aud
     [windowHours]
   );
 
+  const auditByPlatformResult = await client.query(
+    `SELECT COALESCE(NULLIF(details->>'platform', ''), 'unknown') AS platform,
+            COUNT(*)::int AS count
+       FROM "AuditLogs"
+      WHERE created_at >= NOW() - make_interval(hours => $1::int)
+        AND action = ANY($2::text[])
+      GROUP BY platform
+      ORDER BY count DESC, platform ASC
+      LIMIT $3::int`,
+    [windowHours, CRITICAL_AUDIT_ACTIONS, signalLimit]
+  );
+
+  const auditByAgentResult = await client.query(
+    `SELECT COALESCE(NULLIF(actor_id::text, ''), 'unknown') AS agent_id,
+            COALESCE(NULLIF(actor_type, ''), 'unknown') AS actor_type,
+            COUNT(*)::int AS count
+       FROM "AuditLogs"
+      WHERE created_at >= NOW() - make_interval(hours => $1::int)
+        AND action = ANY($2::text[])
+      GROUP BY agent_id, actor_type
+      ORDER BY count DESC, actor_type ASC, agent_id ASC
+      LIMIT $3::int`,
+    [windowHours, CRITICAL_AUDIT_ACTIONS, signalLimit]
+  );
+
+  const auditByConversationResult = await client.query(
+    `SELECT COALESCE(
+              NULLIF(details->>'conversationId', ''),
+              NULLIF(details#>>'{conversation,id}', ''),
+              CASE WHEN entity_type = 'conversation' THEN entity_id::text ELSE NULL END,
+              'unknown'
+            ) AS conversation_id,
+            COUNT(*)::int AS count
+       FROM "AuditLogs"
+      WHERE created_at >= NOW() - make_interval(hours => $1::int)
+        AND action = ANY($2::text[])
+      GROUP BY conversation_id
+      ORDER BY count DESC, conversation_id ASC
+      LIMIT $3::int`,
+    [windowHours, CRITICAL_AUDIT_ACTIONS, signalLimit]
+  );
+
   const recentErrorsResult = await client.query(
     `SELECT id, actor_type, actor_id, entity_type, entity_id, action, details, created_at
        FROM "AuditLogs"
@@ -198,6 +262,19 @@ export async function fetchObservabilitySnapshot(client, { windowHours = 24, aud
         platform: row.platform || "unknown",
         stage: row.stage || "unknown",
         action: row.action,
+        count: Number(row.count || 0)
+      })),
+      auditByPlatform: auditByPlatformResult.rows.map((row) => ({
+        platform: row.platform || "unknown",
+        count: Number(row.count || 0)
+      })),
+      auditByAgent: auditByAgentResult.rows.map((row) => ({
+        agentId: row.agent_id || "unknown",
+        actorType: row.actor_type || "unknown",
+        count: Number(row.count || 0)
+      })),
+      auditByConversation: auditByConversationResult.rows.map((row) => ({
+        conversationId: row.conversation_id || "unknown",
         count: Number(row.count || 0)
       }))
     },
