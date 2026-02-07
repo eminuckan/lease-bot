@@ -51,11 +51,12 @@ Optional DB UI:
 docker compose --profile tools up -d adminer
 ```
 
-Run migrations and seed data:
+Run migrations (seed is optional and only for demo data):
 
 ```bash
 npm run migrate -w @lease-bot/db
-npm run seed -w @lease-bot/db
+# Optional demo data:
+# npm run seed -w @lease-bot/db
 ```
 
 Run apps in separate terminals:

@@ -48,6 +48,9 @@ Use `env:VAR_NAME` refs in platform account credential fields so secret values s
 For platforms protected by Cloudflare/captcha, it is often more reliable to reuse a captured Playwright
 `storageState` instead of attempting automated login in a headless worker.
 
+If `storageState` is not sufficient (auth stored outside cookies/localStorage), configure a persistent
+Playwright profile directory via `credentials.userDataDirRef` instead.
+
 Env placeholders:
 
 - `SPAREROOM_RPA_SESSION`
@@ -59,6 +62,7 @@ Env placeholders:
 Platform account credential shape:
 
 - `{"sessionRef":"env:LEASEBREAK_RPA_SESSION"}`
+- `{"userDataDirRef":"env:LEASEBREAK_RPA_PROFILE"}`
 
 Capture workflow:
 

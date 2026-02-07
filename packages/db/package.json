@@ -7,7 +7,8 @@
   "scripts": {
     "migrate": "node --env-file=../../.env src/migrate.js",
     "seed": "node --env-file=../../.env src/seed.js",
-    "db:setup": "npm run migrate && npm run seed"
+    "db:setup": "npm run migrate",
+    "db:setup:demo": "npm run migrate && npm run seed"
   },
   "dependencies": {
     "pg": "^8.16.3"

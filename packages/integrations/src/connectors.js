@@ -147,6 +147,12 @@ function resolveCredentials(platform, rawCredentials = {}, env = process.env) {
 
   const resolved = {};
 
+  const loginId = rawCredentials.loginIdRef
+    ? resolveReferencedCredential(rawCredentials.loginIdRef, env, platform, "loginId")
+    : rawCredentials.loginId
+    ? resolveCredentialValue(rawCredentials.loginId, env, platform, "loginId")
+    : null;
+
   const username = rawCredentials.usernameRef
     ? resolveReferencedCredential(rawCredentials.usernameRef, env, platform, "username")
     : rawCredentials.username
@@ -181,6 +187,15 @@ function resolveCredentials(platform, rawCredentials = {}, env = process.env) {
     ? resolveCredentialValue(rawCredentials.storageStatePath, env, platform, "storageStatePath")
     : null;
 
+  const userDataDir = rawCredentials.userDataDirRef
+    ? resolveReferencedCredential(rawCredentials.userDataDirRef, env, platform, "userDataDirRef")
+    : rawCredentials.userDataDir
+    ? resolveCredentialValue(rawCredentials.userDataDir, env, platform, "userDataDir")
+    : null;
+
+  if (loginId) {
+    resolved.loginId = loginId;
+  }
   if (username) {
     resolved.username = username;
   }
@@ -196,14 +211,17 @@ function resolveCredentials(platform, rawCredentials = {}, env = process.env) {
   if (storageStatePath) {
     resolved.storageStatePath = storageStatePath;
   }
+  if (userDataDir) {
+    resolved.userDataDir = userDataDir;
+  }
 
-  const hasSession = Boolean(resolved.storageState || resolved.storageStatePath);
-  const hasLoginId = Boolean(resolved.username || resolved.email);
+  const hasSession = Boolean(resolved.storageState || resolved.storageStatePath || resolved.userDataDir);
+  const hasLoginId = Boolean(resolved.loginId || resolved.username || resolved.email);
   const hasPassword = Boolean(resolved.password);
 
   if (!hasSession) {
     if (!hasLoginId) {
-      throw createMissingCredentialError(platform, "username");
+      throw createMissingCredentialError(platform, "loginId");
     }
     if (!hasPassword) {
       throw createMissingCredentialError(platform, "password");
@@ -211,7 +229,7 @@ function resolveCredentials(platform, rawCredentials = {}, env = process.env) {
   }
 
   // Normalized alias the runtime can rely on.
-  resolved.loginId = resolved.username || resolved.email || null;
+  resolved.loginId = resolved.loginId || resolved.username || resolved.email || null;
 
   return resolved;
 }
@@ -325,14 +343,17 @@ function createEnvSessionManager(logger = console) {
   return {
     async get({ platform, account }) {
       const creds = account?.credentials || {};
-      const value = creds.storageStatePath || creds.storageState || null;
-      if (!value) {
+      const userDataDirValue = creds.userDataDir || null;
+      const storageStateValue = creds.storageStatePath || creds.storageState || null;
+      if (!userDataDirValue && !storageStateValue) {
         return null;
       }
 
       try {
+        const storageState = storageStateValue ? await parseStorageStateValue(storageStateValue) : null;
         return {
-          storageState: await parseStorageStateValue(value)
+          ...(userDataDirValue ? { userDataDir: userDataDirValue } : {}),
+          ...(storageState ? { storageState } : {})
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

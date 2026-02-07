@@ -40,8 +40,10 @@ const requiredPlatformSet = new Set(requiredPlatforms);
 const allowedSendModes = new Set(["auto_send", "draft_only"]);
 const allowedIntegrationModes = new Set(["rpa"]);
 // Platform account credentials must be env:/secret: references (never plaintext).
-// Authentication can be provided either via loginId+password (username/email) or a captured storageState (sessionRef).
+// Authentication can be provided either via loginId+password (username/email) or a captured storageState / persistent profile.
 const platformCredentialAllowedKeys = new Set([
+  "loginId",
+  "loginIdRef",
   "username",
   "usernameRef",
   "email",
@@ -50,7 +52,9 @@ const platformCredentialAllowedKeys = new Set([
   "passwordRef",
   "sessionRef",
   "storageStateRef",
-  "storageStatePathRef"
+  "storageStatePathRef",
+  "userDataDir",
+  "userDataDirRef"
 ]);
 const globalDefaultSendMode = allowedSendModes.has(process.env.PLATFORM_DEFAULT_SEND_MODE)
   ? process.env.PLATFORM_DEFAULT_SEND_MODE
@@ -318,9 +322,13 @@ function validatePlatformCredentialPayload(platform, credentials) {
   const hasSession =
     Boolean(credentials?.sessionRef)
     || Boolean(credentials?.storageStateRef)
-    || Boolean(credentials?.storageStatePathRef);
+    || Boolean(credentials?.storageStatePathRef)
+    || Boolean(credentials?.userDataDirRef)
+    || Boolean(credentials?.userDataDir);
   const hasLoginId =
-    Boolean(credentials?.username)
+    Boolean(credentials?.loginId)
+    || Boolean(credentials?.loginIdRef)
+    || Boolean(credentials?.username)
     || Boolean(credentials?.usernameRef)
     || Boolean(credentials?.email)
     || Boolean(credentials?.emailRef);
@@ -330,10 +338,10 @@ function validatePlatformCredentialPayload(platform, credentials) {
 
   if (!hasSession) {
     if (!hasLoginId) {
-      errors.push(`credentials.usernameRef or credentials.emailRef is required for ${platform} (or provide credentials.sessionRef)`);
+      errors.push(`credentials.loginIdRef (or usernameRef/emailRef) is required for ${platform} (or provide credentials.sessionRef / credentials.userDataDirRef)`);
     }
     if (!hasPassword) {
-      errors.push(`credentials.passwordRef is required for ${platform} (or provide credentials.sessionRef)`);
+      errors.push(`credentials.passwordRef is required for ${platform} (or provide credentials.sessionRef / credentials.userDataDirRef)`);
     }
   }
 

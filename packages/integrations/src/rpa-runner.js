@@ -21,6 +21,20 @@ function parseJsonArray(value) {
   }
 }
 
+function parseBooleanEnv(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return null;
+}
+
 function normalizeAutomationError(error) {
   const message = String(error?.message || "").toLowerCase();
 
@@ -49,6 +63,22 @@ function normalizeAutomationError(error) {
 }
 
 function createDefaultPlaywrightFactory(logger = console) {
+  function buildLaunchOptions(headless) {
+    const env = process.env || {};
+    const launchArgs = parseJsonArray(env.LEASE_BOT_RPA_LAUNCH_ARGS_JSON) || [];
+    const browserChannel = typeof env.LEASE_BOT_RPA_BROWSER_CHANNEL === "string" && env.LEASE_BOT_RPA_BROWSER_CHANNEL.trim().length > 0
+      ? env.LEASE_BOT_RPA_BROWSER_CHANNEL.trim()
+      : undefined;
+    const chromiumSandbox = env.LEASE_BOT_RPA_CHROMIUM_SANDBOX === "0" ? false : undefined;
+
+    return {
+      headless,
+      ...(browserChannel ? { channel: browserChannel } : {}),
+      ...(chromiumSandbox === false ? { chromiumSandbox } : {}),
+      ...(launchArgs.length > 0 ? { args: launchArgs } : {})
+    };
+  }
+
   return {
     async launch({ headless }) {
       try {
@@ -57,21 +87,36 @@ function createDefaultPlaywrightFactory(logger = console) {
         if (!chromium || typeof chromium.launch !== "function") {
           throw new Error("chromium_launch_unavailable");
         }
-        const env = process.env || {};
-        const launchArgs = parseJsonArray(env.LEASE_BOT_RPA_LAUNCH_ARGS_JSON) || [];
-        const browserChannel = typeof env.LEASE_BOT_RPA_BROWSER_CHANNEL === "string" && env.LEASE_BOT_RPA_BROWSER_CHANNEL.trim().length > 0
-          ? env.LEASE_BOT_RPA_BROWSER_CHANNEL.trim()
-          : undefined;
-        const chromiumSandbox = env.LEASE_BOT_RPA_CHROMIUM_SANDBOX === "0" ? false : undefined;
 
-        return chromium.launch({
-          headless,
-          ...(browserChannel ? { channel: browserChannel } : {}),
-          ...(chromiumSandbox === false ? { chromiumSandbox } : {}),
-          ...(launchArgs.length > 0 ? { args: launchArgs } : {})
-        });
+        return chromium.launch(buildLaunchOptions(headless));
       } catch (error) {
         logger.error?.("[integrations] playwright runtime unavailable", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+        throw createRunnerError("RPA_RUNTIME_UNAVAILABLE", "Playwright runtime is unavailable", {
+          retryable: false,
+          cause: error
+        });
+      }
+    }
+    ,
+    async launchPersistentContext({ headless, userDataDir }) {
+      if (typeof userDataDir !== "string" || userDataDir.trim().length === 0) {
+        throw createRunnerError("RPA_PROFILE_INVALID", "Invalid userDataDir for persistent context", {
+          retryable: false
+        });
+      }
+
+      try {
+        const playwright = await import("playwright");
+        const chromium = playwright.chromium || playwright.default?.chromium;
+        if (!chromium || typeof chromium.launchPersistentContext !== "function") {
+          throw new Error("chromium_launch_persistent_unavailable");
+        }
+
+        return chromium.launchPersistentContext(userDataDir, buildLaunchOptions(headless));
+      } catch (error) {
+        logger.error?.("[integrations] playwright persistent context unavailable", {
           error: error instanceof Error ? error.message : String(error)
         });
         throw createRunnerError("RPA_RUNTIME_UNAVAILABLE", "Playwright runtime is unavailable", {
@@ -261,7 +306,8 @@ export function createPlaywrightRpaRunner(options = {}) {
   const hooks = options.hooks || {};
   const debugArtifactsEnabled = options.debugArtifactsEnabled ?? process.env.LEASE_BOT_RPA_DEBUG === "1";
   const debugArtifactsDir = options.debugArtifactsDir || process.env.LEASE_BOT_RPA_DEBUG_DIR || ".playwright/rpa-debug";
-  const headless = options.headless !== false;
+  const envHeadless = parseBooleanEnv(process.env.LEASE_BOT_RPA_HEADLESS);
+  const headless = typeof options.headless === "boolean" ? options.headless : envHeadless === null ? true : envHeadless;
   const clock = options.clock || (() => new Date());
   const playwrightFactory = options.playwrightFactory || createDefaultPlaywrightFactory(logger);
 
@@ -338,10 +384,26 @@ export function createPlaywrightRpaRunner(options = {}) {
       let context;
       let page;
       try {
-        browser = await playwrightFactory.launch({ platform, action, account, headless });
-        context = await browser.newContext({
-          storageState: session?.storageState || undefined
-        });
+        if (session?.userDataDir) {
+          if (typeof playwrightFactory.launchPersistentContext !== "function") {
+            throw createRunnerError("RPA_PROFILE_UNSUPPORTED", "Persistent profile is not supported by the current runner", {
+              retryable: false
+            });
+          }
+          context = await playwrightFactory.launchPersistentContext({
+            platform,
+            action,
+            account,
+            headless,
+            userDataDir: session.userDataDir
+          });
+          browser = typeof context?.browser === "function" ? context.browser() : null;
+        } else {
+          browser = await playwrightFactory.launch({ platform, action, account, headless });
+          context = await browser.newContext({
+            storageState: session?.storageState || undefined
+          });
+        }
         page = await context.newPage();
         const result = await actionHandler({
           adapter,

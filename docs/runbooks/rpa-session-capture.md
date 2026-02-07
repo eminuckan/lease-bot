@@ -11,6 +11,10 @@ on `PlatformAccounts`. The referenced env var may contain either:
 - A JSON storageState blob, or
 - A `base64:<...>` encoded JSON storageState blob
 
+If a platform stores auth state outside cookies/localStorage (for example in IndexedDB),
+`storageState` may not keep you logged in. In that case, configure a persistent profile directory
+via `credentials.userDataDirRef` instead.
+
 ## Capture with `playwright-cli`
 
 Example for SpareRoom:
@@ -35,10 +39,26 @@ Ensure your platform account credentials reference it:
 { "sessionRef": "env:SPAREROOM_RPA_SESSION" }
 ```
 
+## Alternative: persistent profile (userDataDir)
+
+If `storageState` does not work reliably for a platform, use the same persistent profile directory you logged in with:
+
+```bash
+export SPAREROOM_RPA_PROFILE=/tmp/lease-bot-spareroom
+```
+
+And set platform account credentials:
+
+```json
+{ "userDataDirRef": "env:SPAREROOM_RPA_PROFILE" }
+```
+
 ## Run the worker with Playwright runtime
 
 ```bash
 export LEASE_BOT_RPA_RUNTIME=playwright
+# Optional: many platforms block fully headless browsing
+# export LEASE_BOT_RPA_HEADLESS=0
 npm run start:worker
 ```
 
