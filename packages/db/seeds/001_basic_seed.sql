@@ -124,7 +124,10 @@ VALUES
     CURRENT_DATE,
     '{"pets":"cats-only"}'::jsonb
   )
-ON CONFLICT (platform_account_id, listing_external_id) DO UPDATE SET
+ON CONFLICT (id) DO UPDATE SET
+  unit_id = EXCLUDED.unit_id,
+  platform_account_id = EXCLUDED.platform_account_id,
+  listing_external_id = EXCLUDED.listing_external_id,
   status = EXCLUDED.status,
   rent_cents = EXCLUDED.rent_cents,
   available_on = EXCLUDED.available_on,
