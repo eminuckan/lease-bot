@@ -3,12 +3,12 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { Pool } from "pg";
+import { createTestPool } from "./helpers/test-db.js";
 
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/lease_bot_test";
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+let pool;
 
 async function ensureWorkflowMigration006() {
   const hasWorkflowState = await pool.query(
@@ -117,6 +117,7 @@ async function cleanupFixture(ids) {
 }
 
 test.before(async () => {
+  pool = await createTestPool(process.env.DATABASE_URL);
   await ensureWorkflowMigration006();
 });
 
@@ -227,5 +228,5 @@ test("R8: inbound message recovers no_reply outcome and writes recovery audit", 
 });
 
 test.after(async () => {
-  await pool.end();
+  await pool?.end();
 });

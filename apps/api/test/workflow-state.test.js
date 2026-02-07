@@ -3,13 +3,13 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { Pool } from "pg";
+import { createTestPool } from "./helpers/test-db.js";
 
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/lease_bot_test";
 process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || "test-secret-value";
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+let pool;
 
 async function ensureWorkflowMigration006() {
   const hasWorkflowState = await pool.query(
@@ -255,6 +255,7 @@ async function cleanupInboundIdentityFixture(ids) {
 }
 
 test.before(async () => {
+  pool = await createTestPool(process.env.DATABASE_URL);
   await ensureWorkflowMigration006();
 });
 
@@ -630,5 +631,5 @@ test("R5: inbound identity context persists and links across DB + inbox detail A
 
 test.after(async () => {
   resetRouteTestOverrides();
-  await pool.end();
+  await pool?.end();
 });
