@@ -6,7 +6,7 @@ import test from "node:test";
 import { Pool } from "pg";
 
 process.env.NODE_ENV = "test";
-process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost:5432/lease_bot_test";
+process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/lease_bot_test";
 process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET || "test-secret-value";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });

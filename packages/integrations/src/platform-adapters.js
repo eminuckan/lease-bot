@@ -4,8 +4,11 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
   spareroom: {
     platform: "spareroom",
     baseUrl: "https://www.spareroom.com",
-    inboxPath: "/flatshare/inbox.pl",
-    threadPath: (threadId) => `/flatshare/messages.pl?thread_id=${encodeURIComponent(threadId)}`,
+    // US site uses /roommate/* routes (login: /roommate/logon.pl, messages: /roommate/mythreads*.pl).
+    // Note: thread URL shape may differ across legacy/beta message UIs, so this is best-effort and
+    // should be overridden per-account if needed.
+    inboxPath: "/roommate/mythreads.pl",
+    threadPath: (threadId) => `/roommate/messages.pl?thread_id=${encodeURIComponent(threadId)}`,
     selectors: {
       challenge: ["iframe[src*='challenge']", "#challenge-form", "[data-cy='bot-check']"],
       captcha: ["iframe[title*='captcha']", "[data-sitekey]", "#g-recaptcha-response"],

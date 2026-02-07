@@ -5,6 +5,7 @@ import {
   createConnectorRegistry,
   createPlatformAdapterRegistry,
   createPlaywrightRpaRunner,
+  createRpaRunner,
   REQUIRED_RPA_PLATFORMS
 } from "../src/index.js";
 
@@ -30,10 +31,12 @@ function createEnv() {
   return {
     SPAREROOM_USERNAME: "sp_user",
     SPAREROOM_PASSWORD: "sp_pass",
-    ROOMIES_EMAIL: "roomies@example.com",
+    ROOMIES_USERNAME: "roomies_user",
     ROOMIES_PASSWORD: "roomies-pass",
-    LEASEBREAK_API_KEY: "leasebreak-key",
-    RENTHOP_ACCESS_TOKEN: "renthop-token",
+    LEASEBREAK_USERNAME: "leasebreak_user",
+    LEASEBREAK_PASSWORD: "leasebreak-pass",
+    RENTHOP_USERNAME: "renthop_user",
+    RENTHOP_PASSWORD: "renthop-pass",
     FURNISHEDFINDER_USERNAME: "ff_user",
     FURNISHEDFINDER_PASSWORD: "ff_pass"
   };
@@ -53,7 +56,7 @@ function createAccounts() {
       id: "acc-roomies",
       platform: "roomies",
       credentials: {
-        emailRef: "env:ROOMIES_EMAIL",
+        usernameRef: "env:ROOMIES_USERNAME",
         passwordRef: "env:ROOMIES_PASSWORD"
       }
     },
@@ -61,14 +64,16 @@ function createAccounts() {
       id: "acc-leasebreak",
       platform: "leasebreak",
       credentials: {
-        apiKeyRef: "env:LEASEBREAK_API_KEY"
+        usernameRef: "env:LEASEBREAK_USERNAME",
+        passwordRef: "env:LEASEBREAK_PASSWORD"
       }
     },
     {
       id: "acc-renthop",
       platform: "renthop",
       credentials: {
-        accessTokenRef: "env:RENTHOP_ACCESS_TOKEN"
+        usernameRef: "env:RENTHOP_USERNAME",
+        passwordRef: "env:RENTHOP_PASSWORD"
       }
     },
     {
@@ -323,7 +328,8 @@ test("R19 resilience: connector emits reliability observability hooks for retry/
     id: "acc-leasebreak",
     platform: "leasebreak",
     credentials: {
-      apiKeyRef: "env:LEASEBREAK_API_KEY"
+      usernameRef: "env:LEASEBREAK_USERNAME",
+      passwordRef: "env:LEASEBREAK_PASSWORD"
     }
   };
 
@@ -404,7 +410,8 @@ test("R19 resilience: default registry path logs reliability events without cust
     id: "acc-leasebreak",
     platform: "leasebreak",
     credentials: {
-      apiKeyRef: "env:LEASEBREAK_API_KEY"
+      usernameRef: "env:LEASEBREAK_USERNAME",
+      passwordRef: "env:LEASEBREAK_PASSWORD"
     }
   };
 
@@ -484,4 +491,18 @@ test("R4 traceability: ingest p95 target metric wiring is configurable and emits
   const exceededEvent = events.find((event) => event.type === "rpa_ingest_latency_target_exceeded");
   assert.ok(exceededEvent);
   assert.equal(exceededEvent.p95TargetMs, 10);
+});
+
+test("R7 runtime safety: production rejects mock runtime", () => {
+  assert.throws(
+    () => createRpaRunner({ runtimeMode: "mock", appEnv: "production" }),
+    {
+      code: "MOCK_RUNTIME_FORBIDDEN"
+    }
+  );
+});
+
+test("R7 runtime safety: production allows playwright runtime", () => {
+  const runner = createRpaRunner({ runtimeMode: "playwright", appEnv: "production" });
+  assert.equal(typeof runner.run, "function");
 });

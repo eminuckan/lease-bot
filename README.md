@@ -83,7 +83,9 @@ Copy `.env.example` to `.env` and adjust values for your environment.
 DB scripts (`npm run migrate -w @lease-bot/db` and `npm run seed -w @lease-bot/db`) load the root `.env` automatically via Node `--env-file`.
 API and worker scripts also load root `.env` automatically. Set `BETTER_AUTH_SECRET` to a non-default random value before running `npm run dev:api`.
 
-Connector credentials use env references so secrets stay outside committed JSON. For credential fields in platform accounts, both `env:VAR_NAME` and `VAR_NAME` reference forms are supported (for example `apiKeyRef: "env:LEASEBREAK_API_KEY"` or `apiKeyRef: "LEASEBREAK_API_KEY"`). Keep actual values only in `.env` or deployment secret stores; do not commit live credentials.
+Connector credentials use env references so secrets stay outside committed JSON. For credential fields in platform accounts, use only `env:VAR_NAME` (or `secret:VAR_NAME`) reference forms (for example `usernameRef: "env:LEASEBREAK_USERNAME"` and `passwordRef: "env:LEASEBREAK_PASSWORD"`). Keep actual values only in `.env` or deployment secret stores; do not commit live credentials.
+
+Some platforms require session-based auth due to anti-bot layers. See `docs/runbooks/rpa-session-capture.md` for capturing and configuring `sessionRef` / `storageStateRef`.
 
 AI decision provider toggles:
 

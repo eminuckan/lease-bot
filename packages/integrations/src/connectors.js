@@ -1,6 +1,8 @@
 import { isRetryableError, withRetry } from "./retry.js";
 import { REQUIRED_RPA_PLATFORMS } from "./platform-adapters.js";
 import { createRpaRunner } from "./rpa-runner.js";
+import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 
 const SUPPORTED_PLATFORMS = [...REQUIRED_RPA_PLATFORMS];
 
@@ -67,27 +69,22 @@ const PLATFORM_ANTI_BOT_POLICIES = {
 const CONNECTOR_DEFINITIONS = {
   spareroom: {
     mode: "rpa",
-    requiredCredentials: ["username", "password"],
     apiBasePath: "/spareroom"
   },
   roomies: {
     mode: "rpa",
-    requiredCredentials: ["email", "password"],
     apiBasePath: "/roomies"
   },
   leasebreak: {
     mode: "rpa",
-    requiredCredentials: ["apiKey"],
     apiBasePath: "/leasebreak"
   },
   renthop: {
     mode: "rpa",
-    requiredCredentials: ["accessToken"],
     apiBasePath: "/renthop"
   },
   furnishedfinder: {
     mode: "rpa",
-    requiredCredentials: ["username", "password"],
     apiBasePath: "/furnishedfinder"
   }
 };
@@ -149,22 +146,72 @@ function resolveCredentials(platform, rawCredentials = {}, env = process.env) {
   }
 
   const resolved = {};
-  for (const key of config.requiredCredentials) {
-    const inlineValue = rawCredentials[key];
-    const referencedValue = rawCredentials[`${key}Ref`];
 
-    if (inlineValue !== undefined && inlineValue !== null && inlineValue !== "") {
-      resolved[key] = resolveCredentialValue(inlineValue, env, platform, key);
-      continue;
-    }
+  const username = rawCredentials.usernameRef
+    ? resolveReferencedCredential(rawCredentials.usernameRef, env, platform, "username")
+    : rawCredentials.username
+    ? resolveCredentialValue(rawCredentials.username, env, platform, "username")
+    : null;
 
-    if (referencedValue !== undefined && referencedValue !== null && referencedValue !== "") {
-      resolved[key] = resolveReferencedCredential(referencedValue, env, platform, key);
-      continue;
-    }
+  const email = rawCredentials.emailRef
+    ? resolveReferencedCredential(rawCredentials.emailRef, env, platform, "email")
+    : rawCredentials.email
+    ? resolveCredentialValue(rawCredentials.email, env, platform, "email")
+    : null;
 
-    throw createMissingCredentialError(platform, key);
+  const password = rawCredentials.passwordRef
+    ? resolveReferencedCredential(rawCredentials.passwordRef, env, platform, "password")
+    : rawCredentials.password
+    ? resolveCredentialValue(rawCredentials.password, env, platform, "password")
+    : null;
+
+  const storageState = rawCredentials.storageStateRef
+    ? resolveReferencedCredential(rawCredentials.storageStateRef, env, platform, "storageStateRef")
+    : rawCredentials.sessionRef
+    ? resolveReferencedCredential(rawCredentials.sessionRef, env, platform, "sessionRef")
+    : rawCredentials.storageState
+    ? resolveCredentialValue(rawCredentials.storageState, env, platform, "storageState")
+    : rawCredentials.session
+    ? resolveCredentialValue(rawCredentials.session, env, platform, "session")
+    : null;
+
+  const storageStatePath = rawCredentials.storageStatePathRef
+    ? resolveReferencedCredential(rawCredentials.storageStatePathRef, env, platform, "storageStatePathRef")
+    : rawCredentials.storageStatePath
+    ? resolveCredentialValue(rawCredentials.storageStatePath, env, platform, "storageStatePath")
+    : null;
+
+  if (username) {
+    resolved.username = username;
   }
+  if (email) {
+    resolved.email = email;
+  }
+  if (password) {
+    resolved.password = password;
+  }
+  if (storageState) {
+    resolved.storageState = storageState;
+  }
+  if (storageStatePath) {
+    resolved.storageStatePath = storageStatePath;
+  }
+
+  const hasSession = Boolean(resolved.storageState || resolved.storageStatePath);
+  const hasLoginId = Boolean(resolved.username || resolved.email);
+  const hasPassword = Boolean(resolved.password);
+
+  if (!hasSession) {
+    if (!hasLoginId) {
+      throw createMissingCredentialError(platform, "username");
+    }
+    if (!hasPassword) {
+      throw createMissingCredentialError(platform, "password");
+    }
+  }
+
+  // Normalized alias the runtime can rely on.
+  resolved.loginId = resolved.username || resolved.email || null;
 
   return resolved;
 }
@@ -186,6 +233,44 @@ function sleepWithTimeout(delayMs) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
+function loadAdapterOverridesFromEnv(env = process.env, logger = console) {
+  const jsonValue = typeof env.LEASE_BOT_PLATFORM_ADAPTER_OVERRIDES_JSON === "string"
+    ? env.LEASE_BOT_PLATFORM_ADAPTER_OVERRIDES_JSON.trim()
+    : "";
+  if (jsonValue) {
+    try {
+      const parsed = JSON.parse(jsonValue);
+      if (parsed && typeof parsed === "object") {
+        return parsed;
+      }
+    } catch (error) {
+      logger.warn?.("[integrations] failed parsing LEASE_BOT_PLATFORM_ADAPTER_OVERRIDES_JSON", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  const pathValue = typeof env.LEASE_BOT_PLATFORM_ADAPTER_OVERRIDES_PATH === "string"
+    ? env.LEASE_BOT_PLATFORM_ADAPTER_OVERRIDES_PATH.trim()
+    : "";
+  if (pathValue) {
+    try {
+      const file = readFileSync(pathValue, "utf8");
+      const parsed = JSON.parse(file);
+      if (parsed && typeof parsed === "object") {
+        return parsed;
+      }
+    } catch (error) {
+      logger.warn?.("[integrations] failed loading LEASE_BOT_PLATFORM_ADAPTER_OVERRIDES_PATH", {
+        path: pathValue,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  return null;
+}
+
 function isSessionExpiredError(error) {
   const message = String(error?.message || "").toLowerCase();
   return error?.code === "SESSION_EXPIRED"
@@ -202,9 +287,72 @@ function isCaptchaError(error) {
   const message = String(error?.message || "").toLowerCase();
   return error?.code === "CAPTCHA_REQUIRED"
     || error?.code === "BOT_CHALLENGE"
+    || error?.code === "ACCESS_BLOCKED"
     || message.includes("captcha")
     || message.includes("challenge page")
     || message.includes("cloudflare");
+}
+
+function looksLikeJson(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const trimmed = value.trim();
+  return trimmed.startsWith("{") || trimmed.startsWith("[");
+}
+
+async function parseStorageStateValue(value) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.startsWith("base64:")) {
+    const decoded = Buffer.from(trimmed.slice(7), "base64").toString("utf8");
+    return JSON.parse(decoded);
+  }
+
+  if (looksLikeJson(trimmed)) {
+    return JSON.parse(trimmed);
+  }
+
+  // Otherwise treat it as a path.
+  const file = await readFile(trimmed, "utf8");
+  return JSON.parse(file);
+}
+
+function createEnvSessionManager(logger = console) {
+  return {
+    async get({ platform, account }) {
+      const creds = account?.credentials || {};
+      const value = creds.storageStatePath || creds.storageState || null;
+      if (!value) {
+        return null;
+      }
+
+      try {
+        return {
+          storageState: await parseStorageStateValue(value)
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw Object.assign(new Error(`Invalid storageState for ${platform}: ${message}`), {
+          code: "SESSION_INVALID",
+          retryable: false
+        });
+      }
+    },
+    async refresh({ platform, account, reason, error }) {
+      // We can't solve challenges automatically. Emit log so ops can rotate the sessionRef/path.
+      logger.warn?.("[integrations] session refresh required", {
+        platform,
+        accountId: account?.id || null,
+        reason,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  };
 }
 
 function createCircuitOpenError({ platform, accountId, action, retryAfterMs }) {
@@ -603,10 +751,11 @@ export function createConnectorRegistry(options = {}) {
     ingestMetrics.p95TargetMs ?? env.LEASE_BOT_INGEST_P95_TARGET_MS
   );
   const transport = options.transport || createNoopTransport();
+  const adapterOverridesFromEnv = loadAdapterOverridesFromEnv(env, logger);
   const rpaRunner = options.rpaRunner || createRpaRunner({
     runtimeMode: options.rpaRuntimeMode || env.LEASE_BOT_RPA_RUNTIME || "mock",
     logger,
-    adapterOverrides: options.platformAdapters,
+    adapterOverrides: options.platformAdapters || adapterOverridesFromEnv || undefined,
     hooks: {
       onEvent(event) {
         logger.info?.("[integrations] rpa runtime event", event);
@@ -615,7 +764,7 @@ export function createConnectorRegistry(options = {}) {
   });
   const retry = options.retry || {};
   const sleep = options.sleep || retry.sleep || sleepWithTimeout;
-  const sessionManager = options.sessionManager || createNoopSessionManager();
+  const sessionManager = options.sessionManager || createEnvSessionManager(logger);
   const observabilityHook = options.observabilityHook || options.hooks?.onReliabilityEvent;
   const nowMs = options.nowMs || (() => Date.now());
   const random = options.random || Math.random;

@@ -98,6 +98,60 @@ function requiresHumanAction(pipeline) {
   return typeof pipeline.escalationReasonCode === "string" && pipeline.escalationReasonCode.includes("human_required");
 }
 
+export function buildWorkflowPersistencePayload(workflowOutcome) {
+  if (workflowOutcome === "human_required") {
+    return {
+      workflowOutcome: "human_required",
+      followUpStage: null
+    };
+  }
+
+  if (workflowOutcome === "wants_reschedule") {
+    return {
+      workflowOutcome: "wants_reschedule",
+      showingState: "reschedule_requested",
+      followUpStage: null
+    };
+  }
+
+  if (workflowOutcome === "no_reply") {
+    return {
+      workflowOutcome: "no_reply",
+      followUpStage: null
+    };
+  }
+
+  if (workflowOutcome === "completed") {
+    return {
+      workflowOutcome: "completed",
+      showingState: "completed",
+      followUpStage: null
+    };
+  }
+
+  return null;
+}
+
+async function fetchSlotRowsForMessage(adapter, message) {
+  if (!message.unitId) {
+    return [];
+  }
+
+  if (typeof adapter.fetchAssignedAgentSlotOptions === "function") {
+    return adapter.fetchAssignedAgentSlotOptions({
+      unitId: message.unitId,
+      assignedAgentId: message.assignedAgentId,
+      limit: 3
+    });
+  }
+
+  if (typeof adapter.fetchSlotOptions === "function") {
+    return adapter.fetchSlotOptions(message.unitId, 3);
+  }
+
+  return [];
+}
+
 export async function processPendingMessagesWithAi({
   adapter,
   logger = console,
@@ -156,7 +210,7 @@ export async function processPendingMessagesWithAi({
         continue;
       }
 
-      const slotRows = message.unitId ? await adapter.fetchSlotOptions(message.unitId, 3) : [];
+      const slotRows = await fetchSlotRowsForMessage(adapter, message);
       const slotOptions = slotRows.map((slot) => formatSlotWindow(slot));
       const followUpRuleFallbackIntent = message.metadata?.intent || "tour_request";
       const messageIntent = classifyIntent(message.body);
@@ -191,6 +245,19 @@ export async function processPendingMessagesWithAi({
         geminiModel
       });
       const humanActionRequired = requiresHumanAction(pipeline);
+      const workflowPersistencePayload = buildWorkflowPersistencePayload(pipeline.workflowOutcome);
+
+      if (workflowPersistencePayload && typeof adapter.transitionConversationWorkflow === "function" && message.conversationId) {
+        failureStage = "persist_workflow_transition";
+        await adapter.transitionConversationWorkflow({
+          conversationId: message.conversationId,
+          payload: workflowPersistencePayload,
+          actorType: "worker",
+          actorId: message.assignedAgentId || null,
+          source: "ai_outcome_decision",
+          messageId: message.id
+        });
+      }
 
       await adapter.recordLog({
         actorType: "worker",

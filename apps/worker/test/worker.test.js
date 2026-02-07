@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { classifyIntent, detectFollowUp, listWorkflowOutcomes, runReplyPipelineWithAI } from "../../../packages/ai/src/index.js";
+import { buildWorkflowPersistencePayload } from "../src/decision-pipeline.js";
 import { processPendingMessages, runWorkerCycle } from "../src/worker.js";
 import {
   createConnectorRegistry,
@@ -9,14 +10,22 @@ import {
   withRetry
 } from "../../../packages/integrations/src/index.js";
 
-function createMemoryAdapter({ pendingMessages, ruleByIntent, templatesByName, slotOptionsByUnit = {} }) {
+function createMemoryAdapter({
+  pendingMessages,
+  ruleByIntent,
+  templatesByName,
+  slotOptionsByUnit = {},
+  assignedSlotOptionsByUnitAndAgent = null
+}) {
   const processed = [];
   const outbound = [];
   const logs = [];
+  const workflowTransitions = [];
   const dispatchByMessageId = new Map();
+  const slotOptionCalls = [];
+  const assignedSlotOptionCalls = [];
 
-  return {
-    adapter: {
+  const adapter = {
       async fetchPendingMessages() {
         return pendingMessages.map((message) => ({
           ...message,
@@ -29,6 +38,7 @@ function createMemoryAdapter({ pendingMessages, ruleByIntent, templatesByName, s
         }));
       },
       async fetchSlotOptions(unitId) {
+        slotOptionCalls.push({ unitId });
         return slotOptionsByUnit[unitId] || [];
       },
       async findRule({ intent, fallbackIntent }) {
@@ -95,16 +105,64 @@ function createMemoryAdapter({ pendingMessages, ruleByIntent, templatesByName, s
       async markInboundProcessed(payload) {
         processed.push(payload);
       },
+      async transitionConversationWorkflow(payload) {
+        workflowTransitions.push(payload);
+        return {
+          applied: true,
+          item: {
+            id: payload.conversationId,
+            workflowOutcome: payload.payload?.workflowOutcome || null,
+            showingState: payload.payload?.showingState || null,
+            followUpStage: payload.payload?.followUpStage || null
+          }
+        };
+      },
       async recordLog(payload) {
         logs.push(payload);
       }
-    },
+  };
+
+  if (assignedSlotOptionsByUnitAndAgent) {
+    adapter.fetchAssignedAgentSlotOptions = async ({ unitId, assignedAgentId }) => {
+      assignedSlotOptionCalls.push({ unitId, assignedAgentId });
+      const key = `${unitId}:${assignedAgentId}`;
+      return assignedSlotOptionsByUnitAndAgent[key] || [];
+    };
+  }
+
+  return {
+    adapter,
     processed,
     outbound,
     logs,
-    dispatchByMessageId
+    workflowTransitions,
+    dispatchByMessageId,
+    slotOptionCalls,
+    assignedSlotOptionCalls
   };
 }
+
+test("R4: workflow persistence mapping supports required AI outcomes", () => {
+  assert.deepEqual(buildWorkflowPersistencePayload("human_required"), {
+    workflowOutcome: "human_required",
+    followUpStage: null
+  });
+  assert.deepEqual(buildWorkflowPersistencePayload("wants_reschedule"), {
+    workflowOutcome: "wants_reschedule",
+    showingState: "reschedule_requested",
+    followUpStage: null
+  });
+  assert.deepEqual(buildWorkflowPersistencePayload("no_reply"), {
+    workflowOutcome: "no_reply",
+    followUpStage: null
+  });
+  assert.deepEqual(buildWorkflowPersistencePayload("completed"), {
+    workflowOutcome: "completed",
+    showingState: "completed",
+    followUpStage: null
+  });
+  assert.equal(buildWorkflowPersistencePayload("general_question"), null);
+});
 
 test("classifies intent and follow-up signals", () => {
   assert.equal(classifyIntent("Can I tour this unit this week?"), "tour_request");
@@ -269,6 +327,128 @@ test("R13 slot-aware flow drafts when slots are present", async () => {
   assert.equal(result.effectiveIntent, "tour_request");
   assert.equal(result.replyBody.includes(slotWindow), true);
   assert.equal(result.escalationReasonCode, null);
+});
+
+test("R3: worker slot context uses assigned-agent candidate source", async () => {
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m-r3-1",
+        conversationId: "c-r3-1",
+        body: "Can I tour tomorrow?",
+        metadata: {},
+        platformAccountId: "p1",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        propertyName: "Atlas Apartments",
+        unitNumber: "4B",
+        hasRecentOutbound: false
+      }
+    ],
+    ruleByIntent: {
+      tour_request: {
+        id: "r1",
+        enabled: true,
+        actionConfig: { template: "tour_invite_v1" }
+      }
+    },
+    templatesByName: {
+      tour_invite_v1: {
+        id: "t1",
+        body: "Tours for {{unit_number}}: {{slot_options}}"
+      }
+    },
+    slotOptionsByUnit: {
+      u1: [
+        {
+          starts_at: "2026-02-10T17:00:00.000Z",
+          ends_at: "2026-02-10T17:30:00.000Z",
+          timezone: "UTC"
+        }
+      ]
+    },
+    assignedSlotOptionsByUnitAndAgent: {
+      "u1:a1": [
+        {
+          starts_at: "2026-02-10T18:00:00.000Z",
+          ends_at: "2026-02-10T18:30:00.000Z",
+          timezone: "UTC"
+        }
+      ]
+    }
+  });
+
+  const result = await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-06T10:00:00.000Z")
+  });
+
+  assert.equal(result.repliesCreated, 1);
+  assert.equal(fixture.assignedSlotOptionCalls.length, 1);
+  assert.deepEqual(fixture.assignedSlotOptionCalls[0], { unitId: "u1", assignedAgentId: "a1" });
+  assert.equal(fixture.slotOptionCalls.length, 0);
+  assert.match(fixture.outbound[0].body, /2026-02-10T18:00:00.000Z/);
+  assert.doesNotMatch(fixture.outbound[0].body, /2026-02-10T17:00:00.000Z/);
+});
+
+test("R9: no candidate slots preserves escalation path", async () => {
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m-r9-1",
+        conversationId: "c-r9-1",
+        body: "Can I book a tour this week?",
+        metadata: {},
+        platformAccountId: "p1",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        propertyName: "Atlas Apartments",
+        unitNumber: "4B",
+        hasRecentOutbound: false
+      }
+    ],
+    ruleByIntent: {
+      tour_request: {
+        id: "r1",
+        enabled: true,
+        actionConfig: { template: "tour_invite_v1" }
+      }
+    },
+    templatesByName: {
+      tour_invite_v1: {
+        id: "t1",
+        body: "Tours for {{unit_number}}: {{slot_options}}"
+      }
+    },
+    slotOptionsByUnit: {
+      u1: [
+        {
+          starts_at: "2026-02-10T17:00:00.000Z",
+          ends_at: "2026-02-10T17:30:00.000Z",
+          timezone: "UTC"
+        }
+      ]
+    },
+    assignedSlotOptionsByUnitAndAgent: {
+      "u1:a1": []
+    }
+  });
+
+  const result = await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-06T10:00:00.000Z")
+  });
+
+  assert.equal(result.repliesCreated, 0);
+  assert.equal(result.metrics.escalations.raised, 1);
+  assert.equal(fixture.processed[0].metadataPatch.outcome, "escalate");
+  assert.equal(fixture.processed[0].metadataPatch.replyDecisionReason, "escalate_no_slot_candidates");
+  assert.equal(fixture.assignedSlotOptionCalls.length, 1);
+  assert.equal(fixture.slotOptionCalls.length, 0);
 });
 
 test("queue processing creates template-based reply and logs result", async () => {
@@ -696,6 +876,143 @@ test("R14: high and critical AI risk route to human_required queue without auto-
   assert.equal(queuedLogs.some((entry) => entry.details.riskLevel === "critical"), true);
 });
 
+test("R4/R8: worker persists AI outcomes through workflow transition-safe adapter path", async () => {
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m-r4-1",
+        conversationId: "c-r4-1",
+        body: "Please reschedule to another time",
+        metadata: {},
+        platform: "leasebreak",
+        platformAccountId: "p-r4-1",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        unitNumber: "4B",
+        hasRecentOutbound: false
+      },
+      {
+        id: "m-r4-2",
+        conversationId: "c-r4-2",
+        body: "No answer from me yet",
+        metadata: {},
+        platform: "leasebreak",
+        platformAccountId: "p-r4-2",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        unitNumber: "4B",
+        hasRecentOutbound: false
+      },
+      {
+        id: "m-r4-3",
+        conversationId: "c-r4-3",
+        body: "Can you explain everything in detail?",
+        metadata: {},
+        platform: "leasebreak",
+        platformAccountId: "p-r4-3",
+        assignedAgentId: "a1",
+        leadName: "Jamie",
+        unitId: "u1",
+        unitNumber: "4B",
+        hasRecentOutbound: false
+      }
+    ],
+    ruleByIntent: {
+      tour_request: {
+        id: "r1",
+        enabled: true,
+        actionConfig: { template: "tour_invite_v1" }
+      }
+    },
+    templatesByName: {
+      tour_invite_v1: {
+        id: "t1",
+        body: "Tours for {{unit_number}}"
+      }
+    },
+    slotOptionsByUnit: {
+      u1: [
+        {
+          starts_at: "2026-02-10T17:00:00.000Z",
+          ends_at: "2026-02-10T17:30:00.000Z",
+          timezone: "UTC"
+        }
+      ]
+    }
+  });
+
+  fixture.adapter.transitionConversationWorkflow = async (payload) => {
+    fixture.workflowTransitions.push(payload);
+    fixture.logs.push({
+      actorType: "worker",
+      entityType: "conversation",
+      entityId: payload.conversationId,
+      action: "workflow_state_transitioned",
+      details: {
+        source: payload.source,
+        trigger: "ai_outcome_persistence",
+        messageId: payload.messageId,
+        next: payload.payload
+      }
+    });
+    return { applied: true };
+  };
+
+  await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-06T10:00:00.000Z"),
+    aiClassifier: async ({ inboundBody }) => {
+      if (inboundBody.includes("reschedule")) {
+        return {
+          intent: "tour_request",
+          ambiguity: false,
+          suggestedReply: "Sure, we can find another slot.",
+          reasonCode: null,
+          workflowOutcome: "wants_reschedule",
+          confidence: 0.92,
+          riskLevel: "low"
+        };
+      }
+
+      if (inboundBody.includes("No answer")) {
+        return {
+          intent: "tour_request",
+          ambiguity: false,
+          suggestedReply: "Following up with slot options.",
+          reasonCode: null,
+          workflowOutcome: "no_reply",
+          confidence: 0.9,
+          riskLevel: "low"
+        };
+      }
+
+      return {
+        intent: "tour_request",
+        ambiguity: false,
+        suggestedReply: "I can share more details.",
+        reasonCode: null,
+        workflowOutcome: "human_required",
+        confidence: 0.91,
+        riskLevel: "low"
+      };
+    }
+  });
+
+  assert.equal(fixture.workflowTransitions.length, 3);
+  assert.deepEqual(fixture.workflowTransitions.map((entry) => entry.payload), [
+    { workflowOutcome: "wants_reschedule", showingState: "reschedule_requested", followUpStage: null },
+    { workflowOutcome: "no_reply", followUpStage: null },
+    { workflowOutcome: "human_required", followUpStage: null }
+  ]);
+  assert.equal(
+    fixture.logs.filter((entry) => entry.action === "workflow_state_transitioned").length,
+    3
+  );
+});
+
 test("processing failures are captured in metrics and error logs", async () => {
   const fixture = createMemoryAdapter({
     pendingMessages: [
@@ -1084,10 +1401,12 @@ test("connector registry keeps five-platform RPA ingest and outbound contracts",
     env: {
       SPAREROOM_USERNAME: "sp_user",
       SPAREROOM_PASSWORD: "sp_pass",
-      ROOMIES_EMAIL: "rm@example.com",
+      ROOMIES_USERNAME: "rm_user",
       ROOMIES_PASSWORD: "rm_pass",
-      LEASEBREAK_API_KEY: "lb_key",
-      RENTHOP_ACCESS_TOKEN: "rh_token",
+      LEASEBREAK_USERNAME: "lb_user",
+      LEASEBREAK_PASSWORD: "lb_pass",
+      RENTHOP_USERNAME: "rh_user",
+      RENTHOP_PASSWORD: "rh_pass",
       FURNISHEDFINDER_USERNAME: "ff_user",
       FURNISHEDFINDER_PASSWORD: "ff_pass"
     },
@@ -1128,7 +1447,7 @@ test("connector registry keeps five-platform RPA ingest and outbound contracts",
       id: "acc-roomies",
       platform: "roomies",
       credentials: {
-        emailRef: "env:ROOMIES_EMAIL",
+        usernameRef: "env:ROOMIES_USERNAME",
         passwordRef: "env:ROOMIES_PASSWORD"
       }
     },
@@ -1136,14 +1455,16 @@ test("connector registry keeps five-platform RPA ingest and outbound contracts",
       id: "acc-leasebreak",
       platform: "leasebreak",
       credentials: {
-        apiKeyRef: "env:LEASEBREAK_API_KEY"
+        usernameRef: "env:LEASEBREAK_USERNAME",
+        passwordRef: "env:LEASEBREAK_PASSWORD"
       }
     },
     {
       id: "acc-renthop",
       platform: "renthop",
       credentials: {
-        accessTokenRef: "env:RENTHOP_ACCESS_TOKEN"
+        usernameRef: "env:RENTHOP_USERNAME",
+        passwordRef: "env:RENTHOP_PASSWORD"
       }
     },
     {
@@ -1195,29 +1516,33 @@ test("credentials resolve from env references and fail fast when missing", () =>
   const account = {
     platform: "renthop",
     credentials: {
-      accessTokenRef: "env:RENTHOP_ACCESS_TOKEN"
+      usernameRef: "env:RENTHOP_USERNAME",
+      passwordRef: "env:RENTHOP_PASSWORD"
     }
   };
 
   const credentials = resolvePlatformCredentials(account, {
-    RENTHOP_ACCESS_TOKEN: "token-123"
+    RENTHOP_USERNAME: "user-123",
+    RENTHOP_PASSWORD: "pass-123"
   });
 
-  assert.equal(credentials.accessToken, "token-123");
+  assert.equal(credentials.username, "user-123");
+  assert.equal(credentials.password, "pass-123");
 
   assert.throws(
     () => resolvePlatformCredentials(account, {}),
-    /Missing credential 'accessToken' for renthop/
+    /Missing credential 'username' for renthop/
   );
 
   assert.throws(
     () => resolvePlatformCredentials({
       platform: "renthop",
       credentials: {
-        accessToken: "token-plaintext"
+        username: "plain-user",
+        passwordRef: "env:RENTHOP_PASSWORD"
       }
     }, {
-      RENTHOP_ACCESS_TOKEN: "token-123"
+      RENTHOP_PASSWORD: "pass-123"
     }),
     {
       code: "CREDENTIAL_PLAINTEXT_FORBIDDEN"
@@ -1228,10 +1553,12 @@ test("credentials resolve from env references and fail fast when missing", () =>
     () => resolvePlatformCredentials({
       platform: "renthop",
       credentials: {
-        accessTokenRef: "RENTHOP_ACCESS_TOKEN"
+        usernameRef: "RENTHOP_USERNAME",
+        passwordRef: "env:RENTHOP_PASSWORD"
       }
     }, {
-      RENTHOP_ACCESS_TOKEN: "token-123"
+      RENTHOP_USERNAME: "user-123",
+      RENTHOP_PASSWORD: "pass-123"
     }),
     {
       code: "CREDENTIAL_PLAINTEXT_FORBIDDEN"
@@ -1246,7 +1573,8 @@ test("connector registry circuit breaker trips, fail-fasts, probes half-open, an
 
   const registry = createConnectorRegistry({
     env: {
-      LEASEBREAK_API_KEY: "lb_key"
+      LEASEBREAK_USERNAME: "lb_user",
+      LEASEBREAK_PASSWORD: "lb_pass"
     },
     nowMs: () => now,
     random: () => 0,
@@ -1294,7 +1622,10 @@ test("connector registry circuit breaker trips, fail-fasts, probes half-open, an
   const account = {
     id: "acc-cb-1",
     platform: "leasebreak",
-    credentials: { apiKeyRef: "env:LEASEBREAK_API_KEY" }
+    credentials: {
+      usernameRef: "env:LEASEBREAK_USERNAME",
+      passwordRef: "env:LEASEBREAK_PASSWORD"
+    }
   };
 
   await assert.rejects(() => registry.ingestMessagesForAccount(account), /rpa outage/);
@@ -1341,7 +1672,8 @@ test("connector registry applies bounded retries, session refresh, captcha limit
 
   const registry = createConnectorRegistry({
     env: {
-      LEASEBREAK_API_KEY: "lb_key"
+      LEASEBREAK_USERNAME: "lb_user",
+      LEASEBREAK_PASSWORD: "lb_pass"
     },
     nowMs: () => now,
     random: () => 1,
@@ -1418,7 +1750,10 @@ test("connector registry applies bounded retries, session refresh, captcha limit
   const account = {
     id: "acc-lb-1",
     platform: "leasebreak",
-    credentials: { apiKeyRef: "env:LEASEBREAK_API_KEY" }
+    credentials: {
+      usernameRef: "env:LEASEBREAK_USERNAME",
+      passwordRef: "env:LEASEBREAK_PASSWORD"
+    }
   };
 
   const ingested = await registry.ingestMessagesForAccount(account);
@@ -1487,7 +1822,10 @@ test("queue processing dispatches through connector when auto-send is enabled", 
         metadata: {},
         platformAccountId: "p5",
         platform: "leasebreak",
-        platformCredentials: { apiKey: "env:LEASEBREAK_API_KEY" },
+        platformCredentials: {
+          usernameRef: "env:LEASEBREAK_USERNAME",
+          passwordRef: "env:LEASEBREAK_PASSWORD"
+        },
         externalThreadId: "thread-5",
         assignedAgentId: "a1",
         leadName: "Jamie",

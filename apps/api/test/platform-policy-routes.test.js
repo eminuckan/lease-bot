@@ -115,7 +115,8 @@ test("PUT /api/admin/platform-policies/:id updates policy and returns dto", asyn
     sendMode: null,
     integrationMode: "rpa",
     credentials: {
-      apiKeyRef: "env:LEASEBREAK_API_KEY"
+      usernameRef: "env:LEASEBREAK_USERNAME",
+      passwordRef: "env:LEASEBREAK_PASSWORD"
     }
   });
   const res = createResponseCapture();
@@ -138,7 +139,10 @@ test("PUT /api/admin/platform-policies/:id updates policy and returns dto", asyn
               platform: "leasebreak",
               account_name: "Leasebreak",
               account_external_id: "lb-1",
-              credentials: { apiKeyRef: "env:LEASEBREAK_API_KEY" },
+              credentials: {
+                usernameRef: "env:LEASEBREAK_USERNAME",
+                passwordRef: "env:LEASEBREAK_PASSWORD"
+              },
               is_active: false,
               send_mode: null,
               integration_mode: "rpa",
@@ -177,7 +181,10 @@ test("PUT /api/admin/platform-policies/:id updates policy and returns dto", asyn
   assert.equal(payload.sendModeOverride, null);
   assert.equal(payload.sendMode, "draft_only");
   assert.equal(payload.integrationMode, "rpa");
-  assert.deepEqual(payload.credentials, { apiKeyRef: "env:LEASEBREAK_API_KEY" });
+  assert.deepEqual(payload.credentials, {
+    usernameRef: "env:LEASEBREAK_USERNAME",
+    passwordRef: "env:LEASEBREAK_PASSWORD"
+  });
 });
 
 test("GET /api/listings includeInactive is admin-only", async () => {
@@ -809,7 +816,8 @@ test("R27: workflow-state route rejects invalid showing regression after termina
 });
 
 test("R16: manual inbox reply dispatches to platform thread and logs audit", async () => {
-  process.env.LEASEBREAK_API_KEY = process.env.LEASEBREAK_API_KEY || "test-key";
+  process.env.LEASEBREAK_USERNAME = process.env.LEASEBREAK_USERNAME || "test-user";
+  process.env.LEASEBREAK_PASSWORD = process.env.LEASEBREAK_PASSWORD || "test-pass";
   const conversationId = "55555555-5555-4555-8555-555555555555";
   const req = createRequest("POST", `/api/inbox/${conversationId}/draft`, {
     body: "Great, confirming your showing now.",
@@ -866,7 +874,10 @@ test("R16: manual inbox reply dispatches to platform thread and logs audit", asy
             {
               id: "66666666-6666-4666-8666-666666666666",
               platform: "leasebreak",
-              credentials: { apiKeyRef: "env:LEASEBREAK_API_KEY" },
+              credentials: {
+                usernameRef: "env:LEASEBREAK_USERNAME",
+                passwordRef: "env:LEASEBREAK_PASSWORD"
+              },
               is_active: true,
               send_mode: "draft_only"
             }

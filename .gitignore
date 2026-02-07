@@ -9,6 +9,13 @@ node_modules/
 dist/
 .DS_Store
 
+# Playwright local artifacts
+.playwright/
+.playwright-cli/
+
+# Local workflow spreadsheets (may contain PII)
+calendar-aleyna.xlsx
+
 # Local environment overrides
 .env
 .env.local

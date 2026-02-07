@@ -39,6 +39,19 @@ const requiredPlatforms = ["spareroom", "roomies", "leasebreak", "renthop", "fur
 const requiredPlatformSet = new Set(requiredPlatforms);
 const allowedSendModes = new Set(["auto_send", "draft_only"]);
 const allowedIntegrationModes = new Set(["rpa"]);
+// Platform account credentials must be env:/secret: references (never plaintext).
+// Authentication can be provided either via loginId+password (username/email) or a captured storageState (sessionRef).
+const platformCredentialAllowedKeys = new Set([
+  "username",
+  "usernameRef",
+  "email",
+  "emailRef",
+  "password",
+  "passwordRef",
+  "sessionRef",
+  "storageStateRef",
+  "storageStatePathRef"
+]);
 const globalDefaultSendMode = allowedSendModes.has(process.env.PLATFORM_DEFAULT_SEND_MODE)
   ? process.env.PLATFORM_DEFAULT_SEND_MODE
   : "draft_only";
@@ -289,6 +302,42 @@ function parsePlatformPolicyPayload(payload, { partial = false } = {}) {
     errors,
     updates
   };
+}
+
+function validatePlatformCredentialPayload(platform, credentials) {
+  const errors = [];
+
+  for (const key of Object.keys(credentials || {})) {
+    if (!platformCredentialAllowedKeys.has(key)) {
+      errors.push(
+        `credentials.${key} is not supported for ${platform}; allowed keys: ${[...platformCredentialAllowedKeys].join(", ")}`
+      );
+    }
+  }
+
+  const hasSession =
+    Boolean(credentials?.sessionRef)
+    || Boolean(credentials?.storageStateRef)
+    || Boolean(credentials?.storageStatePathRef);
+  const hasLoginId =
+    Boolean(credentials?.username)
+    || Boolean(credentials?.usernameRef)
+    || Boolean(credentials?.email)
+    || Boolean(credentials?.emailRef);
+  const hasPassword =
+    Boolean(credentials?.password)
+    || Boolean(credentials?.passwordRef);
+
+  if (!hasSession) {
+    if (!hasLoginId) {
+      errors.push(`credentials.usernameRef or credentials.emailRef is required for ${platform} (or provide credentials.sessionRef)`);
+    }
+    if (!hasPassword) {
+      errors.push(`credentials.passwordRef is required for ${platform} (or provide credentials.sessionRef)`);
+    }
+  }
+
+  return errors;
 }
 
 function toPlatformPolicyDto(row) {
@@ -2581,6 +2630,16 @@ export async function routeApi(req, res, url) {
         return { error: "platform_not_supported" };
       }
 
+      if (Object.prototype.hasOwnProperty.call(updates, "credentials")) {
+        const credentialErrors = validatePlatformCredentialPayload(target.platform, updates.credentials);
+        if (credentialErrors.length > 0) {
+          return {
+            error: "validation_error",
+            details: credentialErrors
+          };
+        }
+      }
+
       const nextPolicy = await updatePlatformPolicy(client, platformAccountId, updates);
 
       await recordAuditLog(client, {
@@ -2602,6 +2661,11 @@ export async function routeApi(req, res, url) {
 
     if (updated?.error === "platform_not_supported") {
       badRequest(res, "Only mandatory RPA platforms may be updated");
+      return;
+    }
+
+    if (updated?.error === "validation_error") {
+      badRequest(res, "Invalid platform policy payload", updated.details || []);
       return;
     }
 

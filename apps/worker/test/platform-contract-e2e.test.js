@@ -11,10 +11,12 @@ test("R13 e2e: connector registry supports ingest+outbound contracts for all req
     env: {
       SPAREROOM_USERNAME: "sp_user",
       SPAREROOM_PASSWORD: "sp_pass",
-      ROOMIES_EMAIL: "rm@example.com",
+      ROOMIES_USERNAME: "rm_user",
       ROOMIES_PASSWORD: "rm_pass",
-      LEASEBREAK_API_KEY: "lb_key",
-      RENTHOP_ACCESS_TOKEN: "rh_token",
+      LEASEBREAK_USERNAME: "lb_user",
+      LEASEBREAK_PASSWORD: "lb_pass",
+      RENTHOP_USERNAME: "rh_user",
+      RENTHOP_PASSWORD: "rh_pass",
       FURNISHEDFINDER_USERNAME: "ff_user",
       FURNISHEDFINDER_PASSWORD: "ff_pass"
     },
@@ -55,7 +57,7 @@ test("R13 e2e: connector registry supports ingest+outbound contracts for all req
       id: "acc-roomies",
       platform: "roomies",
       credentials: {
-        emailRef: "env:ROOMIES_EMAIL",
+        usernameRef: "env:ROOMIES_USERNAME",
         passwordRef: "env:ROOMIES_PASSWORD"
       }
     },
@@ -63,14 +65,16 @@ test("R13 e2e: connector registry supports ingest+outbound contracts for all req
       id: "acc-leasebreak",
       platform: "leasebreak",
       credentials: {
-        apiKeyRef: "env:LEASEBREAK_API_KEY"
+        usernameRef: "env:LEASEBREAK_USERNAME",
+        passwordRef: "env:LEASEBREAK_PASSWORD"
       }
     },
     {
       id: "acc-renthop",
       platform: "renthop",
       credentials: {
-        accessTokenRef: "env:RENTHOP_ACCESS_TOKEN"
+        usernameRef: "env:RENTHOP_USERNAME",
+        passwordRef: "env:RENTHOP_PASSWORD"
       }
     },
     {

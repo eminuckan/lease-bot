@@ -13,12 +13,20 @@ Use this checklist for every production rollout candidate.
 
 - [ ] API tests pass: `npm run test -w @lease-bot/api`
 - [ ] Worker tests pass: `npm run test -w @lease-bot/worker`
+- [ ] Integrations package tests pass: `node --test packages/integrations/test/*.test.js`
 - [ ] Web smoke passes: `npm run smoke -w @lease-bot/web`
 - [ ] Platform integration/e2e passes: `node --test apps/api/test/platform-contract-e2e.test.js apps/worker/test/platform-contract-e2e.test.js`
 - [ ] Release critical e2e packages pass 100%: `node --test apps/api/test/platform-contract-e2e.test.js apps/worker/test/platform-contract-e2e.test.js apps/api/test/showing-booking.test.js apps/api/test/platform-policy-routes.test.js apps/worker/test/worker.test.js`
 - [ ] Evidence logs updated in `docs/qa/evidence/`
 - [ ] CI run metadata copied from `ci-run-metadata` workflow artifact into `docs/qa/evidence/ci-run-metadata.md`
 - [ ] `.env` variable set audited against `.env.example`
+- [ ] Production worker manifest explicitly sets `LEASE_BOT_RPA_RUNTIME=playwright` (mock runtime is fail-fast blocked)
+
+## Ingest linkage audit gate (R5/R10)
+
+- [ ] Latest ingest cycle includes `ingest_conversation_linkage_resolved` or `ingest_conversation_linkage_unresolved` audit events.
+- [ ] For resolved samples, `details.linkage.appliedListingId` is populated and consistent with listing context.
+- [ ] For unresolved samples, `details.linkage.attempted` includes enough inbound context for diagnosis.
 
 ## Observability/audit visibility gate (R28)
 
@@ -87,6 +95,7 @@ Trigger rollback on any of the following:
 - Any required CI gate fails (API, worker, web smoke, platform integration/e2e).
 - `missingPlatforms` becomes non-empty for required platforms.
 - Canary shows repeated platform dispatch failures, circuit-open fail-fast events, or elevated DLQ volume.
+- Worker cannot start because `MOCK_RUNTIME_FORBIDDEN` is raised (runtime mode drift from `playwright`).
 - Mobile-first smoke or scheduling checks fail in release environment.
 - Elevated runtime errors in web/API/worker after rollout.
 - Observability snapshot shows sustained 2x+ increase from shadow baseline in any critical error action for two consecutive checks.
@@ -104,8 +113,10 @@ kubectl rollout undo deployment/lease-bot-worker --to-revision=<n>
 Post-rollback requirements:
 
 1. Re-run critical checks.
-2. Capture incident notes and failed gate details.
-3. Patch forward only after root cause is documented.
+2. Verify runtime env reverted to `LEASE_BOT_RPA_RUNTIME=playwright` before re-deploying worker.
+3. Query ingest linkage audit trail and attach mismatch evidence if linkage caused rollback.
+4. Capture incident notes and failed gate details.
+5. Patch forward only after root cause is documented.
 
 ## Acceptance mapping
 
@@ -113,3 +124,6 @@ Post-rollback requirements:
 - R28: rollout promotion decisions require platform/agent/conversation audit visibility checks.
 - R29: release is blocked unless critical e2e packages pass 100% in CI gate.
 - R30: rollout follows shadow -> canary -> full stages with explicit rollback triggers and commands.
+- R5: checklist requires ingest linkage audit coverage for resolved/unresolved paths.
+- R7: checklist enforces production runtime guard (`LEASE_BOT_RPA_RUNTIME=playwright`).
+- R10: checklist preserves connector credential and linkage traceability expectations.

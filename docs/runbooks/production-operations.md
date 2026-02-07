@@ -28,6 +28,7 @@ Use `.env.example` as the source of truth for variable names. Production values 
 - `WORKER_QUEUE_BATCH_SIZE`
 - `WORKER_TASK`
 - `WORKER_RUN_ONCE` (`0` in production long-running mode)
+- `LEASE_BOT_RPA_RUNTIME` (**must** be `playwright` in production; startup fails fast otherwise)
 - `AI_DECISION_PROVIDER` (`heuristic` or `gemini`)
 - `AI_GEMINI_MODEL`
 - `GOOGLE_GENERATIVE_AI_API_KEY` (required when provider is `gemini`)
@@ -35,23 +36,55 @@ Use `.env.example` as the source of truth for variable names. Production values 
 ### Platform connector credentials (R10)
 
 - `SPAREROOM_USERNAME`, `SPAREROOM_PASSWORD`
-- `ROOMIES_EMAIL`, `ROOMIES_PASSWORD`
-- `LEASEBREAK_API_KEY`
-- `RENTHOP_ACCESS_TOKEN`
+- `ROOMIES_USERNAME`, `ROOMIES_PASSWORD`
+- `LEASEBREAK_USERNAME`, `LEASEBREAK_PASSWORD`
+- `RENTHOP_USERNAME`, `RENTHOP_PASSWORD`
 - `FURNISHEDFINDER_USERNAME`, `FURNISHEDFINDER_PASSWORD`
 
 Use `env:VAR_NAME` refs in platform account credential fields so secret values stay outside JSON payloads.
+
+### Optional: session-based auth (recommended when anti-bot blocks headless login)
+
+For platforms protected by Cloudflare/captcha, it is often more reliable to reuse a captured Playwright
+`storageState` instead of attempting automated login in a headless worker.
+
+Env placeholders:
+
+- `SPAREROOM_RPA_SESSION`
+- `ROOMIES_RPA_SESSION`
+- `LEASEBREAK_RPA_SESSION`
+- `RENTHOP_RPA_SESSION`
+- `FURNISHEDFINDER_RPA_SESSION`
+
+Platform account credential shape:
+
+- `{"sessionRef":"env:LEASEBREAK_RPA_SESSION"}`
+
+Capture workflow:
+
+- See `docs/runbooks/rpa-session-capture.md`
 
 ## Operational preflight before release
 
 1. Confirm all required env vars are present in the deploy target.
 2. Confirm `AI_DECISION_PROVIDER` matches rollout intent (`heuristic` for safe baseline, `gemini` for AI rollout).
-3. Confirm CI evidence logs exist under `docs/qa/evidence/` from the current candidate.
-4. Confirm mobile-first smoke coverage and scheduling flow checks passed (`npm run smoke -w @lease-bot/web`).
-5. Confirm release critical e2e package gate passed in CI metadata (`release-critical-e2e-log`) using:
+3. Confirm `LEASE_BOT_RPA_RUNTIME=playwright` in production worker deployment values.
+4. Confirm CI evidence logs exist under `docs/qa/evidence/` from the current candidate.
+5. Confirm mobile-first smoke coverage and scheduling flow checks passed (`npm run smoke -w @lease-bot/web`).
+6. Confirm release critical e2e package gate passed in CI metadata (`release-critical-e2e-log`) using:
 
 ```bash
 node --test apps/api/test/platform-contract-e2e.test.js apps/worker/test/platform-contract-e2e.test.js apps/api/test/showing-booking.test.js apps/api/test/platform-policy-routes.test.js apps/worker/test/worker.test.js
+```
+
+7. Confirm ingest linkage auditability exists for candidate traffic sample:
+
+```sql
+SELECT action, details->'linkage' AS linkage
+  FROM "AuditLogs"
+ WHERE action IN ('ingest_conversation_linkage_resolved', 'ingest_conversation_linkage_unresolved')
+ ORDER BY created_at DESC
+ LIMIT 20;
 ```
 
 ## Observability snapshot checks (R28)
@@ -101,6 +134,7 @@ Rollback immediately when one of the following occurs:
 
 - Any required CI/release gate fails.
 - Required platform parity breaks (`missingPlatforms` non-empty).
+- Worker startup fails with `MOCK_RUNTIME_FORBIDDEN` (runtime config regression).
 - Critical error actions show sustained 2x+ spike vs shadow baseline.
 - Human handoff or showing lifecycle checks regress in canary.
 
@@ -135,9 +169,11 @@ For each release candidate, run one no-impact drill and capture evidence under `
 ## Incident triage quick steps
 
 1. Check API health endpoint and deployment status.
-2. Check worker logs for provider selection and queue processing errors.
-3. If scheduling or assignment failures appear, rerun API and worker test suites in release branch.
-4. If release regression is confirmed, follow rollback flow in `docs/release/release-checklist.md`.
+2. Check worker logs for provider selection, queue processing errors, and `MOCK_RUNTIME_FORBIDDEN` startup failures.
+3. Verify production worker env explicitly sets `LEASE_BOT_RPA_RUNTIME=playwright`.
+4. Query latest ingest linkage audit actions to confirm linkage resolution behavior.
+5. If scheduling or assignment failures appear, rerun API and worker test suites in release branch.
+6. If release regression is confirmed, follow rollback flow in `docs/release/release-checklist.md`.
 
 ## Acceptance mapping
 
@@ -145,3 +181,6 @@ For each release candidate, run one no-impact drill and capture evidence under `
 - R28: runbook operationalizes platform/agent/conversation audit visibility during rollout.
 - R29: runbook requires critical e2e package gate evidence before promotion.
 - R30: runbook defines staged rollout execution and measurable rollback triggers.
+- R5: runbook includes explicit ingest linkage audit verification query.
+- R7: runbook enforces production runtime fail-fast guard (`LEASE_BOT_RPA_RUNTIME=playwright`).
+- R10: runbook keeps credential-reference requirements for platform connectors.

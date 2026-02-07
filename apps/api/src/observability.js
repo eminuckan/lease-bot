@@ -22,6 +22,7 @@ const CRITICAL_AUDIT_ACTIONS = [
   "showing_booking_idempotency_conflict",
   "showing_booking_failed",
   "workflow_state_transitioned",
+  "workflow_no_reply_recovered",
   "inbox_message_approved",
   "inbox_message_rejected",
   "inbox_message_error",

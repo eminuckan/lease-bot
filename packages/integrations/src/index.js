@@ -9,6 +9,227 @@ const defaultPlatformSendMode = allowedSendModes.has(process.env.PLATFORM_DEFAUL
   ? process.env.PLATFORM_DEFAULT_SEND_MODE
   : "draft_only";
 const defaultWorkerClaimTtlMs = Number(process.env.WORKER_CLAIM_TTL_MS || 60000);
+const workflowStateTransitionMap = {
+  lead: new Set(["lead", "showing", "follow_up_1", "outcome"]),
+  showing: new Set(["showing", "follow_up_1", "outcome"]),
+  follow_up_1: new Set(["follow_up_1", "follow_up_2", "outcome"]),
+  follow_up_2: new Set(["follow_up_2", "outcome"]),
+  outcome: new Set(["outcome", "lead"])
+};
+const showingStateTransitionMap = {
+  pending: new Set(["pending", "confirmed", "reschedule_requested", "cancelled", "no_show"]),
+  confirmed: new Set(["confirmed", "reschedule_requested", "cancelled", "completed", "no_show"]),
+  reschedule_requested: new Set(["reschedule_requested", "pending", "confirmed", "cancelled", "no_show"]),
+  cancelled: new Set(["cancelled"]),
+  completed: new Set(["completed"]),
+  no_show: new Set(["no_show"])
+};
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function pickFirstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === "string") {
+      const normalized = value.trim();
+      if (normalized.length > 0) {
+        return normalized;
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeUuid(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim();
+  if (!uuidPattern.test(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+function isAllowedTransition(map, fromState, toState) {
+  if (toState === undefined || toState === null) {
+    return true;
+  }
+  if (fromState === null || fromState === undefined) {
+    return true;
+  }
+  const allowed = map[fromState];
+  if (!allowed) {
+    return false;
+  }
+  return allowed.has(toState);
+}
+
+function extractInboundLinkageContext(inbound) {
+  const metadata = inbound?.metadata || {};
+  const listingMeta = metadata.listing || {};
+  const unitMeta = metadata.unit || {};
+  const contextMeta = metadata.context || {};
+
+  const listingId = normalizeUuid(
+    pickFirstNonEmptyString(
+      inbound?.listingId,
+      metadata.listingId,
+      metadata.listing_id,
+      listingMeta.id,
+      contextMeta.listingId,
+      contextMeta.listing_id
+    )
+  );
+
+  const unitId = normalizeUuid(
+    pickFirstNonEmptyString(
+      inbound?.unitId,
+      metadata.unitId,
+      metadata.unit_id,
+      listingMeta.unitId,
+      listingMeta.unit_id,
+      unitMeta.id,
+      contextMeta.unitId,
+      contextMeta.unit_id
+    )
+  );
+
+  return {
+    listingId,
+    listingExternalId: pickFirstNonEmptyString(
+      inbound?.listingExternalId,
+      metadata.listingExternalId,
+      metadata.listing_external_id,
+      listingMeta.externalId,
+      listingMeta.external_id,
+      contextMeta.listingExternalId,
+      contextMeta.listing_external_id
+    ),
+    unitId,
+    unitExternalId: pickFirstNonEmptyString(
+      inbound?.unitExternalId,
+      metadata.unitExternalId,
+      metadata.unit_external_id,
+      listingMeta.unitExternalId,
+      listingMeta.unit_external_id,
+      unitMeta.externalId,
+      unitMeta.external_id,
+      contextMeta.unitExternalId,
+      contextMeta.unit_external_id
+    ),
+    propertyName: pickFirstNonEmptyString(
+      inbound?.propertyName,
+      metadata.propertyName,
+      metadata.property_name,
+      unitMeta.propertyName,
+      unitMeta.property_name,
+      contextMeta.propertyName,
+      contextMeta.property_name
+    ),
+    unitNumber: pickFirstNonEmptyString(
+      inbound?.unitNumber,
+      metadata.unitNumber,
+      metadata.unit_number,
+      unitMeta.unitNumber,
+      unitMeta.unit_number,
+      contextMeta.unitNumber,
+      contextMeta.unit_number
+    )
+  };
+}
+
+async function resolveInboundListingLinkage(client, platformAccountId, inbound) {
+  const context = extractInboundLinkageContext(inbound);
+  const hasLinkageHints = Boolean(
+    context.listingId
+    || context.listingExternalId
+    || context.unitId
+    || context.unitExternalId
+    || (context.propertyName && context.unitNumber)
+  );
+
+  if (!hasLinkageHints) {
+    return {
+      listingId: null,
+      unitId: null,
+      strategy: "none",
+      context,
+      resolved: false
+    };
+  }
+
+  const result = await client.query(
+    `SELECT l.id AS listing_id,
+            l.unit_id,
+            CASE
+              WHEN $2::uuid IS NOT NULL AND l.id = $2::uuid THEN 'listing_id'
+              WHEN $3::text IS NOT NULL AND l.listing_external_id = $3::text THEN 'listing_external_id'
+              WHEN $4::uuid IS NOT NULL AND l.unit_id = $4::uuid THEN 'unit_id'
+              WHEN $5::text IS NOT NULL AND u.external_id = $5::text THEN 'unit_external_id'
+              WHEN $6::text IS NOT NULL AND $7::text IS NOT NULL
+                AND LOWER(u.property_name) = LOWER($6::text)
+                AND LOWER(u.unit_number) = LOWER($7::text)
+              THEN 'property_name_unit_number'
+              ELSE 'unknown'
+            END AS strategy,
+            CASE
+              WHEN $2::uuid IS NOT NULL AND l.id = $2::uuid THEN 500
+              WHEN $3::text IS NOT NULL AND l.listing_external_id = $3::text THEN 400
+              WHEN $4::uuid IS NOT NULL AND l.unit_id = $4::uuid THEN 300
+              WHEN $5::text IS NOT NULL AND u.external_id = $5::text THEN 200
+              WHEN $6::text IS NOT NULL AND $7::text IS NOT NULL
+                AND LOWER(u.property_name) = LOWER($6::text)
+                AND LOWER(u.unit_number) = LOWER($7::text)
+              THEN 100
+              ELSE 0
+            END AS score
+       FROM "Listings" l
+       JOIN "Units" u ON u.id = l.unit_id
+      WHERE l.platform_account_id = $1::uuid
+        AND (
+          ($2::uuid IS NOT NULL AND l.id = $2::uuid)
+          OR ($3::text IS NOT NULL AND l.listing_external_id = $3::text)
+          OR ($4::uuid IS NOT NULL AND l.unit_id = $4::uuid)
+          OR ($5::text IS NOT NULL AND u.external_id = $5::text)
+          OR (
+            $6::text IS NOT NULL
+            AND $7::text IS NOT NULL
+            AND LOWER(u.property_name) = LOWER($6::text)
+            AND LOWER(u.unit_number) = LOWER($7::text)
+          )
+        )
+      ORDER BY score DESC, l.updated_at DESC
+      LIMIT 1`,
+    [
+      platformAccountId,
+      context.listingId,
+      context.listingExternalId,
+      context.unitId,
+      context.unitExternalId,
+      context.propertyName,
+      context.unitNumber
+    ]
+  );
+
+  if (result.rowCount === 0) {
+    return {
+      listingId: null,
+      unitId: null,
+      strategy: "unresolved",
+      context,
+      resolved: false
+    };
+  }
+
+  const row = result.rows[0];
+  return {
+    listingId: row.listing_id,
+    unitId: row.unit_id,
+    strategy: row.strategy || "unknown",
+    context,
+    resolved: true
+  };
+}
 
 function formatSlotWindow(slot) {
   const timezone = slot.timezone || "UTC";
@@ -231,11 +452,12 @@ export async function processPendingMessages({ adapter, logger = console, limit 
   };
 }
 
-export function createPostgresQueueAdapter(client) {
-  let connectorRegistry = null;
+export function createPostgresQueueAdapter(client, options = {}) {
+  let connectorRegistry = options.connectorRegistry || null;
+  const connectorRegistryFactory = options.connectorRegistryFactory || (() => createConnectorRegistry());
   const getConnectorRegistry = () => {
     if (!connectorRegistry) {
-      connectorRegistry = createConnectorRegistry();
+      connectorRegistry = connectorRegistryFactory();
     }
     return connectorRegistry;
   };
@@ -351,6 +573,61 @@ export function createPostgresQueueAdapter(client) {
           ORDER BY starts_at ASC
           LIMIT $2`,
         [unitId, limit]
+      );
+
+      return result.rows;
+    },
+
+    async fetchAssignedAgentSlotOptions({ unitId, assignedAgentId, limit = 3 }) {
+      if (!unitId || !assignedAgentId) {
+        return [];
+      }
+
+      const result = await client.query(
+        `SELECT GREATEST(unit_slot.starts_at, agent_slot.starts_at) AS starts_at,
+                LEAST(unit_slot.ends_at, agent_slot.ends_at) AS ends_at,
+                COALESCE(unit_slot.timezone, agent_slot.timezone, 'UTC') AS timezone
+           FROM "UnitAgentAssignments" ua
+           JOIN "AvailabilitySlots" unit_slot
+             ON unit_slot.unit_id = ua.unit_id
+            AND unit_slot.status = 'open'
+           JOIN "AgentAvailabilitySlots" agent_slot
+             ON agent_slot.agent_id = ua.agent_id
+            AND agent_slot.status = 'available'
+          WHERE ua.unit_id = $1::uuid
+            AND ua.agent_id = $2::uuid
+            AND ua.assignment_mode = 'active'
+            AND tstzrange(unit_slot.starts_at, unit_slot.ends_at, '[)')
+                && tstzrange(agent_slot.starts_at, agent_slot.ends_at, '[)')
+            AND NOT EXISTS (
+              SELECT 1
+                FROM "AgentAvailabilitySlots" blocked_slot
+               WHERE blocked_slot.agent_id = ua.agent_id
+                 AND blocked_slot.status = 'unavailable'
+                 AND tstzrange(blocked_slot.starts_at, blocked_slot.ends_at, '[)')
+                     && tstzrange(
+                       GREATEST(unit_slot.starts_at, agent_slot.starts_at),
+                       LEAST(unit_slot.ends_at, agent_slot.ends_at),
+                       '[)'
+                     )
+            )
+            AND NOT EXISTS (
+              SELECT 1
+                FROM "ShowingAppointments" appt
+               WHERE appt.agent_id = ua.agent_id
+                 AND appt.status IN ('pending', 'confirmed', 'reschedule_requested')
+                 AND tstzrange(appt.starts_at, appt.ends_at, '[)')
+                     && tstzrange(
+                       GREATEST(unit_slot.starts_at, agent_slot.starts_at),
+                       LEAST(unit_slot.ends_at, agent_slot.ends_at),
+                       '[)'
+                     )
+            )
+            AND GREATEST(unit_slot.starts_at, agent_slot.starts_at) < LEAST(unit_slot.ends_at, agent_slot.ends_at)
+            AND GREATEST(unit_slot.starts_at, agent_slot.starts_at) >= NOW()
+          ORDER BY starts_at ASC
+          LIMIT $3`,
+        [unitId, assignedAgentId, limit]
       );
 
       return result.rows;
@@ -552,6 +829,154 @@ export function createPostgresQueueAdapter(client) {
       );
     },
 
+    async transitionConversationWorkflow({
+      conversationId,
+      payload,
+      actorType = "worker",
+      actorId = null,
+      source = "worker",
+      messageId = null
+    }) {
+      const currentResult = await client.query(
+        `SELECT id,
+                workflow_state,
+                workflow_outcome,
+                showing_state,
+                follow_up_stage,
+                follow_up_due_at,
+                follow_up_owner_agent_id,
+                follow_up_status
+           FROM "Conversations"
+          WHERE id = $1::uuid
+          LIMIT 1`,
+        [conversationId]
+      );
+
+      if (currentResult.rowCount === 0) {
+        return { applied: false, reason: "not_found" };
+      }
+
+      const current = currentResult.rows[0];
+      const hasWorkflowOutcome = Object.prototype.hasOwnProperty.call(payload, "workflowOutcome");
+      const hasShowingState = Object.prototype.hasOwnProperty.call(payload, "showingState");
+      const hasFollowUpStage = Object.prototype.hasOwnProperty.call(payload, "followUpStage");
+      const hasWorkflowState = Object.prototype.hasOwnProperty.call(payload, "workflowState");
+
+      let nextWorkflowState = hasWorkflowState
+        ? payload.workflowState
+        : current.workflow_state;
+
+      if (!hasWorkflowState && hasWorkflowOutcome && payload.workflowOutcome) {
+        nextWorkflowState = payload.workflowOutcome === "showing_confirmed" ? "showing" : "outcome";
+      }
+
+      const nextWorkflowOutcome = hasWorkflowOutcome ? payload.workflowOutcome : current.workflow_outcome;
+      const nextShowingState = hasShowingState ? payload.showingState : current.showing_state;
+      const nextFollowUpStage = hasFollowUpStage ? payload.followUpStage : current.follow_up_stage;
+      const nextFollowUpDueAt = nextFollowUpStage ? current.follow_up_due_at : null;
+      const nextFollowUpOwnerAgentId = nextFollowUpStage ? current.follow_up_owner_agent_id : null;
+      const nextFollowUpStatus = nextFollowUpStage ? current.follow_up_status : "pending";
+
+      if (!isAllowedTransition(workflowStateTransitionMap, current.workflow_state, nextWorkflowState)) {
+        return {
+          applied: false,
+          reason: "invalid_transition",
+          message: `Invalid workflowState transition from ${current.workflow_state} to ${nextWorkflowState}`
+        };
+      }
+      if (!isAllowedTransition(showingStateTransitionMap, current.showing_state, nextShowingState)) {
+        return {
+          applied: false,
+          reason: "invalid_transition",
+          message: `Invalid showingState transition from ${current.showing_state} to ${nextShowingState}`
+        };
+      }
+
+      if (
+        current.workflow_state === nextWorkflowState
+        && current.workflow_outcome === nextWorkflowOutcome
+        && current.showing_state === nextShowingState
+        && current.follow_up_stage === nextFollowUpStage
+      ) {
+        return { applied: false, reason: "no_change" };
+      }
+
+      const updatedResult = await client.query(
+        `UPDATE "Conversations"
+            SET workflow_state = $2,
+                workflow_outcome = $3,
+                showing_state = $4,
+                follow_up_stage = $5,
+                follow_up_due_at = $6::timestamptz,
+                follow_up_owner_agent_id = $7::uuid,
+                follow_up_status = $8,
+                workflow_updated_at = NOW(),
+                updated_at = NOW()
+          WHERE id = $1::uuid
+          RETURNING id,
+                    workflow_state,
+                    workflow_outcome,
+                    showing_state,
+                    follow_up_stage,
+                    follow_up_due_at,
+                    follow_up_owner_agent_id,
+                    follow_up_status,
+                    workflow_updated_at`,
+        [
+          conversationId,
+          nextWorkflowState,
+          nextWorkflowOutcome,
+          nextShowingState,
+          nextFollowUpStage,
+          nextFollowUpDueAt,
+          nextFollowUpOwnerAgentId,
+          nextFollowUpStatus
+        ]
+      );
+
+      await client.query(
+        `INSERT INTO "AuditLogs" (actor_type, actor_id, entity_type, entity_id, action, details)
+         VALUES ($1, $2::uuid, 'conversation', $3, 'workflow_state_transitioned', $4::jsonb)`,
+        [
+          actorType,
+          actorId,
+          String(conversationId),
+          JSON.stringify({
+            source,
+            trigger: "ai_outcome_persistence",
+            messageId,
+            previous: {
+              workflowState: current.workflow_state,
+              workflowOutcome: current.workflow_outcome,
+              showingState: current.showing_state,
+              followUpStage: current.follow_up_stage
+            },
+            next: {
+              workflowState: updatedResult.rows[0].workflow_state,
+              workflowOutcome: updatedResult.rows[0].workflow_outcome,
+              showingState: updatedResult.rows[0].showing_state,
+              followUpStage: updatedResult.rows[0].follow_up_stage
+            }
+          })
+        ]
+      );
+
+      return {
+        applied: true,
+        item: {
+          id: updatedResult.rows[0].id,
+          workflowState: updatedResult.rows[0].workflow_state,
+          workflowOutcome: updatedResult.rows[0].workflow_outcome,
+          showingState: updatedResult.rows[0].showing_state,
+          followUpStage: updatedResult.rows[0].follow_up_stage,
+          followUpDueAt: updatedResult.rows[0].follow_up_due_at,
+          followUpOwnerAgentId: updatedResult.rows[0].follow_up_owner_agent_id,
+          followUpStatus: updatedResult.rows[0].follow_up_status,
+          workflowUpdatedAt: updatedResult.rows[0].workflow_updated_at
+        }
+      };
+    },
+
     async recordLog({ actorType, entityType, entityId, action, details }) {
       await client.query(
         `INSERT INTO "AuditLogs" (actor_type, entity_type, entity_id, action, details)
@@ -599,26 +1024,37 @@ export function createPostgresQueueAdapter(client) {
         scanned += inboundMessages.length;
 
         for (const inbound of inboundMessages.slice(0, limit)) {
+          const linkage = await resolveInboundListingLinkage(client, account.id, inbound);
           const conversationResult = await client.query(
             `INSERT INTO "Conversations" (
                platform_account_id,
+               listing_id,
                external_thread_id,
                lead_name,
                lead_contact,
                status,
                last_message_at
-             ) VALUES ($1::uuid, $2, $3, $4::jsonb, 'open', $5::timestamptz)
+             ) VALUES ($1::uuid, $2::uuid, $3, $4, $5::jsonb, 'open', $6::timestamptz)
              ON CONFLICT (platform_account_id, external_thread_id)
              DO UPDATE SET
+               listing_id = COALESCE("Conversations".listing_id, EXCLUDED.listing_id),
                lead_name = COALESCE(EXCLUDED.lead_name, "Conversations".lead_name),
                lead_contact = COALESCE(EXCLUDED.lead_contact, "Conversations".lead_contact),
                last_message_at = EXCLUDED.last_message_at,
                updated_at = NOW()
-             RETURNING id`,
-            [account.id, inbound.externalThreadId, inbound.leadName, JSON.stringify(inbound.leadContact || {}), inbound.sentAt]
+             RETURNING id, listing_id`,
+            [
+              account.id,
+              linkage.listingId,
+              inbound.externalThreadId,
+              inbound.leadName,
+              JSON.stringify(inbound.leadContact || {}),
+              inbound.sentAt
+            ]
           );
 
-          const conversationId = conversationResult.rows[0].id;
+          const conversation = conversationResult.rows[0];
+          const conversationId = conversation.id;
           const insertResult = await client.query(
             `INSERT INTO "Messages" (
                conversation_id,
@@ -632,6 +1068,33 @@ export function createPostgresQueueAdapter(client) {
              ) VALUES ($1::uuid, 'lead', $2, 'inbound', $3, $4, $5::jsonb, $6::timestamptz)
              ON CONFLICT (conversation_id, external_message_id) DO NOTHING`,
             [conversationId, inbound.externalMessageId, inbound.channel, inbound.body, JSON.stringify(inbound.metadata || {}), inbound.sentAt]
+          );
+
+          const linkageAuditAction = linkage.resolved
+            ? "ingest_conversation_linkage_resolved"
+            : "ingest_conversation_linkage_unresolved";
+          const linkagePreserved = Boolean(linkage.listingId && conversation.listing_id && linkage.listingId !== conversation.listing_id);
+
+          await client.query(
+            `INSERT INTO "AuditLogs" (actor_type, entity_type, entity_id, action, details)
+             VALUES ('system', 'conversation', $1, $2, $3::jsonb)`,
+            [
+              String(conversationId),
+              linkageAuditAction,
+              JSON.stringify({
+                externalThreadId: inbound.externalThreadId || null,
+                externalMessageId: inbound.externalMessageId || null,
+                linkage: {
+                  resolved: linkage.resolved,
+                  strategy: linkage.strategy,
+                  attempted: linkage.context,
+                  matchedListingId: linkage.listingId,
+                  matchedUnitId: linkage.unitId,
+                  appliedListingId: conversation.listing_id || null,
+                  preservedExistingListing: linkagePreserved
+                }
+              })
+            ]
           );
 
           if (insertResult.rowCount > 0) {

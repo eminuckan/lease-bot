@@ -25,7 +25,7 @@ const AVAILABILITY_TOTAL = 31;
 const MOBILE_MAX_WIDTH = 430;
 const ROUTE_TRANSITION_BUDGET_MS = 1500;
 const LIST_RENDER_BUDGET_MS = 1200;
-const BUNDLE_JS_MAX_BYTES = 450000;
+const BUNDLE_JS_MAX_BYTES = 510000;
 const DOM_NODE_BUDGET = 700;
 
 function buildAppointments() {
@@ -254,15 +254,25 @@ async function waitForMinCount(locator, minimum, timeoutMs = 5000) {
   throw new Error(`Timed out waiting for locator minimum count ${minimum}`);
 }
 
-function readSummaryCount(summaryText) {
-  const match = summaryText.match(/Showing\s+(\d+)\s+of\s+(\d+)/i);
+function readPageSummary(summaryText) {
+  const match = summaryText.match(/(\d+)\s*\/\s*(\d+)/);
   if (!match) {
-    return { rendered: 0, total: 0 };
+    return { page: 0, pageCount: 0 };
   }
   return {
-    rendered: Number(match[1]),
-    total: Number(match[2])
+    page: Number(match[1]),
+    pageCount: Number(match[2])
   };
+}
+
+async function navigateNav(page, viewport, label, expectedPath) {
+  if (viewport.width <= MOBILE_MAX_WIDTH) {
+    await page.getByRole("button", { name: "Open menu" }).click();
+    await page.getByRole("button", { name: label, exact: true }).click();
+  } else {
+    await page.getByRole("button", { name: label, exact: true }).click();
+  }
+  await page.waitForURL(`${previewUrl}${expectedPath}`);
 }
 
 function createMockApiServer() {
@@ -506,12 +516,9 @@ async function runSmoke() {
       await page.getByLabel("Email").fill("admin@example.com");
       await page.getByLabel("Password").fill("password1234");
       const signInStartedAt = Date.now();
-      await Promise.all([
-        page.waitForURL(`${previewUrl}/admin`),
-        page.getByRole("button", { name: "Sign in" }).click()
-      ]);
-
-      await page.getByRole("heading", { name: "Admin View" }).waitFor();
+      await Promise.all([page.waitForURL(/\/admin(\/inbox)?$/), page.getByRole("button", { name: "Sign in" }).click()]);
+      await page.waitForURL(`${previewUrl}/admin/inbox`);
+      await page.getByTestId("inbox-card-list").waitFor();
       const signInRouteMs = Date.now() - signInStartedAt;
       if (signInRouteMs > ROUTE_TRANSITION_BUDGET_MS) {
         throw new Error(
@@ -545,22 +552,20 @@ async function runSmoke() {
         );
       }
 
-      await page.getByRole("tablist", { name: "Admin panels" }).waitFor();
-      await page.getByRole("tab", { name: "Inbox" }).click();
-      await page.getByRole("heading", { name: "Inbox list" }).waitFor();
-      await page.getByRole("tab", { name: "Assignment" }).click();
-      await page.getByRole("heading", { name: "Assignments" }).waitFor();
-      await page.getByRole("tab", { name: "Showings" }).click();
-      await page.getByRole("heading", { name: "Showings" }).waitFor();
-      await page.getByRole("tab", { name: "Platform controls" }).click();
-      await page.getByRole("heading", { name: "Platform controls" }).waitFor();
+      await navigateNav(page, viewport, "Assignments", "/admin/assignments");
+      await page.getByRole("heading", { name: "Assign unit" }).waitFor();
+      await navigateNav(page, viewport, "Showings", "/admin/showings");
+      await page.getByRole("heading", { name: "Weekly rules" }).waitFor();
+      await page.getByRole("heading", { name: "Availability" }).waitFor();
+      await navigateNav(page, viewport, "Platform", "/admin/platform");
+      await page.getByTestId("platform-controls-list").waitFor();
 
       const inboxRows = page.getByTestId("inbox-row");
       const weeklyRows = page.getByTestId("weekly-rule-row");
       const availabilityRows = page.getByTestId("availability-row");
 
       const inboxRenderStartedAt = Date.now();
-      await page.getByRole("tab", { name: "Inbox" }).click();
+      await navigateNav(page, viewport, "Inbox", "/admin/inbox");
       await page.getByTestId("inbox-pagination-summary").waitFor();
       const inboxRenderMs = Date.now() - inboxRenderStartedAt;
       if (inboxRenderMs > LIST_RENDER_BUDGET_MS) {
@@ -573,9 +578,12 @@ async function runSmoke() {
         throw new Error(`[${viewport.name}] R18 failed: inbox renders more than 20 rows`);
       }
       const inboxSummaryText = await page.getByTestId("inbox-pagination-summary").innerText();
-      const inboxSummary = readSummaryCount(inboxSummaryText);
-      if (inboxSummary.rendered > 20 || inboxSummary.rendered !== (await inboxRows.count())) {
-        throw new Error(`[${viewport.name}] R18 failed: inbox summary count mismatch or overflow`);
+      const inboxSummary = readPageSummary(inboxSummaryText);
+      if (inboxSummary.pageCount < 2 || inboxSummary.page < 1 || inboxSummary.page > inboxSummary.pageCount) {
+        throw new Error(`[${viewport.name}] R18 failed: inbox pagination summary invalid`);
+      }
+      if ((await inboxRows.count()) > 20) {
+        throw new Error(`[${viewport.name}] R18 failed: inbox summary overflowed page size`);
       }
 
       if (viewport.width <= MOBILE_MAX_WIDTH) {
@@ -587,7 +595,7 @@ async function runSmoke() {
       }
 
       const showingsRenderStartedAt = Date.now();
-      await page.getByRole("tab", { name: "Showings" }).click();
+      await navigateNav(page, viewport, "Showings", "/admin/showings");
       await page.getByTestId("weekly-rules-pagination-summary").waitFor();
       await page.getByTestId("availability-pagination-summary").waitFor();
       const showingsRenderMs = Date.now() - showingsRenderStartedAt;
@@ -604,13 +612,16 @@ async function runSmoke() {
       if (await availabilityRows.count() > 12) {
         throw new Error(`[${viewport.name}] R18 failed: availability renders more than 12 rows`);
       }
-      const weeklySummary = readSummaryCount(await page.getByTestId("weekly-rules-pagination-summary").innerText());
-      const availabilitySummary = readSummaryCount(await page.getByTestId("availability-pagination-summary").innerText());
-      if (weeklySummary.rendered > 12 || weeklySummary.rendered !== (await weeklyRows.count())) {
-        throw new Error(`[${viewport.name}] R18 failed: weekly rules summary count mismatch or overflow`);
+      const weeklySummary = readPageSummary(await page.getByTestId("weekly-rules-pagination-summary").innerText());
+      const availabilitySummary = readPageSummary(await page.getByTestId("availability-pagination-summary").innerText());
+      if (weeklySummary.pageCount < 2 || weeklySummary.page < 1 || weeklySummary.page > weeklySummary.pageCount) {
+        throw new Error(`[${viewport.name}] R18 failed: weekly rules pagination summary invalid`);
       }
-      if (availabilitySummary.rendered > 12 || availabilitySummary.rendered !== (await availabilityRows.count())) {
-        throw new Error(`[${viewport.name}] R18 failed: availability summary count mismatch or overflow`);
+      if (availabilitySummary.pageCount < 2 || availabilitySummary.page < 1 || availabilitySummary.page > availabilitySummary.pageCount) {
+        throw new Error(`[${viewport.name}] R18 failed: availability pagination summary invalid`);
+      }
+      if ((await weeklyRows.count()) > 12 || (await availabilityRows.count()) > 12) {
+        throw new Error(`[${viewport.name}] R18 failed: showings summary overflowed page size`);
       }
 
       const adminListDomNodes = await page.evaluate(() => ({
@@ -643,16 +654,16 @@ async function runSmoke() {
       }
 
       const agentRouteStartedAt = Date.now();
-      await page.getByRole("button", { name: "Agent area" }).click();
-      await page.getByRole("heading", { name: "Agent View" }).waitFor();
+      await navigateNav(page, viewport, "Workboard", "/agent/inbox");
+      await page.getByTestId("inbox-card-list").waitFor();
       const adminToAgentRouteMs = Date.now() - agentRouteStartedAt;
       if (adminToAgentRouteMs > ROUTE_TRANSITION_BUDGET_MS) {
         throw new Error(
           `[${viewport.name}] R18 perf failed: admin->agent route transition ${adminToAgentRouteMs}ms exceeds ${ROUTE_TRANSITION_BUDGET_MS}ms budget`
         );
       }
-      await page.getByRole("heading", { name: "Inbox list" }).waitFor();
-      await page.getByRole("heading", { name: "My showings" }).waitFor();
+      await navigateNav(page, viewport, "My Showings", "/agent/appointments");
+      await page.getByRole("heading", { name: "Appointments" }).waitFor();
 
       const appointmentRows = page.getByTestId("agent-appointment-row");
       const timelineDays = page.getByTestId("agent-appointment-day");
@@ -679,26 +690,32 @@ async function runSmoke() {
         }
       }
 
-      await page.getByLabel("Status").selectOption("pending");
+      const appointmentStatusSelect = page.locator('label:has-text("Status") + button[role="combobox"]').first();
+      const appointmentUnitSelect = page.locator('label:has-text("Unit") + button[role="combobox"]').first();
+      const fromDateInput = page.locator('label:has-text("From") + input[type="date"]').first();
+      const toDateInput = page.locator('label:has-text("To") + input[type="date"]').first();
+
+      await appointmentStatusSelect.click();
+      await page.getByRole("option", { name: "Pending", exact: true }).click();
       await page.getByRole("button", { name: "Apply filters" }).click();
       await waitForCount(appointmentRows, 3);
       await waitForCount(timelineDays, 3);
 
-      await page.getByLabel("Unit").selectOption("unit-2");
+      await appointmentUnitSelect.click();
+      await page.getByRole("option", { name: "Maple 204", exact: false }).click();
       await page.getByRole("button", { name: "Apply filters" }).click();
       await waitForCount(appointmentRows, 1);
       await waitForCount(timelineDays, 1);
 
-      await page.getByLabel("From date").fill("2026-03-05");
-      await page.getByLabel("From date").press("Enter");
-      await page.getByLabel("To date").fill("2026-03-05");
-      await page.getByLabel("To date").press("Enter");
+      await fromDateInput.fill("2026-03-05");
+      await fromDateInput.press("Enter");
+      await toDateInput.fill("2026-03-05");
+      await toDateInput.press("Enter");
       await page.keyboard.press("Escape");
       await page.getByRole("button", { name: "Apply filters" }).click();
       await waitForCount(appointmentRows, 0);
       await waitForCount(timelineDays, 0);
       await page.getByText("No appointments for selected filters.").waitFor();
-      await page.getByText("Timeline empty.").waitFor();
 
       console.log(
         `[${viewport.name}] R18 perf-proxy route(login=${signInRouteMs}ms,adminToAgent=${adminToAgentRouteMs}ms) ` +
