@@ -487,20 +487,20 @@ export function createPostgresQueueAdapter(client, options = {}) {
               FOR UPDATE SKIP LOCKED
               LIMIT $1
            ),
-           claimed AS (
-             UPDATE "Messages" m
-                SET metadata = COALESCE(m.metadata, '{}'::jsonb) || jsonb_build_object(
-                  'workerClaim',
-                  jsonb_build_object(
-                    'workerId', $3,
-                    'claimedAt', $2,
-                    'claimExpiresAt', $4
-                  )
-                )
-               FROM claimable
-              WHERE m.id = claimable.id
-              RETURNING m.id
-           )
+	           claimed AS (
+	             UPDATE "Messages" m
+	                SET metadata = COALESCE(m.metadata, '{}'::jsonb) || jsonb_build_object(
+	                  'workerClaim',
+	                  jsonb_build_object(
+	                    'workerId', $3::text,
+	                    'claimedAt', $2::timestamptz,
+	                    'claimExpiresAt', $4::timestamptz
+	                  )
+	                )
+	               FROM claimable
+	              WHERE m.id = claimable.id
+	              RETURNING m.id
+	           )
            SELECT m.id,
                   m.conversation_id,
                   m.body,
