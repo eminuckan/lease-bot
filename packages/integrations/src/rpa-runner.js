@@ -98,6 +98,41 @@ async function detectProtectionLayer(page, adapter, response = null) {
     }
   }
 
+  // Auth/session gate detection (login page, "please log in" interstitial, etc).
+  // The concrete patterns live in adapter definitions so we don't overfit generic heuristics.
+  let url = "";
+  if (typeof page?.url === "function") {
+    try {
+      url = await page.url();
+    } catch {
+      url = "";
+    }
+  }
+  const authRequiredUrlPatterns = adapter.authRequiredUrlPatterns || [];
+  for (const pattern of authRequiredUrlPatterns) {
+    if (typeof pattern === "string" && pattern.length > 0 && url.includes(pattern)) {
+      throw createRunnerError("SESSION_EXPIRED", `Authentication required on ${adapter.platform}`, { retryable: true });
+    }
+  }
+
+  const authRequiredText = adapter.authRequiredText || [];
+  if (authRequiredText.length > 0) {
+    let text = "";
+    if (typeof page?.evaluate === "function") {
+      try {
+        text = await page.evaluate(() => (document.body?.innerText || ""));
+      } catch {
+        text = "";
+      }
+    }
+    const normalizedText = String(text || "").toLowerCase();
+    for (const marker of authRequiredText) {
+      if (typeof marker === "string" && marker.length > 0 && normalizedText.includes(marker.toLowerCase())) {
+        throw createRunnerError("SESSION_EXPIRED", `Authentication required on ${adapter.platform}`, { retryable: true });
+      }
+    }
+  }
+
   // Fallback detection for common anti-bot layers (Cloudflare "Just a moment", "blocked", etc).
   let title = "";
   if (typeof page?.title === "function") {

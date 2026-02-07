@@ -18,6 +18,7 @@ Example for SpareRoom:
 ```bash
 playwright-cli -s=spareroom open https://www.spareroom.com/roommate/logon.pl --headed --persistent --profile=/tmp/lease-bot-spareroom
 # Log in manually in the opened browser window.
+# Important: After login, open the inbox URL and confirm you see real threads (not a "log in or register" prompt).
 playwright-cli -s=spareroom state-save /tmp/spareroom-auth.json
 playwright-cli -s=spareroom close
 ```
@@ -49,4 +50,3 @@ When `LEASE_BOT_RPA_DEBUG=1`, failed runs will write artifacts under `LEASE_BOT_
 - `*.png` screenshot
 - `*.html` captured page HTML
 - `*.json` run metadata (platform, action, account id, attempt, URL)
-

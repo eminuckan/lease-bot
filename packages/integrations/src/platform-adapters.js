@@ -9,6 +9,11 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
     // should be overridden per-account if needed.
     inboxPath: "/roommate/mythreads.pl",
     threadPath: (threadId) => `/roommate/messages.pl?thread_id=${encodeURIComponent(threadId)}`,
+    authRequiredUrlPatterns: ["/roommate/logon.pl"],
+    authRequiredText: [
+      // SpareRoom uses this copy on protected pages when the session is missing/expired.
+      "to view this content you will need to either"
+    ],
     selectors: {
       challenge: ["iframe[src*='challenge']", "#challenge-form", "[data-cy='bot-check']"],
       captcha: ["iframe[title*='captcha']", "[data-sitekey]", "#g-recaptcha-response"],
