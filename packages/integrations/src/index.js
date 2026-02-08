@@ -505,6 +505,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
                   m.conversation_id,
                   m.body,
                   m.metadata,
+                  m.sent_at,
                   c.platform_account_id,
                   pa.platform,
                   pa.credentials AS platform_credentials,
@@ -544,6 +545,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
         conversationId: row.conversation_id,
         body: row.body,
         metadata: row.metadata || {},
+        sentAt: row.sent_at,
         platformAccountId: row.platform_account_id,
         platform: row.platform,
         platformCredentials: row.platform_credentials || {},
@@ -631,6 +633,80 @@ export function createPostgresQueueAdapter(client, options = {}) {
       );
 
       return result.rows;
+    },
+
+    // Dev helper: ensure a test conversation has a listing + assigned agent so we can compute slot options.
+    // This is used by the worker when WORKER_AUTOREPLY_ALLOW_LEAD_NAMES is set (safe test-only mode).
+    async ensureDevTestConversationContext({ conversationId, platformAccountId }) {
+      if (process.env.NODE_ENV === "production") {
+        return null;
+      }
+      if (process.env.LEASE_BOT_DEV_BOOTSTRAP_TEST_DATA === "0") {
+        return null;
+      }
+      if (!conversationId || !platformAccountId) {
+        return null;
+      }
+
+      const agentName = process.env.LEASE_BOT_DEV_AGENT_NAME || "Aleyna";
+      const listingExternalId = process.env.LEASE_BOT_DEV_LISTING_EXTERNAL_ID || "dev_default";
+
+      const agentResult = await client.query(
+        `SELECT id
+           FROM "Agents"
+          WHERE platform_account_id = $1::uuid
+            AND full_name = $2
+          ORDER BY created_at ASC
+          LIMIT 1`,
+        [platformAccountId, agentName]
+      );
+      const agentId = agentResult.rows?.[0]?.id || null;
+      if (!agentId) {
+        return null;
+      }
+
+      const listingResult = await client.query(
+        `SELECT l.id AS listing_id,
+                u.id AS unit_id,
+                u.property_name,
+                u.unit_number
+           FROM "Listings" l
+           JOIN "Units" u ON u.id = l.unit_id
+          WHERE l.platform_account_id = $1::uuid
+            AND l.listing_external_id = $2
+          LIMIT 1`,
+        [platformAccountId, listingExternalId]
+      );
+      const listing = listingResult.rows?.[0] || null;
+      if (!listing?.listing_id || !listing?.unit_id) {
+        return null;
+      }
+
+      await client.query(
+        `UPDATE "Conversations"
+            SET listing_id = COALESCE(listing_id, $2::uuid),
+                assigned_agent_id = COALESCE(assigned_agent_id, $3::uuid),
+                updated_at = NOW()
+          WHERE id = $1::uuid`,
+        [conversationId, listing.listing_id, agentId]
+      );
+
+      await client.query(
+        `INSERT INTO "UnitAgentAssignments" (unit_id, agent_id, assignment_mode, priority)
+         VALUES ($1::uuid, $2::uuid, 'active', 100)
+         ON CONFLICT (unit_id, agent_id) DO UPDATE
+         SET assignment_mode = EXCLUDED.assignment_mode,
+             priority = LEAST("UnitAgentAssignments".priority, EXCLUDED.priority),
+             updated_at = NOW()`,
+        [listing.unit_id, agentId]
+      );
+
+      return {
+        assignedAgentId: agentId,
+        unitId: listing.unit_id,
+        propertyName: listing.property_name,
+        unitNumber: listing.unit_number
+      };
     },
 
     async findRule({ platformAccountId, intent, fallbackIntent }) {

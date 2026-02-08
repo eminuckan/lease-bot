@@ -2,22 +2,64 @@ import { classifyIntent, detectFollowUp, runReplyPipelineWithAI } from "../../..
 
 import { createHash } from "node:crypto";
 
+function parseCsvEnv(value) {
+  if (typeof value !== "string") {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeLeadName(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function getTimezoneLabel(timezone, date) {
+  if (!timezone) {
+    return "UTC";
+  }
+
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "short" }).formatToParts(date);
+    const label = parts.find((part) => part.type === "timeZoneName")?.value;
+    return label || timezone;
+  } catch {
+    return timezone;
+  }
+}
+
 function formatSlotWindow(slot) {
   const timezone = slot.timezone || "UTC";
-  const startsAt = new Date(slot.starts_at || slot.startsAt).toISOString();
-  const endsAt = new Date(slot.ends_at || slot.endsAt).toISOString();
-  return `${startsAt} - ${endsAt} ${timezone}`;
+  const startsAt = new Date(slot.starts_at || slot.startsAt);
+  const endsAt = new Date(slot.ends_at || slot.endsAt);
+  const dateLabel = new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "short", month: "short", day: "numeric" }).format(startsAt);
+  const timeFormatter = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", minute: "2-digit" });
+  const startLabel = timeFormatter.format(startsAt);
+  const endLabel = timeFormatter.format(endsAt);
+  const tzLabel = getTimezoneLabel(timezone, startsAt);
+  return `${dateLabel} ${startLabel} - ${endLabel} ${tzLabel}`;
 }
 
 function buildTemplateContext(message, slotOptions) {
   const unit = message.propertyName && message.unitNumber ? `${message.propertyName} ${message.unitNumber}` : "";
   const firstSlot = slotOptions.length > 0 ? slotOptions[0] : "";
+  const slotOptionsInline = slotOptions.join(", ");
+  const slotOptionsList = slotOptions.map((slot) => `- ${slot}`).join("\n");
 
   return {
     unit,
     unit_number: message.unitNumber || "",
     slot: firstSlot,
-    slot_options: slotOptions.join(", "),
+    // Prefer a human-friendly list for templates; keep an inline variant for compact templates.
+    slot_options: slotOptionsList || slotOptionsInline,
+    slot_options_inline: slotOptionsInline,
+    slot_options_list: slotOptionsList,
     slotOptions,
     lead_name: message.leadName || ""
   };
@@ -163,6 +205,11 @@ export async function processPendingMessagesWithAi({
   aiEnabled,
   geminiModel
 }) {
+  const leadAllowlist = parseCsvEnv(process.env.WORKER_AUTOREPLY_ALLOW_LEAD_NAMES);
+  const leadAllowlistSet = new Set(leadAllowlist.map(normalizeLeadName));
+  const leadAllowlistActive = leadAllowlistSet.size > 0;
+  const maxAutoReplyAgeMinutes = Number(process.env.WORKER_AUTOREPLY_MAX_MESSAGE_AGE_MINUTES || 60);
+
   const pendingMessages = await adapter.fetchPendingMessages({
     limit,
     now: now.toISOString(),
@@ -173,6 +220,7 @@ export async function processPendingMessagesWithAi({
   const metrics = createMetricsSnapshot();
 
   for (const message of pendingMessages) {
+    let msg = message;
     const platform = message.platform || "unknown";
     const platformPolicy = getPolicyContext(message);
     let failureStage = "pipeline";
@@ -210,15 +258,122 @@ export async function processPendingMessagesWithAi({
         continue;
       }
 
-      const slotRows = await fetchSlotRowsForMessage(adapter, message);
+      if (leadAllowlistActive) {
+        const leadKey = normalizeLeadName(msg.leadName);
+        if (!leadAllowlistSet.has(leadKey)) {
+          const decisionReason = "test_allowlist_blocked";
+          const blockedMetadataPatch = {
+            aiProcessedAt: now.toISOString(),
+            replyEligible: false,
+            replyDecisionReason: decisionReason,
+            outcome: "blocked",
+            platformPolicy,
+            allowlist: {
+              type: "lead_name",
+              env: "WORKER_AUTOREPLY_ALLOW_LEAD_NAMES",
+              configured: leadAllowlist,
+              matched: false
+            }
+          };
+
+          metrics.decisions.ineligible += 1;
+          incrementMetricBucket(metrics.decisions.reasons, decisionReason);
+
+          await adapter.markInboundProcessed({
+            messageId: msg.id,
+            metadataPatch: blockedMetadataPatch
+          });
+
+          await adapter.recordLog({
+            actorType: "worker",
+            entityType: "message",
+            entityId: msg.id,
+            action: "ai_reply_test_allowlist_blocked",
+            details: {
+              platform,
+              reason: decisionReason,
+              leadName: msg.leadName || null,
+              platformPolicy,
+              allowlist: leadAllowlist
+            }
+          });
+          metrics.auditLogsWritten += 1;
+          continue;
+        }
+
+        if (typeof adapter.ensureDevTestConversationContext === "function" && (!msg.unitId || !msg.assignedAgentId)) {
+          failureStage = "ensure_dev_test_conversation_context";
+          const ensured = await adapter.ensureDevTestConversationContext({
+            conversationId: msg.conversationId,
+            platformAccountId: msg.platformAccountId,
+            leadName: msg.leadName || null
+          });
+          if (ensured) {
+            msg = {
+              ...msg,
+              ...ensured
+            };
+          }
+        }
+
+        if (Number.isFinite(maxAutoReplyAgeMinutes) && maxAutoReplyAgeMinutes > 0) {
+          const sentAt = msg.sentAt ? new Date(msg.sentAt) : null;
+          const ageMs = sentAt && Number.isFinite(sentAt.getTime()) ? now.getTime() - sentAt.getTime() : null;
+          if (typeof ageMs === "number" && ageMs > maxAutoReplyAgeMinutes * 60_000) {
+            const decisionReason = "test_allowlist_message_too_old";
+            const blockedMetadataPatch = {
+              aiProcessedAt: now.toISOString(),
+              replyEligible: false,
+              replyDecisionReason: decisionReason,
+              outcome: "blocked",
+              platformPolicy,
+              allowlist: {
+                type: "lead_name",
+                env: "WORKER_AUTOREPLY_ALLOW_LEAD_NAMES",
+                configured: leadAllowlist,
+                matched: true,
+                maxMessageAgeMinutes: maxAutoReplyAgeMinutes
+              }
+            };
+
+            metrics.decisions.ineligible += 1;
+            incrementMetricBucket(metrics.decisions.reasons, decisionReason);
+
+            await adapter.markInboundProcessed({
+              messageId: msg.id,
+              metadataPatch: blockedMetadataPatch
+            });
+
+            await adapter.recordLog({
+              actorType: "worker",
+              entityType: "message",
+              entityId: msg.id,
+              action: "ai_reply_test_allowlist_blocked",
+              details: {
+                platform,
+                reason: decisionReason,
+                leadName: msg.leadName || null,
+                sentAt: msg.sentAt || null,
+                maxMessageAgeMinutes: maxAutoReplyAgeMinutes,
+                platformPolicy,
+                allowlist: leadAllowlist
+              }
+            });
+            metrics.auditLogsWritten += 1;
+            continue;
+          }
+        }
+      }
+
+      const slotRows = await fetchSlotRowsForMessage(adapter, msg);
       const slotOptions = slotRows.map((slot) => formatSlotWindow(slot));
       const followUpRuleFallbackIntent = message.metadata?.intent || "tour_request";
-      const messageIntent = classifyIntent(message.body);
-      const followUp = detectFollowUp(message.body, message.hasRecentOutbound);
+      const messageIntent = classifyIntent(msg.body);
+      const followUp = detectFollowUp(msg.body, msg.hasRecentOutbound);
       const ruleIntent = followUp ? followUpRuleFallbackIntent : messageIntent;
 
       const rule = await adapter.findRule({
-        platformAccountId: message.platformAccountId,
+        platformAccountId: msg.platformAccountId,
         intent: ruleIntent,
         fallbackIntent: followUpRuleFallbackIntent
       });
@@ -226,15 +381,15 @@ export async function processPendingMessagesWithAi({
       const templateName = rule?.actionConfig?.template || null;
       const template = templateName
         ? await adapter.findTemplate({
-            platformAccountId: message.platformAccountId,
+            platformAccountId: msg.platformAccountId,
             templateName
           })
         : null;
 
-      const templateContext = buildTemplateContext(message, slotOptions);
+      const templateContext = buildTemplateContext(msg, slotOptions);
       const pipeline = await runReplyPipelineWithAI({
-        inboundBody: message.body,
-        hasRecentOutbound: message.hasRecentOutbound,
+        inboundBody: msg.body,
+        hasRecentOutbound: msg.hasRecentOutbound,
         fallbackIntent: followUpRuleFallbackIntent,
         rule,
         template,
@@ -253,7 +408,7 @@ export async function processPendingMessagesWithAi({
           conversationId: message.conversationId,
           payload: workflowPersistencePayload,
           actorType: "worker",
-          actorId: message.assignedAgentId || null,
+          actorId: msg.assignedAgentId || null,
           source: "ai_outcome_decision",
           messageId: message.id
         });
@@ -333,7 +488,7 @@ export async function processPendingMessagesWithAi({
 
       if (pipeline.eligibility.eligible) {
         const status = pipeline.outcome === "send" ? "sent" : "draft";
-        const dispatchKey = buildDispatchKey({ message, pipeline, status });
+        const dispatchKey = buildDispatchKey({ message: msg, pipeline, status });
         let dispatchGuard = {
           shouldDispatch: true,
           duplicate: false,
@@ -375,10 +530,10 @@ export async function processPendingMessagesWithAi({
           ? dispatchGuard.delivery || null
           : status === "sent" && typeof adapter.dispatchOutboundMessage === "function"
           ? await adapter.dispatchOutboundMessage({
-              platformAccountId: message.platformAccountId,
-              platform: message.platform,
-              platformCredentials: message.platformCredentials,
-              externalThreadId: message.externalThreadId,
+              platformAccountId: msg.platformAccountId,
+              platform: msg.platform,
+              platformCredentials: msg.platformCredentials,
+              externalThreadId: msg.externalThreadId,
               body: pipeline.replyBody,
               metadata: {
                 intent: pipeline.intent,
@@ -436,8 +591,8 @@ export async function processPendingMessagesWithAi({
 
           failureStage = "record_outbound_reply";
           await adapter.recordOutboundReply({
-            conversationId: message.conversationId,
-            assignedAgentId: message.assignedAgentId,
+            conversationId: msg.conversationId,
+            assignedAgentId: msg.assignedAgentId,
             body: pipeline.replyBody,
             metadata: outboundMetadata,
             channel: deliveryReceipt?.channel || "in_app",

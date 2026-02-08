@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 
 import { createClient } from "../../../packages/db/src/index.js";
 import { createPostgresQueueAdapter } from "../../../packages/integrations/src/index.js";
+import { ensureDevTestData } from "../../../packages/integrations/src/bootstrap-dev-test-data.js";
 import { ensureRequiredPlatformAccounts } from "../../../packages/integrations/src/bootstrap-platform-accounts.js";
 
 import { processPendingMessagesWithAi } from "./decision-pipeline.js";
@@ -67,6 +68,14 @@ export async function startWorker() {
         error: error instanceof Error ? error.message : String(error)
       });
     }
+  }
+
+  try {
+    await ensureDevTestData(client, { env: process.env, logger: console });
+  } catch (error) {
+    console.warn("[bootstrap] failed ensuring dev test data", {
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 
   console.log(`worker started (${task}) interval=${pollIntervalMs}ms batch=${queueBatchSize}`);

@@ -6,7 +6,9 @@ import { evaluateGuardrails } from "./guardrails.js";
 
 const FOLLOW_UP_PATTERN = /\b(follow\s*up|any update|checking in|just checking|status\??)\b/i;
 const AMBIGUOUS_PATTERN = /\b(not sure|maybe|can you explain|confused|what do you mean|unclear)\b/i;
-const TOUR_INTENTS = new Set(["tour_request", "follow_up"]);
+// Intents we can safely auto-handle with a slot-based reply.
+// Note: availability questions ("is this available?") are high-volume and should be eligible.
+const AUTO_REPLY_INTENTS = new Set(["tour_request", "availability_question", "follow_up"]);
 const WORKFLOW_OUTCOMES = new Set([
   "not_interested",
   "wants_reschedule",
@@ -219,7 +221,7 @@ export function decideReplyEligibility({
   if (isAmbiguous || intent === "unknown") {
     return { eligible: false, reason: "escalate_ambiguous_intent", outcome: "escalate" };
   }
-  if (!TOUR_INTENTS.has(effectiveIntent)) {
+  if (!AUTO_REPLY_INTENTS.has(effectiveIntent)) {
     return { eligible: false, reason: "escalate_non_tour_intent", outcome: "escalate" };
   }
   if (slotCount < 1) {
@@ -227,6 +229,9 @@ export function decideReplyEligibility({
   }
   if (!rule) {
     return { eligible: false, reason: "escalate_no_matching_rule", outcome: "escalate" };
+  }
+  if (rule.enabled === false) {
+    return { eligible: false, reason: "skip_rule_disabled", outcome: "skip" };
   }
   if (!templateBody || !templateBody.trim()) {
     return { eligible: false, reason: "escalate_template_missing", outcome: "escalate" };
@@ -317,7 +322,8 @@ export async function runReplyPipelineWithAI(input) {
   });
   const aiSuggestedReply = aiDecision?.suggestedReply ? String(aiDecision.suggestedReply) : "";
   const renderedReply = renderTemplate(templateBody, input.templateContext || {});
-  const replyBody = renderedReply || (TOUR_INTENTS.has(effectiveIntent) && slotCount > 0 ? aiSuggestedReply || createDefaultTourReply(input.templateContext) : "");
+  const replyBody =
+    renderedReply || (AUTO_REPLY_INTENTS.has(effectiveIntent) && slotCount > 0 ? aiSuggestedReply || createDefaultTourReply(input.templateContext) : "");
 
   const guardrails = evaluateGuardrails({
     inboundBody: input.inboundBody,

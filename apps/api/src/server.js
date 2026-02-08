@@ -5,6 +5,7 @@ import { Pool } from "pg";
 
 import { getAuth, hasAnyRole, normalizeRole, roles } from "@lease-bot/auth";
 import { createConnectorRegistry, createPostgresQueueAdapter } from "../../../packages/integrations/src/index.js";
+import { ensureDevTestData } from "../../../packages/integrations/src/bootstrap-dev-test-data.js";
 import { ensureRequiredPlatformAccounts } from "../../../packages/integrations/src/bootstrap-platform-accounts.js";
 import { LocalTimeValidationError, formatInTimezone, zonedTimeToUtc } from "./availability-timezone.js";
 import { ensureDevAdminUser } from "./bootstrap-dev-admin.js";
@@ -5003,6 +5004,14 @@ if (process.env.NODE_ENV !== "test") {
       })
     );
   }
+
+  bootstrapTasks.push(
+    ensureDevTestData(pool, { env: process.env, logger: console }).catch((error) => {
+      console.warn("[bootstrap] failed ensuring dev test data", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    })
+  );
 
   bootstrapTasks.push(
     ensureDevAdminUser(pool, auth, { env: process.env, logger: console }).catch((error) => {
