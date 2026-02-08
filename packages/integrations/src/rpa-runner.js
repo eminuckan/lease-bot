@@ -242,7 +242,7 @@ function normalizeAutomationError(error) {
 }
 
 function createDefaultPlaywrightFactory(logger = console) {
-  function buildLaunchOptions(headless) {
+  function readLaunchConfig() {
     const env = process.env || {};
     const launchArgs = parseJsonArray(env.LEASE_BOT_RPA_LAUNCH_ARGS_JSON) || [];
     const browserChannel = typeof env.LEASE_BOT_RPA_BROWSER_CHANNEL === "string" && env.LEASE_BOT_RPA_BROWSER_CHANNEL.trim().length > 0
@@ -251,32 +251,72 @@ function createDefaultPlaywrightFactory(logger = console) {
     const chromiumSandbox = env.LEASE_BOT_RPA_CHROMIUM_SANDBOX === "0" ? false : undefined;
 
     return {
+      launchArgs,
+      browserChannel,
+      chromiumSandbox
+    };
+  }
+
+  function buildLaunchOptions(headless, { omitChannel = false } = {}) {
+    const { launchArgs, browserChannel, chromiumSandbox } = readLaunchConfig();
+
+    return {
       headless,
-      ...(browserChannel ? { channel: browserChannel } : {}),
+      ...(!omitChannel && browserChannel ? { channel: browserChannel } : {}),
       ...(chromiumSandbox === false ? { chromiumSandbox } : {}),
       ...(launchArgs.length > 0 ? { args: launchArgs } : {})
     };
   }
 
+  async function loadChromium() {
+    try {
+      const playwright = await import("playwright");
+      const chromium = playwright.chromium || playwright.default?.chromium;
+      if (!chromium) {
+        throw new Error("chromium_unavailable");
+      }
+      return chromium;
+    } catch (error) {
+      logger.error?.("[integrations] playwright runtime unavailable", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw createRunnerError("RPA_RUNTIME_UNAVAILABLE", "Playwright runtime is unavailable", {
+        retryable: false,
+        cause: error
+      });
+    }
+  }
+
+  async function withChannelFallback(action, { platform = null, userDataDir = null } = {}) {
+    try {
+      return await action({ omitChannel: false });
+    } catch (error) {
+      const { browserChannel } = readLaunchConfig();
+      if (!browserChannel) {
+        throw error;
+      }
+
+      logger.warn?.("[integrations] playwright launch failed; retrying without browser channel", {
+        ...(platform ? { platform } : {}),
+        ...(userDataDir ? { userDataDir } : {}),
+        channel: browserChannel,
+        error: error instanceof Error ? error.message : String(error)
+      });
+
+      return action({ omitChannel: true });
+    }
+  }
+
   return {
     async launch({ headless }) {
-      try {
-        const playwright = await import("playwright");
-        const chromium = playwright.chromium || playwright.default?.chromium;
-        if (!chromium || typeof chromium.launch !== "function") {
-          throw new Error("chromium_launch_unavailable");
-        }
-
-        return chromium.launch(buildLaunchOptions(headless));
-      } catch (error) {
-        logger.error?.("[integrations] playwright runtime unavailable", {
-          error: error instanceof Error ? error.message : String(error)
-        });
+      const chromium = await loadChromium();
+      if (typeof chromium.launch !== "function") {
         throw createRunnerError("RPA_RUNTIME_UNAVAILABLE", "Playwright runtime is unavailable", {
-          retryable: false,
-          cause: error
+          retryable: false
         });
       }
+
+      return withChannelFallback(({ omitChannel }) => chromium.launch(buildLaunchOptions(headless, { omitChannel })));
     }
     ,
     async launchPersistentContext({ headless, userDataDir }) {
@@ -286,23 +326,17 @@ function createDefaultPlaywrightFactory(logger = console) {
         });
       }
 
-      try {
-        const playwright = await import("playwright");
-        const chromium = playwright.chromium || playwright.default?.chromium;
-        if (!chromium || typeof chromium.launchPersistentContext !== "function") {
-          throw new Error("chromium_launch_persistent_unavailable");
-        }
-
-        return chromium.launchPersistentContext(userDataDir, buildLaunchOptions(headless));
-      } catch (error) {
-        logger.error?.("[integrations] playwright persistent context unavailable", {
-          error: error instanceof Error ? error.message : String(error)
-        });
+      const chromium = await loadChromium();
+      if (typeof chromium.launchPersistentContext !== "function") {
         throw createRunnerError("RPA_RUNTIME_UNAVAILABLE", "Playwright runtime is unavailable", {
-          retryable: false,
-          cause: error
+          retryable: false
         });
       }
+
+      return withChannelFallback(
+        ({ omitChannel }) => chromium.launchPersistentContext(userDataDir, buildLaunchOptions(headless, { omitChannel })),
+        { userDataDir }
+      );
     }
   };
 }

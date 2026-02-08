@@ -60,12 +60,19 @@ function createMockClient({ linkageRow = null, conversationListingId = null, mes
       if (sql.includes("INSERT INTO \"Messages\"")) {
         return {
           rowCount: messageInserted ? 1 : 0,
-          rows: []
+          rows: messageInserted ? [{ id: "msg-1", inserted: true }] : []
         };
       }
 
       if (sql.includes("INSERT INTO \"AuditLogs\"")) {
         state.auditInserts.push(params);
+        return {
+          rowCount: 1,
+          rows: []
+        };
+      }
+
+      if (sql.includes("UPDATE \"Conversations\" c") && sql.includes("SET last_message_at")) {
         return {
           rowCount: 1,
           rows: []

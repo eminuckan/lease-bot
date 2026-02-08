@@ -75,12 +75,25 @@ async function main() {
   const chromiumSandbox = process.env.LEASE_BOT_RPA_CHROMIUM_SANDBOX === "0" ? false : undefined;
   const launchArgs = parseJsonArrayEnv(process.env.LEASE_BOT_RPA_LAUNCH_ARGS_JSON);
 
-  const context = await chromium.launchPersistentContext(profileDir, {
+  const launchOptions = {
     headless: false,
     ...(channel ? { channel } : {}),
     ...(chromiumSandbox === false ? { chromiumSandbox } : {}),
     ...(launchArgs.length > 0 ? { args: launchArgs } : {})
-  });
+  };
+
+  let context;
+  try {
+    context = await chromium.launchPersistentContext(profileDir, launchOptions);
+  } catch (error) {
+    if (!channel) {
+      throw error;
+    }
+
+    console.warn(`[rpa-login] launch failed with channel=${channel}; retrying with Playwright Chromium`);
+    const { channel: _ignored, ...launchOptionsNoChannel } = launchOptions;
+    context = await chromium.launchPersistentContext(profileDir, launchOptionsNoChannel);
+  }
 
   try {
     const page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
@@ -108,4 +121,3 @@ main().catch((error) => {
   console.error("[rpa-login] failed", error);
   process.exitCode = 1;
 });
-
