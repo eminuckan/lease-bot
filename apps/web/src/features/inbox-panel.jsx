@@ -364,7 +364,7 @@ export function InboxPanel() {
                             <span>{formatTimestamp(item.sentAt || item.createdAt)}</span>
                             <span className="font-medium capitalize">{item.status}</span>
                           </div>
-                          {item.status === "draft" || item.status === "hold" ? (
+                          {isOutbound && (item.status === "draft" || item.status === "hold") ? (
                             <div className="mt-3 flex gap-2">
                               <button
                                 type="button"

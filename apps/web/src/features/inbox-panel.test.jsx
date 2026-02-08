@@ -141,4 +141,40 @@ describe("InboxPanel workboard", () => {
     expect(screen.getAllByText("open").length > 0).toBe(true);
     expect(screen.queryByText("unknown")).toBeNull();
   });
+
+  it("shows Approve only for outbound hold/draft messages", async () => {
+    mockLeaseBot.conversationDetail = {
+      conversation: {
+        id: "11111111-1111-4111-8111-111111111111",
+        leadName: "Hold Lead",
+        unit: "Atlas 4B"
+      },
+      messages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          direction: "inbound",
+          status: "hold",
+          body: "Need details",
+          sentAt: "2026-02-08T12:00:00.000Z"
+        },
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          direction: "outbound",
+          status: "hold",
+          body: "Draft reply",
+          sentAt: "2026-02-08T12:01:00.000Z"
+        }
+      ],
+      templates: [],
+      templateContext: {}
+    };
+
+    render(<InboxPanel />);
+    const approveButtons = screen.getAllByRole("button", { name: "Approve" });
+    expect(approveButtons).toHaveLength(1);
+
+    const user = userEvent.setup();
+    await user.click(approveButtons[0]);
+    expect(mockLeaseBot.approveMessage).toHaveBeenCalledWith("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+  });
 });
