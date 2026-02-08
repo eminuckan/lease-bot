@@ -178,6 +178,7 @@ test("R4: workflow persistence mapping supports required AI outcomes", () => {
 test("classifies intent and follow-up signals", () => {
   assert.equal(classifyIntent("Can I tour this unit this week?"), "tour_request");
   assert.equal(classifyIntent("What is the monthly rent?"), "pricing_question");
+  assert.equal(classifyIntent("Hi Maurik, I am interested in the room for rent."), "availability_question");
   assert.equal(detectFollowUp("Just checking in, any update?", true), true);
   assert.equal(detectFollowUp("Just checking in, any update?", false), false);
 });

@@ -35,8 +35,9 @@ const decisionSchema = z.object({
 
 export function classifyIntent(body) {
   const text = String(body || "").toLowerCase();
+  const normalized = text.replace(/\s+/g, " ").trim();
 
-  if (!text.trim()) {
+  if (!normalized) {
     return "unknown";
   }
   if (/\b(stop|unsubscribe|do not contact)\b/.test(text)) {
@@ -45,10 +46,25 @@ export function classifyIntent(body) {
   if (/\b(tour|visit|see the place|walkthrough|showing)\b/.test(text)) {
     return "tour_request";
   }
-  if (/\b(price|rent|deposit|fee|cost)\b/.test(text)) {
+
+  // Pricing questions need explicit pricing intent. Avoid misclassifying generic phrases like
+  // "interested in the room for rent" as a pricing question.
+  const isPricingQuestion =
+    /\b(price|deposit|fee|cost)\b/.test(normalized)
+    || /\bhow much\b/.test(normalized)
+    || /\$\s*\d/.test(normalized)
+    || /\b(what('?s| is) (the )?rent)\b/.test(normalized)
+    || /\bmonthly rent\b/.test(normalized)
+    || /\brent (per|\/)\s*(month|mo)\b/.test(normalized)
+    || /\brent\?\b/.test(normalized)
+    || /\brent\s*[:=-]\s*\$?\s*\d/.test(normalized);
+
+  if (isPricingQuestion) {
     return "pricing_question";
   }
-  if (/\b(available|availability|when can i|open slot)\b/.test(text)) {
+
+  // Availability-like first messages ("I'm interested") should be handled with the slot-based reply.
+  if (/\b(available|availability|still available|when can i|open slot|interested|interested in|looking to rent|looking for)\b/.test(normalized)) {
     return "availability_question";
   }
 
