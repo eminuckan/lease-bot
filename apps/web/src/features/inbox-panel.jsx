@@ -356,7 +356,7 @@ export function InboxPanel() {
                               : "bg-card shadow-card"
                           )}
                         >
-                          <p className="text-sm leading-relaxed">{item.body}</p>
+                          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{item.body}</p>
                           <div className={cn(
                             "mt-2 flex items-center justify-between gap-4 text-[11px]",
                             isOutbound ? "text-primary-foreground/60" : "text-muted-foreground"

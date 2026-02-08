@@ -1012,7 +1012,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
 
       await client.query(
         `INSERT INTO "AuditLogs" (actor_type, actor_id, entity_type, entity_id, action, details)
-         VALUES ($1, $2::uuid, 'conversation', $3, 'workflow_state_transitioned', $4::jsonb)`,
+         VALUES ($1, $2, 'conversation', $3, 'workflow_state_transitioned', $4::jsonb)`,
         [
           actorType,
           actorId,

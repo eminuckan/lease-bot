@@ -985,8 +985,8 @@ async function withClient(task) {
 async function recordAuditLog(client, { actorType, actorId = null, entityType, entityId, action, details = {} }) {
   await client.query(
     `INSERT INTO "AuditLogs" (actor_type, actor_id, entity_type, entity_id, action, details)
-     VALUES ($1, $2::uuid, $3, $4, $5, $6::jsonb)`,
-    [actorType, actorId, entityType, String(entityId), action, JSON.stringify(details)]
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+    [actorType, actorId ? String(actorId) : null, entityType, String(entityId), action, JSON.stringify(details)]
   );
 }
 
@@ -3158,7 +3158,7 @@ export async function routeApi(req, res, url) {
              sent_at
            ) VALUES ($1::uuid, 'agent', $2::uuid, $3, 'outbound', 'in_app', $4, $5::jsonb, NOW())
             RETURNING id`,
-          [conversationId, access.session.user.id, delivery?.externalMessageId || null, messageBody, JSON.stringify(metadata)]
+          [conversationId, detail.conversation.assignedAgentId || null, delivery?.externalMessageId || null, messageBody, JSON.stringify(metadata)]
         );
 
         await client.query(
