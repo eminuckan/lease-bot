@@ -904,17 +904,17 @@ export function createPostgresQueueAdapter(client, options = {}) {
             SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
               'dispatch',
               jsonb_build_object(
-                'key', $2,
+                'key', $2::text,
                 'state', 'in_progress',
-                'platform', $3,
-                'stage', $4,
+                'platform', $3::text,
+                'stage', $4::text,
                 'attempts', COALESCE((COALESCE(metadata, '{}'::jsonb)#>>'{dispatch,attempts}')::int, 0) + 1,
-                'lastAttemptAt', $5
+                'lastAttemptAt', $5::timestamptz
               )
             )
           WHERE id = $1::uuid
             AND (
-              COALESCE(metadata#>>'{dispatch,key}', '') <> $2
+              COALESCE(metadata#>>'{dispatch,key}', '') <> $2::text
               OR COALESCE(metadata#>>'{dispatch,state}', '') NOT IN ('in_progress', 'completed')
             )
           RETURNING COALESCE(metadata->'dispatch', '{}'::jsonb) AS dispatch`,
@@ -952,13 +952,13 @@ export function createPostgresQueueAdapter(client, options = {}) {
               'dispatch',
               COALESCE(metadata->'dispatch', '{}'::jsonb) || jsonb_build_object(
                 'state', 'completed',
-                'status', $3,
-                'completedAt', $4,
+                'status', $3::text,
+                'completedAt', $4::timestamptz,
                 'delivery', $5::jsonb
               )
             )
           WHERE id = $1::uuid
-            AND COALESCE(metadata#>>'{dispatch,key}', '') = $2`,
+            AND COALESCE(metadata#>>'{dispatch,key}', '') = $2::text`,
         [messageId, dispatchKey, status, now || new Date().toISOString(), JSON.stringify(delivery || null)]
       );
     },
@@ -970,13 +970,13 @@ export function createPostgresQueueAdapter(client, options = {}) {
             SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
               'dispatch',
               COALESCE(metadata->'dispatch', '{}'::jsonb) || jsonb_build_object(
-                'state', $6,
-                'failedStage', $2,
-                'lastError', $3,
-                'failedAt', $4,
+                'state', $6::text,
+                'failedStage', $2::text,
+                'lastError', $3::text,
+                'failedAt', $4::timestamptz,
                 'retry', $5::jsonb,
-                'dlqQueuedAt', CASE WHEN $6 = 'dlq' THEN $4 ELSE NULL END,
-                'escalationReason', CASE WHEN $6 = 'dlq' THEN 'escalate_dispatch_retry_exhausted' ELSE NULL END
+                'dlqQueuedAt', CASE WHEN $6::text = 'dlq' THEN $4::timestamptz ELSE NULL END,
+                'escalationReason', CASE WHEN $6::text = 'dlq' THEN 'escalate_dispatch_retry_exhausted' ELSE NULL END
               )
             )
           WHERE id = $1::uuid`,
