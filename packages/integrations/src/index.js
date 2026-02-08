@@ -1442,6 +1442,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
              ON CONFLICT (platform_account_id, external_thread_id)
              DO UPDATE SET
                listing_id = COALESCE("Conversations".listing_id, EXCLUDED.listing_id),
+               status = CASE WHEN "Conversations".status = 'archived' THEN 'open' ELSE "Conversations".status END,
                lead_name = COALESCE(EXCLUDED.lead_name, "Conversations".lead_name),
                lead_contact = CASE
                  WHEN "Conversations".lead_contact IS NULL OR "Conversations".lead_contact = '{}'::jsonb THEN EXCLUDED.lead_contact
