@@ -462,6 +462,16 @@ export function createPostgresQueueAdapter(client, options = {}) {
     return connectorRegistry;
   };
 
+  const parseCsvEnv = (value) => {
+    if (typeof value !== "string") {
+      return [];
+    }
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  };
+
   return {
     async fetchPendingMessages(request = {}) {
       const normalizedRequest = typeof request === "number" ? { limit: request } : request;
@@ -1356,6 +1366,61 @@ export function createPostgresQueueAdapter(client, options = {}) {
             error: error instanceof Error ? error.message : String(error)
           });
           continue;
+        }
+
+        // SpareRoom: inbox sort rank is only valid for threads present in the current inbox snapshot.
+        // When we limit scanned threads (e.g. to 20), previously-seen ranks become stale and can
+        // incorrectly float older conversations to the top. Clear ranks for threads not present now.
+        if (account.platform === "spareroom" && Array.isArray(inboundMessages) && inboundMessages.length > 0) {
+          const seenThreadIds = [...new Set(inboundMessages.map((msg) => msg?.externalThreadId).filter(Boolean))];
+          if (seenThreadIds.length > 0) {
+            await client.query(
+              `UPDATE "Conversations"
+                  SET external_inbox_sort_rank = NULL,
+                      updated_at = NOW()
+                WHERE platform_account_id = $1::uuid
+                  AND external_inbox_sort_rank IS NOT NULL
+                  AND NOT (external_thread_id = ANY($2::text[]))`,
+              [account.id, seenThreadIds]
+            );
+          }
+
+          // Optional dev-only behavior: archive conversations that disappear from the platform inbox,
+          // but only for allowlisted lead names to avoid accidental churn on real leads.
+          if (process.env.NODE_ENV !== "production" && process.env.LEASE_BOT_DEV_ARCHIVE_MISSING_THREADS === "1") {
+            const allowlistedLeads = parseCsvEnv(process.env.WORKER_AUTOREPLY_ALLOW_LEAD_NAMES);
+            if (allowlistedLeads.length > 0 && seenThreadIds.length > 0) {
+              const archived = await client.query(
+                `UPDATE "Conversations"
+                    SET status = 'archived',
+                        external_inbox_sort_rank = NULL,
+                        updated_at = NOW()
+                  WHERE platform_account_id = $1::uuid
+                    AND status = 'open'
+                    AND lead_name = ANY($2::text[])
+                    AND NOT (external_thread_id = ANY($3::text[]))
+                  RETURNING id, lead_name, external_thread_id`,
+                [account.id, allowlistedLeads, seenThreadIds]
+              );
+
+              for (const row of archived.rows) {
+                await client.query(
+                  `INSERT INTO "AuditLogs" (actor_type, entity_type, entity_id, action, details)
+                   VALUES ('system', 'conversation', $1, $2, $3::jsonb)`,
+                  [
+                    String(row.id),
+                    "conversation_archived_missing_from_inbox",
+                    JSON.stringify({
+                      platform: account.platform,
+                      platformAccountId: account.id,
+                      leadName: row.lead_name || null,
+                      externalThreadId: row.external_thread_id || null
+                    })
+                  ]
+                );
+              }
+            }
+          }
         }
         scanned += inboundMessages.length;
 

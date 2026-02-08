@@ -2172,6 +2172,9 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
   const where = [];
   const params = [];
 
+  // Default inbox view shows active conversations only.
+  where.push(`c.status = 'open'`);
+
   if (access?.role === roles.agent) {
     const sessionAgentId = access.session?.user?.id;
     if (!isUuid(sessionAgentId)) {
