@@ -1,8 +1,45 @@
 import { Save, Building2, List, Users } from "lucide-react";
+import { useMemo } from "react";
 import { Button } from "../components/ui/button";
 import { Label } from "../components/ui/label";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
 import { useLeaseBot } from "../state/lease-bot-context";
+
+function parseDateValue(value) {
+  const parsed = Date.parse(value || "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sortListingsForAssignment(a, b) {
+  const aActiveRank = a.status === "active" ? 0 : 1;
+  const bActiveRank = b.status === "active" ? 0 : 1;
+  if (aActiveRank !== bActiveRank) {
+    return aActiveRank - bActiveRank;
+  }
+  return parseDateValue(b.updatedAt) - parseDateValue(a.updatedAt);
+}
+
+function formatListingLabel(item) {
+  const metadata = item?.metadata && typeof item.metadata === "object" ? item.metadata : {};
+  const title = typeof metadata.title === "string" ? metadata.title.trim() : "";
+  const location = typeof metadata.location === "string" ? metadata.location.trim() : "";
+  const priceText = typeof metadata.priceText === "string" ? metadata.priceText.trim() : "";
+  const listingExternalId = typeof item?.listingExternalId === "string" ? item.listingExternalId.trim() : "";
+
+  const primary = title
+    || (listingExternalId ? `Listing #${listingExternalId}` : `Listing ${String(item.id || "").slice(0, 8)}`);
+
+  const details = [];
+  if (location) {
+    details.push(location);
+  }
+  if (priceText) {
+    details.push(priceText);
+  }
+  details.push(item.status === "active" ? "active" : "inactive");
+
+  return `${primary} (${details.join(" • ")})`;
+}
 
 export function AssignmentPanel() {
   const { units, listings, agents, assignmentForm, setAssignmentForm, saveAssignment } =
@@ -12,7 +49,12 @@ export function AssignmentPanel() {
     await saveAssignment(event);
   }
 
-  const filteredListings = listings.filter((item) => item.unitId === assignmentForm.unitId);
+  const filteredListings = useMemo(
+    () => listings
+      .filter((item) => item.unitId === assignmentForm.unitId)
+      .sort(sortListingsForAssignment),
+    [listings, assignmentForm.unitId]
+  );
 
   return (
     <div className="p-6">
@@ -64,7 +106,19 @@ export function AssignmentPanel() {
                     <Label className="text-xs text-muted-foreground">Unit</Label>
                     <Select
                       value={assignmentForm.unitId || "__none__"}
-                      onValueChange={(v) => setAssignmentForm((c) => ({ ...c, unitId: v === "__none__" ? "" : v }))}
+                      onValueChange={(v) => {
+                        const nextUnitId = v === "__none__" ? "" : v;
+                        const preferredListingId = nextUnitId
+                          ? listings
+                            .filter((item) => item.unitId === nextUnitId)
+                            .sort(sortListingsForAssignment)[0]?.id || ""
+                          : "";
+                        setAssignmentForm((current) => ({
+                          ...current,
+                          unitId: nextUnitId,
+                          listingId: preferredListingId
+                        }));
+                      }}
                     >
                       <SelectTrigger className="mt-1.5 h-9 text-sm">
                         <SelectValue placeholder="Select unit" />
@@ -90,9 +144,12 @@ export function AssignmentPanel() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="__none__">Latest for unit</SelectItem>
+                        {filteredListings.length === 0 ? (
+                          <SelectItem value="__empty__" disabled>No listings for selected unit</SelectItem>
+                        ) : null}
                         {filteredListings.map((item) => (
                           <SelectItem key={item.id} value={item.id}>
-                            {item.id.slice(0, 8)} ({item.status})
+                            {formatListingLabel(item)}
                           </SelectItem>
                         ))}
                       </SelectContent>
