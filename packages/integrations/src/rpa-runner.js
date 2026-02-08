@@ -794,11 +794,78 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
 
   const response = await page.goto(adapter.threadUrl(threadId), { waitUntil: "domcontentloaded" });
   await detectProtectionLayer(page, adapter, response);
+
+  // SpareRoom: after sending, the thread page appends a new <li id="msg_<id>">. Capture it so
+  // outbound records use the same externalMessageId as thread sync ingestion.
+  const threadMessageSelector = Array.isArray(adapter.selectors?.threadMessageItems)
+    ? adapter.selectors.threadMessageItems[0]
+    : "li.message[id^='msg_']";
+  let beforeMeta = null;
+  if (adapter.platform === "spareroom" && typeof page?.evaluate === "function") {
+    try {
+      beforeMeta = await page.evaluate((selector) => {
+        const nodes = Array.from(document.querySelectorAll(selector));
+        const last = nodes[nodes.length - 1];
+        return {
+          count: nodes.length,
+          lastId: last?.id || null
+        };
+      }, threadMessageSelector);
+    } catch {
+      beforeMeta = null;
+    }
+  }
+
   await page.fill(adapter.selectors.composer, payload.body);
   await page.click(adapter.selectors.submit);
 
+  let capturedExternalMessageId = null;
+  if (
+    adapter.platform === "spareroom"
+    && beforeMeta
+    && typeof page?.waitForFunction === "function"
+    && typeof page?.evaluate === "function"
+  ) {
+    try {
+      await page.waitForFunction(
+        (meta) => {
+          const nodes = Array.from(document.querySelectorAll(meta.selector));
+          if (nodes.length === 0) {
+            return false;
+          }
+          const last = nodes[nodes.length - 1];
+          if (!last?.id || last.id === meta.beforeLastId) {
+            return false;
+          }
+          if (nodes.length <= meta.beforeCount) {
+            return false;
+          }
+          // SpareRoom flags outbound rows with `message_out` class.
+          const className = last.getAttribute("class") || "";
+          return className.includes("message_out");
+        },
+        {
+          selector: threadMessageSelector,
+          beforeCount: Number(beforeMeta.count || 0),
+          beforeLastId: beforeMeta.lastId || ""
+        },
+        { timeout: 15_000 }
+      );
+
+      const lastId = await page.evaluate((selector) => {
+        const nodes = Array.from(document.querySelectorAll(selector));
+        const last = nodes[nodes.length - 1];
+        return last?.id || "";
+      }, threadMessageSelector);
+      const match = String(lastId || "").match(/^msg_(.+)$/);
+      capturedExternalMessageId = match?.[1] || null;
+    } catch {
+      capturedExternalMessageId = null;
+    }
+  }
+
   return {
-    externalMessageId: `${adapter.platform}-${threadId}-${clock().getTime()}`,
+    externalMessageId: capturedExternalMessageId || `${adapter.platform}-${threadId}-${clock().getTime()}`,
     channel: "in_app",
     status: "sent"
   };

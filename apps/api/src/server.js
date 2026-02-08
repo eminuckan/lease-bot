@@ -2368,21 +2368,45 @@ async function fetchConversationDetail(client, conversationId, access = null) {
 
   const conversation = conversationResult.rows[0];
 
-  const messagesResult = await client.query(
-    `SELECT id,
-            conversation_id,
-            sender_type,
-            sender_agent_id,
-            direction,
-            body,
-            metadata,
-            sent_at,
-            created_at
-       FROM "Messages"
-      WHERE conversation_id = $1::uuid
-      ORDER BY sent_at ASC, created_at ASC`,
-    [conversationId]
-  );
+  // SpareRoom inbox ingestion stores a "preview" message for each thread row (sentAtSource=platform_inbox)
+  // which can duplicate real thread messages or locally-sent messages. For thread detail views we prefer
+  // real messages. Keep platform_inbox messages only when the conversation has no other message sources yet.
+  const messagesSql = conversation.platform === "spareroom"
+    ? `SELECT id,
+              conversation_id,
+              sender_type,
+              sender_agent_id,
+              direction,
+              body,
+              metadata,
+              sent_at,
+              created_at
+         FROM "Messages" m
+        WHERE m.conversation_id = $1::uuid
+          AND (
+            COALESCE(m.metadata->>'sentAtSource', '') <> 'platform_inbox'
+            OR NOT EXISTS (
+              SELECT 1
+                FROM "Messages" m2
+               WHERE m2.conversation_id = $1::uuid
+                 AND COALESCE(m2.metadata->>'sentAtSource', '') <> 'platform_inbox'
+            )
+          )
+        ORDER BY m.sent_at ASC, m.created_at ASC`
+    : `SELECT id,
+              conversation_id,
+              sender_type,
+              sender_agent_id,
+              direction,
+              body,
+              metadata,
+              sent_at,
+              created_at
+         FROM "Messages"
+        WHERE conversation_id = $1::uuid
+        ORDER BY sent_at ASC, created_at ASC`;
+
+  const messagesResult = await client.query(messagesSql, [conversationId]);
 
   const templatesResult = await client.query(
     `SELECT id,
