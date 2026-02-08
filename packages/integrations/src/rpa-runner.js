@@ -614,6 +614,15 @@ async function defaultIngestHandler({ adapter, page, clock }) {
       const bodyElement = element.querySelector(meta.bodySelector);
       const body = bodyElement?.textContent?.trim() || element.textContent?.trim() || "";
       const sentAtText = meta.sentAtSelector ? element.querySelector(meta.sentAtSelector)?.textContent?.trim() : null;
+      let listingExternalId = null;
+      let leadExternalId = null;
+      if (meta.platform === "spareroom" && typeof threadId === "string") {
+        const match = threadId.match(/^(\d+)_([0-9]+)$/);
+        if (match) {
+          leadExternalId = match[1] || null;
+          listingExternalId = match[2] || null;
+        }
+      }
       const leadNameRaw = element.getAttribute("data-lead-name")
         || (meta.leadNameSelector ? element.querySelector(meta.leadNameSelector)?.textContent?.trim() : null)
         || null;
@@ -648,6 +657,8 @@ async function defaultIngestHandler({ adapter, page, clock }) {
         metadata: {
           adapter: meta.platform,
           source: "playwright_rpa",
+          ...(listingExternalId ? { listingExternalId } : {}),
+          ...(leadExternalId ? { leadExternalId } : {}),
           ...(meta.platform === "spareroom"
             ? {
                 inbox: {
@@ -748,6 +759,16 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
     { threadId, bodySelector, sentAtSelector }
   );
 
+  let threadListingExternalId = null;
+  let threadLeadExternalId = null;
+  if (adapter.platform === "spareroom" && typeof threadId === "string") {
+    const match = threadId.match(/^(\d+)_([0-9]+)$/);
+    if (match) {
+      threadLeadExternalId = match[1] || null;
+      threadListingExternalId = match[2] || null;
+    }
+  }
+
   const normalizedMessages = rawMessages
     .map((message) => {
       const parsingTimezone = message.sentAtText ? resolveParsingTimezone(adapter, message.sentAtText) : null;
@@ -770,6 +791,8 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
           adapter: adapter.platform,
           source: "playwright_rpa",
           sentAtSource: "platform_thread",
+          ...(threadListingExternalId ? { listingExternalId: threadListingExternalId } : {}),
+          ...(threadLeadExternalId ? { leadExternalId: threadLeadExternalId } : {}),
           ...(message.sentAtText ? { sentAtText: message.sentAtText } : {})
         }
       };
@@ -777,6 +800,90 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
     .filter((message) => message.body.length > 0);
 
   return { messages: normalizedMessages };
+}
+
+async function defaultListingSyncHandler({ adapter, page }) {
+  if (adapter.platform !== "spareroom") {
+    throw createRunnerError("LISTING_SYNC_UNSUPPORTED", `Listing sync is not supported for ${adapter.platform}`, {
+      retryable: false
+    });
+  }
+
+  const pageSize = Math.max(1, Number(process.env.LEASE_BOT_RPA_LISTINGS_PAGE_SIZE || 10));
+  const maxPages = Math.max(1, Number(process.env.LEASE_BOT_RPA_LISTINGS_MAX_PAGES || 50));
+  const listings = [];
+  const seenExternalIds = new Set();
+
+  for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+    const offset = pageIndex * pageSize;
+    const url = new URL(`/roommate/mylistings.pl?offset=${encodeURIComponent(String(offset))}&`, adapter.baseUrl).toString();
+
+    const response = await page.goto(url, { waitUntil: "domcontentloaded" });
+    await detectProtectionLayer(page, adapter, response);
+
+    const pageListings = await page.$$eval("li.listing-result[id^='advert-']", (elements) =>
+      elements
+        .map((element) => {
+          const externalIdRaw = element.getAttribute("id") || "";
+          const externalId = externalIdRaw.startsWith("advert-") ? externalIdRaw.slice(7) : externalIdRaw;
+          const statusClasses = Array.from(element.classList || []).filter((cls) => cls.startsWith("listing-result--"));
+          const headerText = element.querySelector("h3")?.innerText?.replace(/\\s+/g, " ").trim() || "";
+          const title = element.querySelector(".listing-card__title")?.textContent?.trim() || null;
+          const location = element.querySelector(".listing-card__location")?.textContent?.trim() || null;
+          const priceText = element.querySelector(".listing-card__price")?.textContent?.trim() || null;
+          const href = element.querySelector("a[href]")?.getAttribute("href") || null;
+
+          let status = "inactive";
+          if (element.classList.contains("listing-result--live")) {
+            status = "active";
+          } else if (element.classList.contains("listing-result--not_live")) {
+            status = "inactive";
+          } else if (headerText.toLowerCase().includes("live")) {
+            status = "active";
+          } else if (headerText.toLowerCase().includes("deactivated")) {
+            status = "inactive";
+          }
+
+          return {
+            listingExternalId: externalId || null,
+            status,
+            statusClasses,
+            title,
+            location,
+            priceText,
+            href,
+            headerText
+          };
+        })
+        .filter((item) => item.listingExternalId)
+    );
+
+    if (pageListings.length === 0) {
+      break;
+    }
+
+    let newCount = 0;
+    for (const item of pageListings) {
+      const externalId = item.listingExternalId;
+      if (!externalId) {
+        continue;
+      }
+      if (seenExternalIds.has(externalId)) {
+        continue;
+      }
+      seenExternalIds.add(externalId);
+      listings.push(item);
+      newCount += 1;
+    }
+
+    if (newCount === 0) {
+      break;
+    }
+  }
+
+  return {
+    listings
+  };
 }
 
 async function defaultSendHandler({ adapter, page, payload, clock }) {
@@ -880,6 +987,9 @@ function createMockRpaRunner() {
       if (action === "thread_sync") {
         return { messages: [] };
       }
+      if (action === "listing_sync") {
+        return { listings: [] };
+      }
       return {
         externalMessageId: `${platform || "rpa"}-${Date.now()}`,
         status: "sent",
@@ -962,6 +1072,8 @@ export function createPlaywrightRpaRunner(options = {}) {
             ? defaultSendHandler
             : action === "thread_sync"
               ? defaultThreadSyncHandler
+              : action === "listing_sync"
+                ? defaultListingSyncHandler
               : null);
 
       if (!actionHandler) {

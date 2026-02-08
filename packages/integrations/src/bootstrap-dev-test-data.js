@@ -162,8 +162,39 @@ function parseTimeslotWindow(timeslot) {
 
   const startRaw = parts[0];
   const endRaw = parts.slice(1).join("-"); // tolerate extra dashes
-  const start = parseTimeToken(startRaw);
-  const end = parseTimeToken(endRaw, { fallbackMeridiem: start?.meridiem });
+  const defaultMeridiemRaw = String(process.env.LEASE_BOT_DEV_AVAILABILITY_DEFAULT_MERIDIEM || "").trim().toLowerCase();
+  const defaultMeridiem =
+    defaultMeridiemRaw.startsWith("a") ? "a"
+      : defaultMeridiemRaw.startsWith("p") ? "p"
+      : null;
+
+  let start = parseTimeToken(startRaw);
+  let end = parseTimeToken(endRaw, { fallbackMeridiem: start?.meridiem });
+
+  // Common shorthand: "2-3pm" means 2pm-3pm (start inherits end meridiem).
+  if (start && end && !start.meridiem && end.meridiem) {
+    const inferredStart = parseTimeToken(startRaw, { fallbackMeridiem: end.meridiem });
+    if (inferredStart) {
+      start = inferredStart;
+    }
+  }
+  // "2pm-3" means 2pm-3pm (end inherits start meridiem).
+  if (start && end && start.meridiem && !end.meridiem) {
+    const inferredEnd = parseTimeToken(endRaw, { fallbackMeridiem: start.meridiem });
+    if (inferredEnd) {
+      end = inferredEnd;
+    }
+  }
+  // When both sides omit am/pm, assume a default (dev helper only).
+  if (start && end && !start.meridiem && !end.meridiem && defaultMeridiem) {
+    const inferredStart = parseTimeToken(startRaw, { fallbackMeridiem: defaultMeridiem });
+    const inferredEnd = parseTimeToken(endRaw, { fallbackMeridiem: defaultMeridiem });
+    if (inferredStart && inferredEnd) {
+      start = inferredStart;
+      end = inferredEnd;
+    }
+  }
+
   if (!start || !end) {
     return null;
   }

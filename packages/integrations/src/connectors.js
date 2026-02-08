@@ -774,6 +774,15 @@ function createRpaConnector({
       });
 
       return Array.isArray(result?.messages) ? result.messages : [];
+    },
+    async syncListings({ account }) {
+      const result = await runWithAutomationResilience({
+        account,
+        action: "listing_sync",
+        payload: null
+      });
+
+      return Array.isArray(result?.listings) ? result.listings : [];
     }
   };
 }
@@ -960,6 +969,16 @@ export function createConnectorRegistry(options = {}) {
       }
 
       return connector.syncThread({ account: normalizedAccount, externalThreadId });
+    },
+
+    async syncListingsForAccount({ account }) {
+      const normalizedAccount = normalizeAccount(account);
+      const connector = getConnector(normalizedAccount.platform);
+      if (connector.mode !== "rpa" || typeof connector.syncListings !== "function") {
+        throw new Error(`Listing sync is not supported for ${normalizedAccount.platform}`);
+      }
+
+      return connector.syncListings({ account: normalizedAccount });
     }
   };
 }

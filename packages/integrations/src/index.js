@@ -472,6 +472,21 @@ export function createPostgresQueueAdapter(client, options = {}) {
       .filter(Boolean);
   };
 
+  function parseRentCentsFromText(priceText) {
+    const text = typeof priceText === "string" ? priceText : "";
+    const match = text.match(/\$\s*([0-9][0-9,]*)/);
+    if (!match) {
+      return null;
+    }
+
+    const dollars = Number(match[1].replace(/,/g, ""));
+    if (!Number.isFinite(dollars)) {
+      return null;
+    }
+
+    return Math.round(dollars * 100);
+  }
+
   return {
     async fetchPendingMessages(request = {}) {
       const normalizedRequest = typeof request === "number" ? { limit: request } : request;
@@ -1351,6 +1366,183 @@ export function createPostgresQueueAdapter(client, options = {}) {
         inserted,
         updated,
         skipped
+      };
+    },
+
+    async syncPlatformListings({ platforms = null } = {}) {
+      const registry = getConnectorRegistry();
+      const platformList = Array.isArray(platforms)
+        ? platforms
+        : typeof platforms === "string"
+        ? parseCsvEnv(platforms)
+        : null;
+
+      const where = ["is_active = TRUE"];
+      const params = [];
+      if (platformList && platformList.length > 0) {
+        params.push(platformList);
+        where.push(`platform = ANY($${params.length}::text[])`);
+      }
+
+      const accountsResult = await client.query(
+        `SELECT id, platform, credentials
+           FROM "PlatformAccounts"
+          WHERE ${where.join(" AND ")}
+          ORDER BY platform ASC, created_at ASC`,
+        params
+      );
+
+      const summaries = [];
+
+      for (const account of accountsResult.rows) {
+        const platform = account.platform;
+        const platformAccountId = account.id;
+        let listings;
+        try {
+          listings = await registry.syncListingsForAccount({
+            account: {
+              id: platformAccountId,
+              platform,
+              credentials: account.credentials || {}
+            }
+          });
+        } catch (error) {
+          summaries.push({
+            platform,
+            platformAccountId,
+            fetched: 0,
+            inserted: 0,
+            updated: 0,
+            skipped: 0,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          continue;
+        }
+
+        const fetched = Array.isArray(listings) ? listings.length : 0;
+        let inserted = 0;
+        let updated = 0;
+        let skipped = 0;
+
+        await client.query("BEGIN");
+        try {
+          for (const rawListing of Array.isArray(listings) ? listings : []) {
+            const listingExternalId = typeof rawListing?.listingExternalId === "string"
+              ? rawListing.listingExternalId.trim()
+              : typeof rawListing?.listing_external_id === "string"
+              ? rawListing.listing_external_id.trim()
+              : "";
+            if (!listingExternalId) {
+              skipped += 1;
+              continue;
+            }
+
+            const title = typeof rawListing?.title === "string" ? rawListing.title.trim() : "";
+            const location = typeof rawListing?.location === "string" ? rawListing.location.trim() : "";
+            const priceText = typeof rawListing?.priceText === "string" ? rawListing.priceText.trim() : "";
+            const status = rawListing?.status === "active" ? "active" : "inactive";
+            const currencyCode = "USD";
+
+            const lookup = await client.query(
+              `SELECT id, unit_id, rent_cents
+                 FROM "Listings"
+                WHERE platform_account_id = $1::uuid
+                  AND listing_external_id = $2
+                LIMIT 1`,
+              [platformAccountId, listingExternalId]
+            );
+
+            let unitId = lookup.rows?.[0]?.unit_id || null;
+            const existingRentCents = lookup.rows?.[0]?.rent_cents ?? null;
+
+            if (unitId) {
+              await client.query(
+                `UPDATE "Units"
+                    SET property_name = COALESCE(NULLIF($2, ''), property_name),
+                        is_active = $3::boolean,
+                        updated_at = NOW()
+                  WHERE id = $1::uuid`,
+                [unitId, title, status === "active"]
+              );
+            } else {
+              const unitInsert = await client.query(
+                `INSERT INTO "Units" (property_name, unit_number, is_active)
+                 VALUES ($1, $2, $3::boolean)
+                 ON CONFLICT (property_name, unit_number) DO UPDATE
+                 SET is_active = EXCLUDED.is_active,
+                     updated_at = NOW()
+                 RETURNING id`,
+                [title || `Listing ${listingExternalId}`, `#${listingExternalId}`, status === "active"]
+              );
+              unitId = unitInsert.rows?.[0]?.id || null;
+            }
+
+            if (!unitId) {
+              skipped += 1;
+              continue;
+            }
+
+            const rentCents = parseRentCentsFromText(priceText) ?? existingRentCents ?? 0;
+            const metadata = {
+              title: title || null,
+              location: location || null,
+              priceText: priceText || null,
+              href: typeof rawListing?.href === "string" ? rawListing.href : null,
+              headerText: typeof rawListing?.headerText === "string" ? rawListing.headerText : null,
+              statusClasses: Array.isArray(rawListing?.statusClasses) ? rawListing.statusClasses : null,
+              source: "rpa_listing_sync",
+              syncedAt: new Date().toISOString()
+            };
+
+            const listingResult = await client.query(
+              `INSERT INTO "Listings" (
+                 unit_id,
+                 platform_account_id,
+                 listing_external_id,
+                 status,
+                 rent_cents,
+                 currency_code,
+                 available_on,
+                 metadata
+               ) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, NULL, $7::jsonb)
+               ON CONFLICT (platform_account_id, listing_external_id) DO UPDATE
+               SET unit_id = EXCLUDED.unit_id,
+                   status = EXCLUDED.status,
+                   rent_cents = EXCLUDED.rent_cents,
+                   currency_code = EXCLUDED.currency_code,
+                   metadata = COALESCE(\"Listings\".metadata, '{}'::jsonb) || EXCLUDED.metadata,
+                   updated_at = NOW()
+               RETURNING id, (xmax = 0) AS inserted`,
+              [unitId, platformAccountId, listingExternalId, status, rentCents, currencyCode, JSON.stringify(metadata)]
+            );
+
+            if (listingResult.rowCount > 0 && listingResult.rows[0].inserted) {
+              inserted += 1;
+            } else {
+              updated += 1;
+            }
+          }
+
+          await client.query("COMMIT");
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        }
+
+        summaries.push({
+          platform,
+          platformAccountId,
+          fetched,
+          inserted,
+          updated,
+          skipped
+        });
+      }
+
+      return {
+        ok: true,
+        platforms: platformList || listSupportedPlatforms(),
+        accounts: summaries
       };
     },
 

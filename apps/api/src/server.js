@@ -4145,6 +4145,28 @@ export async function routeApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/api/listings/sync" && req.method === "POST") {
+    const access = await requireRole(req, res, [roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const platform = url.searchParams.get("platform");
+    if (platform && !requiredPlatformSet.has(platform)) {
+      badRequest(res, `platform must be one of ${requiredPlatforms.join(", ")}`);
+      return;
+    }
+
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const result = await withClientRunner(async (client) => {
+      const adapter = createPostgresQueueAdapter(client, { connectorRegistry });
+      return adapter.syncPlatformListings({ platforms: platform ? [platform] : ["spareroom"] });
+    });
+
+    json(res, 200, result);
+    return;
+  }
+
   if (url.pathname === "/api/listings" && req.method === "POST") {
     const access = await requireRole(req, res, [roles.admin]);
     if (!access) {
@@ -5068,6 +5090,24 @@ if (process.env.NODE_ENV !== "test") {
       });
     })
   );
+
+  if (process.env.LEASE_BOT_SYNC_LISTINGS_ON_START === "1") {
+    const platforms = process.env.LEASE_BOT_SYNC_LISTINGS_PLATFORMS
+      ? process.env.LEASE_BOT_SYNC_LISTINGS_PLATFORMS.split(",").map((value) => value.trim()).filter(Boolean)
+      : ["spareroom"];
+
+    bootstrapTasks.push(
+      withClient(async (client) => {
+        const adapter = createPostgresQueueAdapter(client, { connectorRegistry });
+        await adapter.syncPlatformListings({ platforms });
+      }).catch((error) => {
+        console.warn("[bootstrap] failed syncing platform listings", {
+          platforms,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      })
+    );
+  }
 
   Promise.allSettled(bootstrapTasks).finally(() => {
     server.listen(port, host, () => {
