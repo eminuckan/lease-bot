@@ -2,6 +2,8 @@ import { createPlatformAdapterRegistry } from "./platform-adapters.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { formatInTimezone, zonedTimeToUtc } from "./timezone.js";
+
 function sanitizeMessageBody(value) {
   if (value === undefined || value === null) {
     return "";
@@ -45,6 +47,19 @@ const MONTHS = new Map([
   ["december", 11]
 ]);
 
+const TIMEZONE_ABBREVIATION_MAP = new Map([
+  ["EST", "America/New_York"],
+  ["EDT", "America/New_York"],
+  ["CST", "America/Chicago"],
+  ["CDT", "America/Chicago"],
+  ["MST", "America/Denver"],
+  ["MDT", "America/Denver"],
+  ["PST", "America/Los_Angeles"],
+  ["PDT", "America/Los_Angeles"],
+  ["UTC", "Etc/UTC"],
+  ["GMT", "Etc/GMT"]
+]);
+
 function stripTrailingTimezone(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed) {
@@ -61,6 +76,32 @@ function stripTrailingTimezone(text) {
     }
     return "";
   }).trim();
+}
+
+function extractTrailingTimezoneAbbreviation(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) {
+    return null;
+  }
+  const match = trimmed.match(/\b([A-Za-z]{2,5})$/);
+  if (!match) {
+    return null;
+  }
+  const token = String(match[1] || "").toUpperCase();
+  return TIMEZONE_ABBREVIATION_MAP.has(token) ? token : null;
+}
+
+function addDaysToIsoDate(dateString, deltaDays) {
+  const [year, month, day] = String(dateString || "").split("-").map(Number);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+
+  const base = new Date(Date.UTC(year, month - 1, day, 12, 0, 0, 0));
+  base.setUTCDate(base.getUTCDate() + Number(deltaDays || 0));
+
+  const two = (n) => String(n).padStart(2, "0");
+  return `${base.getUTCFullYear()}-${two(base.getUTCMonth() + 1)}-${two(base.getUTCDate())}`;
 }
 
 function parseTimeOfDay(text) {
@@ -105,6 +146,90 @@ function parseTimeOfDay(text) {
   return { hours, minutes, seconds };
 }
 
+function parseHumanDateTextInTimezone(text, now, timezone) {
+  const raw = typeof text === "string" ? text.trim() : "";
+  if (!raw) {
+    return null;
+  }
+  if (typeof timezone !== "string" || timezone.trim().length === 0) {
+    return null;
+  }
+
+  const normalized = raw.replace(/\s+/g, " ").trim();
+  const zonedNow = formatInTimezone(now, timezone);
+  const zonedNowDate = zonedNow.slice(0, 10);
+  const zonedNowTime = zonedNow.slice(11, 19);
+
+  const two = (n) => String(n).padStart(2, "0");
+
+  // Relative keywords.
+  const relMatch = normalized.match(/^(today|yesterday)(?:\s+(.*))?$/i);
+  if (relMatch) {
+    const relKey = String(relMatch[1] || "").toLowerCase();
+    const timePart = relMatch[2] ? relMatch[2].trim() : "";
+    const parsedTime = parseTimeOfDay(timePart);
+
+    const baseDate = relKey === "yesterday" ? addDaysToIsoDate(zonedNowDate, -1) : zonedNowDate;
+    if (!baseDate) {
+      return null;
+    }
+
+    // If time isn't present (e.g. "Today"), treat it as "now" to avoid false "too old" gating.
+    const timeString = parsedTime
+      ? `${two(parsedTime.hours)}:${two(parsedTime.minutes)}:${two(parsedTime.seconds)}`
+      : zonedNowTime;
+
+    return zonedTimeToUtc(baseDate, timeString, timezone);
+  }
+
+  // US-style "MM/DD/YYYY" (SpareRoom thread pages sometimes use this).
+  const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(.*))?$/);
+  if (slashMatch) {
+    const month = Number(slashMatch[1]);
+    const day = Number(slashMatch[2]);
+    const year = Number(slashMatch[3]);
+    if (!Number.isFinite(month) || !Number.isFinite(day) || !Number.isFinite(year)) {
+      return null;
+    }
+
+    const dateString = `${year}-${two(month)}-${two(day)}`;
+    const timePart = slashMatch[4] ? slashMatch[4].trim() : "";
+    const parsedTime = parseTimeOfDay(timePart);
+    const timeString = parsedTime
+      ? `${two(parsedTime.hours)}:${two(parsedTime.minutes)}:${two(parsedTime.seconds)}`
+      : "12:00:00";
+
+    return zonedTimeToUtc(dateString, timeString, timezone);
+  }
+
+  // Month name formats:
+  // - "Jan 20 2026"
+  // - "February 1 2026"
+  const monthMatch = normalized.match(
+    /^([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(\d{4})(?:\s+(.*))?$/
+  );
+  if (monthMatch) {
+    const monthKey = monthMatch[1].toLowerCase();
+    const monthIndex = MONTHS.get(monthKey);
+    const day = Number(monthMatch[2]);
+    const year = Number(monthMatch[3]);
+    if (monthIndex === undefined || !Number.isFinite(day) || !Number.isFinite(year)) {
+      return null;
+    }
+
+    const dateString = `${year}-${two(monthIndex + 1)}-${two(day)}`;
+    const timePart = monthMatch[4] ? monthMatch[4].trim() : "";
+    const parsedTime = parseTimeOfDay(timePart);
+    const timeString = parsedTime
+      ? `${two(parsedTime.hours)}:${two(parsedTime.minutes)}:${two(parsedTime.seconds)}`
+      : "12:00:00";
+
+    return zonedTimeToUtc(dateString, timeString, timezone);
+  }
+
+  return null;
+}
+
 function parseHumanDateText(text, now = new Date()) {
   const raw = typeof text === "string" ? text.trim() : "";
   if (!raw) {
@@ -117,7 +242,6 @@ function parseHumanDateText(text, now = new Date()) {
   const relMatch = normalized.match(/^(today|yesterday)(?:\s+(.*))?$/i);
   if (relMatch) {
     const base = new Date(now);
-    base.setHours(12, 0, 0, 0);
     if (String(relMatch[1]).toLowerCase() === "yesterday") {
       base.setDate(base.getDate() - 1);
     }
@@ -178,6 +302,26 @@ function parseHumanDateText(text, now = new Date()) {
   if (!Number.isNaN(parsed.getTime())) {
     return parsed;
   }
+  return null;
+}
+
+function resolveParsingTimezone(adapter, sentAtText) {
+  const abbrev = extractTrailingTimezoneAbbreviation(sentAtText);
+  if (abbrev) {
+    return TIMEZONE_ABBREVIATION_MAP.get(abbrev) || null;
+  }
+
+  if (adapter?.platform === "spareroom") {
+    const envTimezone = typeof process.env.LEASE_BOT_RPA_TIMEZONE_SPAREROOM === "string"
+      ? process.env.LEASE_BOT_RPA_TIMEZONE_SPAREROOM.trim()
+      : "";
+    const devFallback = typeof process.env.LEASE_BOT_DEV_AGENT_TIMEZONE === "string"
+      ? process.env.LEASE_BOT_DEV_AGENT_TIMEZONE.trim()
+      : "";
+
+    return envTimezone || devFallback || "America/New_York";
+  }
+
   return null;
 }
 
@@ -529,7 +673,17 @@ async function defaultIngestHandler({ adapter, page, clock }) {
   );
 
   const normalizedMessages = messages.map((message) => {
-    const parsed = message.sentAtText ? parseHumanDateText(message.sentAtText, now) : null;
+    const parsingTimezone = message.sentAtText ? resolveParsingTimezone(adapter, message.sentAtText) : null;
+    let parsed = null;
+    if (message.sentAtText) {
+      try {
+        parsed = parsingTimezone
+          ? parseHumanDateTextInTimezone(message.sentAtText, now, parsingTimezone)
+          : parseHumanDateText(message.sentAtText, now);
+      } catch {
+        parsed = null;
+      }
+    }
     const sentAt = parsed ? parsed.toISOString() : now.toISOString();
     const sentAtSource = parsed ? "platform_inbox" : "clock";
 
@@ -596,7 +750,17 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
 
   const normalizedMessages = rawMessages
     .map((message) => {
-      const parsed = message.sentAtText ? parseHumanDateText(message.sentAtText, now) : null;
+      const parsingTimezone = message.sentAtText ? resolveParsingTimezone(adapter, message.sentAtText) : null;
+      let parsed = null;
+      if (message.sentAtText) {
+        try {
+          parsed = parsingTimezone
+            ? parseHumanDateTextInTimezone(message.sentAtText, now, parsingTimezone)
+            : parseHumanDateText(message.sentAtText, now);
+        } catch {
+          parsed = null;
+        }
+      }
       const sentAt = parsed ? parsed.toISOString() : now.toISOString();
       return {
         ...message,
