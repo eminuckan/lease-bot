@@ -2186,6 +2186,9 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
   }
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+  const orderByClause = platformFilter === "spareroom"
+    ? `ORDER BY c.external_inbox_sort_rank ASC NULLS LAST, c.last_message_at DESC NULLS LAST, c.updated_at DESC`
+    : `ORDER BY c.last_message_at DESC NULLS LAST, c.updated_at DESC`;
   const result = await client.query(
     `SELECT c.id,
             c.platform_account_id,
@@ -2194,6 +2197,9 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
             c.external_thread_id,
             c.lead_name,
             c.lead_contact,
+            c.external_thread_label,
+            c.external_thread_message_count,
+            c.external_inbox_sort_rank,
             c.status AS conversation_status,
             c.workflow_state,
             c.workflow_outcome,
@@ -2243,7 +2249,7 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
           WHERE m.conversation_id = c.id
        ) counts ON TRUE
        ${whereClause}
-       ORDER BY c.last_message_at DESC NULLS LAST, c.updated_at DESC`,
+       ${orderByClause}`,
     params
   );
 
@@ -2275,10 +2281,20 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
       workflowUpdatedAt: row.workflow_updated_at,
       messageStatus: summarizeConversationStatus(counts),
       counts,
-      unit: row.property_name && row.unit_number ? `${row.property_name} ${row.unit_number}` : null,
+      unit: row.property_name && row.unit_number
+        ? `${row.property_name} ${row.unit_number}`
+        : row.external_thread_label || null,
+      threadLabel: row.external_thread_label || null,
+      threadMessageCount: row.external_thread_message_count === null || row.external_thread_message_count === undefined
+        ? null
+        : Number(row.external_thread_message_count),
+      inboxSortRank: row.external_inbox_sort_rank === null || row.external_inbox_sort_rank === undefined
+        ? null
+        : Number(row.external_inbox_sort_rank),
       latestMessage: row.latest_body,
       latestDirection: row.latest_direction,
       latestStatus: normalizeMessageStatus(row.latest_direction, row.latest_metadata || {}),
+      latestSentAtText: row.latest_metadata?.sentAtText || null,
       lastMessageAt: row.last_message_at,
       updatedAt: row.updated_at
     };
@@ -2311,6 +2327,9 @@ async function fetchConversationDetail(client, conversationId, access = null) {
             c.external_thread_id,
             c.lead_name,
             c.lead_contact,
+            c.external_thread_label,
+            c.external_thread_message_count,
+            c.external_inbox_sort_rank,
             c.status,
             c.workflow_state,
             c.workflow_outcome,
@@ -2393,7 +2412,9 @@ async function fetchConversationDetail(client, conversationId, access = null) {
   }
 
   const templateContext = {
-    unit: conversation.property_name && conversation.unit_number ? `${conversation.property_name} ${conversation.unit_number}` : "",
+    unit: conversation.property_name && conversation.unit_number
+      ? `${conversation.property_name} ${conversation.unit_number}`
+      : conversation.external_thread_label || "",
     slot: nextSlot || ""
   };
 
@@ -2417,6 +2438,13 @@ async function fetchConversationDetail(client, conversationId, access = null) {
       followUpStatus: conversation.follow_up_status,
       workflowUpdatedAt: conversation.workflow_updated_at,
       unit: templateContext.unit,
+      threadLabel: conversation.external_thread_label || null,
+      threadMessageCount: conversation.external_thread_message_count === null || conversation.external_thread_message_count === undefined
+        ? null
+        : Number(conversation.external_thread_message_count),
+      inboxSortRank: conversation.external_inbox_sort_rank === null || conversation.external_inbox_sort_rank === undefined
+        ? null
+        : Number(conversation.external_inbox_sort_rank),
       lastMessageAt: conversation.last_message_at,
       updatedAt: conversation.updated_at
     },

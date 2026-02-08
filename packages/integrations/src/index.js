@@ -1207,9 +1207,12 @@ export function createPostgresQueueAdapter(client, options = {}) {
                external_thread_id,
                lead_name,
                lead_contact,
+               external_thread_label,
+               external_thread_message_count,
+               external_inbox_sort_rank,
                status,
                last_message_at
-             ) VALUES ($1::uuid, $2::uuid, $3, $4, $5::jsonb, 'open', $6::timestamptz)
+             ) VALUES ($1::uuid, $2::uuid, $3, $4, $5::jsonb, $6, $7::int, $8::int, 'open', $9::timestamptz)
              ON CONFLICT (platform_account_id, external_thread_id)
              DO UPDATE SET
                listing_id = COALESCE("Conversations".listing_id, EXCLUDED.listing_id),
@@ -1217,6 +1220,18 @@ export function createPostgresQueueAdapter(client, options = {}) {
                lead_contact = CASE
                  WHEN "Conversations".lead_contact IS NULL OR "Conversations".lead_contact = '{}'::jsonb THEN EXCLUDED.lead_contact
                  ELSE "Conversations".lead_contact
+               END,
+               external_thread_label = CASE
+                 WHEN EXCLUDED.external_thread_label IS NOT NULL AND EXCLUDED.external_thread_label <> '' THEN EXCLUDED.external_thread_label
+                 ELSE "Conversations".external_thread_label
+               END,
+               external_thread_message_count = CASE
+                 WHEN EXCLUDED.external_thread_message_count IS NOT NULL THEN EXCLUDED.external_thread_message_count
+                 ELSE "Conversations".external_thread_message_count
+               END,
+               external_inbox_sort_rank = CASE
+                 WHEN EXCLUDED.external_inbox_sort_rank IS NOT NULL THEN EXCLUDED.external_inbox_sort_rank
+                 ELSE "Conversations".external_inbox_sort_rank
                END,
                last_message_at = COALESCE("Conversations".last_message_at, EXCLUDED.last_message_at)
              RETURNING id, listing_id, (xmax = 0) AS inserted`,
@@ -1226,6 +1241,9 @@ export function createPostgresQueueAdapter(client, options = {}) {
               inbound.externalThreadId,
               inbound.leadName,
               JSON.stringify(inbound.leadContact || {}),
+              inbound.threadLabel || null,
+              Number.isFinite(Number(inbound.threadMessageCount)) ? Number(inbound.threadMessageCount) : null,
+              Number.isFinite(Number(inbound.inboxSortRank)) ? Number(inbound.inboxSortRank) : null,
               inbound.sentAt
             ]
           );
@@ -1234,6 +1252,8 @@ export function createPostgresQueueAdapter(client, options = {}) {
           const conversationId = conversation.id;
           const conversationInserted = Boolean(conversation.inserted);
 
+          const direction = inbound.direction === "outbound" ? "outbound" : "inbound";
+          const senderType = direction === "outbound" ? "agent" : "lead";
           const upsertResult = await client.query(
             `INSERT INTO "Messages" (
                conversation_id,
@@ -1244,7 +1264,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
                body,
                metadata,
                sent_at
-             ) VALUES ($1::uuid, 'lead', $2, 'inbound', $3, $4, $5::jsonb, $6::timestamptz)
+             ) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8::timestamptz)
              ON CONFLICT (conversation_id, external_message_id)
              DO UPDATE SET
                body = EXCLUDED.body,
@@ -1271,7 +1291,16 @@ export function createPostgresQueueAdapter(client, options = {}) {
                  ELSE "Messages".sent_at
                END
              RETURNING id, (xmax = 0) AS inserted`,
-            [conversationId, inbound.externalMessageId, inbound.channel, inbound.body, JSON.stringify(inbound.metadata || {}), inbound.sentAt]
+            [
+              conversationId,
+              senderType,
+              inbound.externalMessageId,
+              direction,
+              inbound.channel,
+              inbound.body,
+              JSON.stringify(inbound.metadata || {}),
+              inbound.sentAt
+            ]
           );
 
           const messageChanged = upsertResult.rowCount > 0;

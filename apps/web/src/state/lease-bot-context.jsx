@@ -125,7 +125,13 @@ export function LeaseBotProvider({ children }) {
 
       const platform = result?.conversation?.platform;
       const messages = Array.isArray(result?.messages) ? result.messages : [];
-      const shouldAutoSync = platform === "spareroom" && messages.length <= 1 && !syncedConversations[conversationId];
+      const threadMessageCount = Number(result?.conversation?.threadMessageCount);
+      const shouldAutoSync = platform === "spareroom"
+        && !syncedConversations[conversationId]
+        && (
+          messages.length <= 1
+          || (Number.isFinite(threadMessageCount) && threadMessageCount > messages.length)
+        );
       if (shouldAutoSync) {
         setSyncedConversations((current) => ({ ...current, [conversationId]: true }));
         try {

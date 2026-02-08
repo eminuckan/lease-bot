@@ -272,6 +272,10 @@ function normalizeInboundMessage(rawMessage, fallback = {}) {
     leadName: rawMessage.leadName || fallback.leadName || null,
     leadContact: rawMessage.leadContact || fallback.leadContact || {},
     channel: rawMessage.channel || fallback.channel || "in_app",
+    direction: rawMessage.direction || fallback.direction || "inbound",
+    threadLabel: rawMessage.threadLabel || rawMessage.externalThreadLabel || fallback.threadLabel || null,
+    threadMessageCount: rawMessage.threadMessageCount ?? rawMessage.messageCount ?? fallback.threadMessageCount ?? null,
+    inboxSortRank: rawMessage.inboxSortRank ?? rawMessage.sortRank ?? fallback.inboxSortRank ?? null,
     sentAt: rawMessage.sentAt || new Date().toISOString(),
     metadata: rawMessage.metadata || {}
   };

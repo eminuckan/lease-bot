@@ -451,38 +451,80 @@ async function defaultIngestHandler({ adapter, page, clock }) {
     : typeof adapter.selectors?.leadName === "string"
     ? adapter.selectors.leadName
     : null;
+  const threadLabelSelector = Array.isArray(adapter.selectors?.threadLabel)
+    ? adapter.selectors.threadLabel[0]
+    : typeof adapter.selectors?.threadLabel === "string"
+    ? adapter.selectors.threadLabel
+    : null;
+  const maxThreads = Number(process.env.LEASE_BOT_RPA_INBOX_THREAD_LIMIT || 0);
   const now = clock();
   const messages = await page.$$eval(
     selector,
-    (elements, meta) => elements.map((element, index) => {
+    (elements, meta) => {
+      const sliced = meta.maxThreads > 0 ? elements.slice(0, meta.maxThreads) : elements;
+      return sliced.map((element, index) => {
       const threadId = element.getAttribute("data-thread-id") || element.getAttribute("data-thread") || `thread-${index + 1}`;
       const messageId = element.getAttribute("data-message-id") || `message-${index + 1}`;
+      const className = element.getAttribute("class") || "";
+      const direction = meta.platform === "spareroom" && className.includes("thread_out") ? "outbound" : "inbound";
       const bodyElement = element.querySelector(meta.bodySelector);
       const body = bodyElement?.textContent?.trim() || element.textContent?.trim() || "";
       const sentAtText = meta.sentAtSelector ? element.querySelector(meta.sentAtSelector)?.textContent?.trim() : null;
       const leadNameRaw = element.getAttribute("data-lead-name")
         || (meta.leadNameSelector ? element.querySelector(meta.leadNameSelector)?.textContent?.trim() : null)
         || null;
+      let threadMessageCount = null;
+      if (meta.platform === "spareroom" && leadNameRaw) {
+        const match = leadNameRaw.match(/\((\d+)\)\s*$/);
+        if (match) {
+          const parsed = Number(match[1]);
+          if (Number.isFinite(parsed)) {
+            threadMessageCount = parsed;
+          }
+        }
+      }
       const leadName = leadNameRaw ? leadNameRaw.replace(/\s*\(\d+\)\s*$/, "").trim() : null;
+      const threadLabel = meta.threadLabelSelector
+        ? element.querySelector(meta.threadLabelSelector)?.textContent?.trim() || null
+        : meta.platform === "spareroom"
+        ? element.querySelector("span.ad-title")?.textContent?.trim() || null
+        : null;
+      const inboxSortRank = meta.platform === "spareroom" ? index + 1 : null;
       return {
         externalThreadId: threadId,
         externalMessageId: messageId,
         body,
         leadName,
+        direction,
+        threadLabel,
+        threadMessageCount,
+        inboxSortRank,
         sentAtText,
         channel: "in_app",
         metadata: {
           adapter: meta.platform,
-          source: "playwright_rpa"
+          source: "playwright_rpa",
+          ...(meta.platform === "spareroom"
+            ? {
+                inbox: {
+                  sortRank: inboxSortRank,
+                  threadLabel,
+                  threadMessageCount
+                }
+              }
+            : {})
         }
       };
-    }),
+    });
+    },
     {
       bodySelector,
       sentAtSelector,
       leadNameSelector,
+      threadLabelSelector,
       platform: adapter.platform,
-      nowIso: now.toISOString()
+      nowIso: now.toISOString(),
+      maxThreads: Number.isFinite(maxThreads) && maxThreads > 0 ? Math.round(maxThreads) : 0
     }
   );
 

@@ -17,11 +17,14 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
     selectors: {
       challenge: ["iframe[src*='challenge']", "#challenge-form", "[data-cy='bot-check']"],
       captcha: ["iframe[title*='captcha']", "[data-sitekey]", "#g-recaptcha-response"],
-      // Inbox rows are anchors with data attributes for the most recent inbound message.
-      messageItems: ["a.thread_item.thread_in[data-thread-id][data-message-id]", "[data-thread-id][data-message-id]"],
+      // Inbox rows are anchors with data attributes for the most recent message in the thread.
+      // Note: SpareRoom sorts the list by most-recent inbound message (even if the latest message is outbound),
+      // so we must ingest both thread_in and thread_out rows and preserve the page order.
+      messageItems: ["a.thread_item[data-thread-id][data-message-id]"],
       messageBody: ["span.snippet"],
       messageSentAt: ["i.threadDate"],
       leadName: ["span.name"],
+      threadLabel: ["span.ad-title"],
       threadMessageItems: ["li.message[id^='msg_']"],
       threadMessageBody: ["dd.message_body"],
       threadMessageSentAt: ["dd.message_date"],

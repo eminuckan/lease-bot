@@ -199,6 +199,7 @@ export function InboxPanel() {
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate text-sm font-medium">
                     {item.leadName || item.externalThreadId || "Unknown lead"}
+                    {Number.isFinite(item.threadMessageCount) && item.threadMessageCount > 0 ? ` (${item.threadMessageCount})` : ""}
                   </span>
                   <div className="flex items-center gap-2">
                     {item.platform ? (
@@ -226,13 +227,17 @@ export function InboxPanel() {
                   selectedConversationId === item.id ? "text-primary-foreground/70" : "text-muted-foreground"
                 )}>
                   <span className="truncate">{item.unit || "No unit"}</span>
-                  <span className="shrink-0">{formatTimestamp(item.lastMessageAt)}</span>
+                  <span className="shrink-0">{item.latestSentAtText || formatTimestamp(item.lastMessageAt)}</span>
                 </div>
                 <span className={cn(
                   "mt-1 line-clamp-1 text-xs",
                   selectedConversationId === item.id ? "text-primary-foreground/50" : "text-muted-foreground/70"
                 )}>
-                  {item.latestMessage || "No messages yet"}
+                  {item.latestMessage
+                    ? item.latestDirection === "outbound"
+                      ? `You: ${item.latestMessage}`
+                      : item.latestMessage
+                    : "No messages yet"}
                 </span>
               </button>
             ))}
