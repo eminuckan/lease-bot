@@ -56,9 +56,11 @@ export function LeaseBotProvider({ children }) {
   const [assignmentForm, setAssignmentForm] = useState({ unitId: "", listingId: "", agentId: "" });
   const [inboxItems, setInboxItems] = useState([]);
   const [selectedInboxStatus, setSelectedInboxStatus] = useState("all");
+  const [selectedInboxPlatform, setSelectedInboxPlatform] = useState("all");
   const [selectedConversationId, setSelectedConversationId] = useState("");
   const [conversationDetail, setConversationDetail] = useState(null);
   const [draftForm, setDraftForm] = useState({ templateId: "", body: "" });
+  const [syncedConversations, setSyncedConversations] = useState({});
   const [appointments, setAppointments] = useState([]);
   const [appointmentFilters, setAppointmentFilters] = useState({
     status: "all",
@@ -120,18 +122,39 @@ export function LeaseBotProvider({ children }) {
       if (!draftForm.templateId && result.templates?.[0]?.id) {
         setDraftForm((current) => ({ ...current, templateId: result.templates[0].id }));
       }
+
+      const platform = result?.conversation?.platform;
+      const messages = Array.isArray(result?.messages) ? result.messages : [];
+      const shouldAutoSync = platform === "spareroom" && messages.length <= 1 && !syncedConversations[conversationId];
+      if (shouldAutoSync) {
+        setSyncedConversations((current) => ({ ...current, [conversationId]: true }));
+        try {
+          const synced = await request(`/api/inbox/${conversationId}/sync`, { method: "POST" });
+          setConversationDetail(synced);
+          await refreshInbox(selectedInboxStatus, true, selectedInboxPlatform);
+        } catch {
+          // Best-effort; keep the previously fetched detail if sync fails.
+        }
+      }
     } catch (error) {
       setApiError(error.message);
     }
   }
 
-  async function refreshInbox(status = selectedInboxStatus, preserveSelection = true) {
+  async function refreshInbox(status = selectedInboxStatus, preserveSelection = true, platform = selectedInboxPlatform) {
     if (!user) {
       return;
     }
 
     try {
-      const query = status && status !== "all" ? `?status=${status}` : "";
+      const params = new URLSearchParams();
+      if (status && status !== "all") {
+        params.set("status", status);
+      }
+      if (platform && platform !== "all") {
+        params.set("platform", platform);
+      }
+      const query = params.toString() ? `?${params.toString()}` : "";
       const result = await request(`/api/inbox${query}`);
       const items = result.items || [];
       setInboxItems(items);
@@ -264,7 +287,7 @@ export function LeaseBotProvider({ children }) {
       }));
 
       await Promise.all([
-        refreshInbox(selectedInboxStatus, false),
+        refreshInbox(selectedInboxStatus, false, selectedInboxPlatform),
         refreshAvailability(fallbackUnitId),
         refreshAppointments(),
         ...(isAdmin ? [refreshAdminPlatformData()] : [])
@@ -463,8 +486,43 @@ export function LeaseBotProvider({ children }) {
   }, [user]);
 
   useEffect(() => {
+    if (!user) {
+      return;
+    }
+    refreshInbox(selectedInboxStatus, true, selectedInboxPlatform);
+  }, [user, selectedInboxStatus, selectedInboxPlatform]);
+
+  useEffect(() => {
     refreshConversationDetail(selectedConversationId);
   }, [selectedConversationId]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+    const intervalMs = Number(import.meta.env.VITE_INBOX_POLL_INTERVAL_MS || 15000);
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+      return;
+    }
+
+    let inFlight = false;
+    const timer = setInterval(async () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        await refreshInbox(selectedInboxStatus, true, selectedInboxPlatform);
+        if (selectedConversationId) {
+          await refreshConversationDetail(selectedConversationId);
+        }
+      } finally {
+        inFlight = false;
+      }
+    }, intervalMs);
+
+    return () => clearInterval(timer);
+  }, [user, selectedInboxStatus, selectedInboxPlatform, selectedConversationId]);
 
   const value = {
     apiBaseUrl,
@@ -492,6 +550,8 @@ export function LeaseBotProvider({ children }) {
     inboxItems,
     selectedInboxStatus,
     setSelectedInboxStatus,
+    selectedInboxPlatform,
+    setSelectedInboxPlatform,
     selectedConversationId,
     setSelectedConversationId,
     conversationDetail,

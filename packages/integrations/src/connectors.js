@@ -754,6 +754,22 @@ function createRpaConnector({
         channel: result?.channel || "in_app",
         providerStatus: result?.status || "sent"
       };
+    },
+    async syncThread({ account, externalThreadId }) {
+      const threadId = typeof externalThreadId === "string" ? externalThreadId.trim() : "";
+      if (!threadId) {
+        throw new Error(`externalThreadId is required for thread sync (${platform})`);
+      }
+
+      const result = await runWithAutomationResilience({
+        account,
+        action: "thread_sync",
+        payload: {
+          externalThreadId: threadId
+        }
+      });
+
+      return Array.isArray(result?.messages) ? result.messages : [];
     }
   };
 }
@@ -930,6 +946,16 @@ export function createConnectorRegistry(options = {}) {
           }
         }
       );
+    },
+
+    async syncThreadForAccount({ account, externalThreadId }) {
+      const normalizedAccount = normalizeAccount(account);
+      const connector = getConnector(normalizedAccount.platform);
+      if (connector.mode !== "rpa" || typeof connector.syncThread !== "function") {
+        throw new Error(`Thread sync is not supported for ${normalizedAccount.platform}`);
+      }
+
+      return connector.syncThread({ account: normalizedAccount, externalThreadId });
     }
   };
 }

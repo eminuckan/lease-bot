@@ -4,7 +4,7 @@ import { toNodeHandler } from "better-auth/node";
 import { Pool } from "pg";
 
 import { getAuth, hasAnyRole, normalizeRole, roles } from "@lease-bot/auth";
-import { createConnectorRegistry } from "../../../packages/integrations/src/index.js";
+import { createConnectorRegistry, createPostgresQueueAdapter } from "../../../packages/integrations/src/index.js";
 import { ensureRequiredPlatformAccounts } from "../../../packages/integrations/src/bootstrap-platform-accounts.js";
 import { LocalTimeValidationError, formatInTimezone, zonedTimeToUtc } from "./availability-timezone.js";
 import {
@@ -2166,7 +2166,7 @@ async function fetchPlatformHealthSnapshot(client) {
   });
 }
 
-async function fetchInboxList(client, statusFilter = null, access = null) {
+async function fetchInboxList(client, statusFilter = null, access = null, platformFilter = null) {
   const where = [];
   const params = [];
 
@@ -2177,6 +2177,11 @@ async function fetchInboxList(client, statusFilter = null, access = null) {
     }
     params.push(sessionAgentId);
     where.push(`(c.assigned_agent_id = $${params.length}::uuid OR c.follow_up_owner_agent_id = $${params.length}::uuid)`);
+  }
+
+  if (platformFilter) {
+    params.push(platformFilter);
+    where.push(`pa.platform = $${params.length}`);
   }
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
@@ -2199,6 +2204,7 @@ async function fetchInboxList(client, statusFilter = null, access = null) {
             c.workflow_updated_at,
             c.last_message_at,
             c.updated_at,
+            pa.platform,
             u.property_name,
             u.unit_number,
             latest.body AS latest_body,
@@ -2209,6 +2215,7 @@ async function fetchInboxList(client, statusFilter = null, access = null) {
             COALESCE(counts.hold_count, 0) AS hold_count,
             COALESCE(counts.sent_count, 0) AS sent_count
        FROM "Conversations" c
+       JOIN "PlatformAccounts" pa ON pa.id = c.platform_account_id
        LEFT JOIN "Listings" l ON l.id = c.listing_id
        LEFT JOIN "Units" u ON u.id = l.unit_id
        LEFT JOIN LATERAL (
@@ -2250,6 +2257,7 @@ async function fetchInboxList(client, statusFilter = null, access = null) {
     return {
       id: row.id,
       platformAccountId: row.platform_account_id,
+      platform: row.platform,
       listingId: row.listing_id,
       assignedAgentId: row.assigned_agent_id,
       externalThreadId: row.external_thread_id,
@@ -2313,10 +2321,12 @@ async function fetchConversationDetail(client, conversationId, access = null) {
             c.workflow_updated_at,
             c.last_message_at,
             c.updated_at,
+            pa.platform,
             u.property_name,
             u.unit_number,
             u.id AS unit_id
        FROM "Conversations" c
+       JOIN "PlatformAccounts" pa ON pa.id = c.platform_account_id
        LEFT JOIN "Listings" l ON l.id = c.listing_id
        LEFT JOIN "Units" u ON u.id = l.unit_id
        WHERE ${scopePredicates.join(" AND ")}
@@ -2390,6 +2400,7 @@ async function fetchConversationDetail(client, conversationId, access = null) {
     conversation: {
       id: conversation.id,
       platformAccountId: conversation.platform_account_id,
+      platform: conversation.platform,
       listingId: conversation.listing_id,
       assignedAgentId: conversation.assigned_agent_id,
       externalThreadId: conversation.external_thread_id,
@@ -2921,9 +2932,45 @@ export async function routeApi(req, res, url) {
       return;
     }
 
+    const platform = url.searchParams.get("platform");
+    if (platform && !requiredPlatformSet.has(platform)) {
+      badRequest(res, `platform must be one of ${requiredPlatforms.join(", ")}`);
+      return;
+    }
+
     const withClientRunner = routeTestOverrides?.withClient || withClient;
-    const items = await withClientRunner((client) => fetchInboxList(client, status, access));
+    const items = await withClientRunner((client) => fetchInboxList(client, status, access, platform));
     json(res, 200, { items });
+    return;
+  }
+
+  const inboxSyncMatch = url.pathname.match(/^\/api\/inbox\/([0-9a-f\-]+)\/sync$/i);
+  if (inboxSyncMatch && req.method === "POST") {
+    const access = await requireRole(req, res, [roles.agent, roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const conversationId = inboxSyncMatch[1];
+    if (!isUuid(conversationId)) {
+      badRequest(res, "conversationId must be a UUID");
+      return;
+    }
+
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const payload = await withClientRunner(async (client) => {
+      const adapter = createPostgresQueueAdapter(client, { connectorRegistry });
+      const syncResult = await adapter.syncConversationThread({ conversationId });
+      const detail = await fetchConversationDetail(client, conversationId, access);
+      return detail ? { ...detail, sync: syncResult } : null;
+    });
+
+    if (!payload) {
+      notFound(res);
+      return;
+    }
+
+    json(res, 200, payload);
     return;
   }
 

@@ -20,7 +20,11 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
       // Inbox rows are anchors with data attributes for the most recent inbound message.
       messageItems: ["a.thread_item.thread_in[data-thread-id][data-message-id]", "[data-thread-id][data-message-id]"],
       messageBody: ["span.snippet"],
+      messageSentAt: ["i.threadDate"],
       leadName: ["span.name"],
+      threadMessageItems: ["li.message[id^='msg_']"],
+      threadMessageBody: ["dd.message_body"],
+      threadMessageSentAt: ["dd.message_date"],
       composer: "textarea[name='message']",
       submit: "button[type='submit'][name='btnSubmit']"
     }

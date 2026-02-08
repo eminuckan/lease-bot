@@ -2,6 +2,185 @@ import { createPlatformAdapterRegistry } from "./platform-adapters.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+function sanitizeMessageBody(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  const body = String(value).replace(/\s+/g, " ").trim();
+  if (!body) {
+    return "";
+  }
+  // Some inbox rows can accidentally include injected JS snippets; drop anything after common markers.
+  const jqueryIndex = body.indexOf("jQuery(");
+  if (jqueryIndex >= 0) {
+    return body.slice(0, jqueryIndex).trim();
+  }
+  return body;
+}
+
+const MONTHS = new Map([
+  ["jan", 0],
+  ["january", 0],
+  ["feb", 1],
+  ["february", 1],
+  ["mar", 2],
+  ["march", 2],
+  ["apr", 3],
+  ["april", 3],
+  ["may", 4],
+  ["jun", 5],
+  ["june", 5],
+  ["jul", 6],
+  ["july", 6],
+  ["aug", 7],
+  ["august", 7],
+  ["sep", 8],
+  ["sept", 8],
+  ["september", 8],
+  ["oct", 9],
+  ["october", 9],
+  ["nov", 10],
+  ["november", 10],
+  ["dec", 11],
+  ["december", 11]
+]);
+
+function stripTrailingTimezone(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  // e.g. "Yesterday 11:21 PM EST" -> drop "EST" (but keep AM/PM).
+  return trimmed.replace(/\s+([A-Za-z]{2,5})$/, (match, token) => {
+    const normalized = String(token || "").toLowerCase();
+    if (normalized === "am" || normalized === "pm") {
+      return match;
+    }
+    if (normalized.length < 3) {
+      return match;
+    }
+    return "";
+  }).trim();
+}
+
+function parseTimeOfDay(text) {
+  if (typeof text !== "string") {
+    return null;
+  }
+  const cleaned = stripTrailingTimezone(text).trim();
+  if (!cleaned) {
+    return null;
+  }
+
+  const match = cleaned.match(/^(\d{1,2})(?::(\d{2}))(?::(\d{2}))?\s*([AaPp][Mm])?$/);
+  if (!match) {
+    return null;
+  }
+
+  let hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = match[3] ? Number(match[3]) : 0;
+  const meridiem = match[4] ? match[4].toLowerCase() : null;
+
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || !Number.isFinite(seconds)) {
+    return null;
+  }
+  if (minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59) {
+    return null;
+  }
+
+  if (meridiem) {
+    if (hours < 1 || hours > 12) {
+      return null;
+    }
+    const isPm = meridiem === "pm";
+    hours = hours % 12;
+    if (isPm) {
+      hours += 12;
+    }
+  } else if (hours < 0 || hours > 23) {
+    return null;
+  }
+
+  return { hours, minutes, seconds };
+}
+
+function parseHumanDateText(text, now = new Date()) {
+  const raw = typeof text === "string" ? text.trim() : "";
+  if (!raw) {
+    return null;
+  }
+
+  const normalized = raw.replace(/\s+/g, " ").trim();
+
+  // Relative keywords.
+  const relMatch = normalized.match(/^(today|yesterday)(?:\s+(.*))?$/i);
+  if (relMatch) {
+    const base = new Date(now);
+    base.setHours(12, 0, 0, 0);
+    if (String(relMatch[1]).toLowerCase() === "yesterday") {
+      base.setDate(base.getDate() - 1);
+    }
+
+    const timePart = relMatch[2] ? relMatch[2].trim() : "";
+    const parsedTime = parseTimeOfDay(timePart);
+    if (parsedTime) {
+      base.setHours(parsedTime.hours, parsedTime.minutes, parsedTime.seconds, 0);
+    }
+
+    return base;
+  }
+
+  // US-style "MM/DD/YYYY" (SpareRoom thread pages often use this).
+  const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(.*))?$/);
+  if (slashMatch) {
+    const month = Number(slashMatch[1]);
+    const day = Number(slashMatch[2]);
+    const year = Number(slashMatch[3]);
+    if (!Number.isFinite(month) || !Number.isFinite(day) || !Number.isFinite(year)) {
+      return null;
+    }
+    const date = new Date(year, month - 1, day, 12, 0, 0, 0);
+    const timePart = slashMatch[4] ? slashMatch[4].trim() : "";
+    const parsedTime = parseTimeOfDay(timePart);
+    if (parsedTime) {
+      date.setHours(parsedTime.hours, parsedTime.minutes, parsedTime.seconds, 0);
+    }
+    return date;
+  }
+
+  // Month name formats:
+  // - "Jan 20 2026"
+  // - "February 1 2026"
+  // - optional comma / ordinal suffix.
+  const monthMatch = normalized.match(
+    /^([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(\d{4})(?:\s+(.*))?$/
+  );
+  if (monthMatch) {
+    const monthKey = monthMatch[1].toLowerCase();
+    const monthIndex = MONTHS.get(monthKey);
+    const day = Number(monthMatch[2]);
+    const year = Number(monthMatch[3]);
+    if (monthIndex === undefined || !Number.isFinite(day) || !Number.isFinite(year)) {
+      return null;
+    }
+    const date = new Date(year, monthIndex, day, 12, 0, 0, 0);
+    const timePart = monthMatch[4] ? monthMatch[4].trim() : "";
+    const parsedTime = parseTimeOfDay(timePart);
+    if (parsedTime) {
+      date.setHours(parsedTime.hours, parsedTime.minutes, parsedTime.seconds, 0);
+    }
+    return date;
+  }
+
+  // Fall back to Date.parse for other free-form formats.
+  const parsed = new Date(normalized);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed;
+  }
+  return null;
+}
+
 function createRunnerError(code, message, details = {}) {
   const error = new Error(message);
   error.code = code;
@@ -228,11 +407,17 @@ async function defaultIngestHandler({ adapter, page, clock }) {
 
   const selector = adapter.selectors?.messageItems?.[0] || "[data-thread-id][data-message-id]";
   const bodySelector = adapter.selectors?.messageBody?.[0] || "[data-role='message-body']";
+  const sentAtSelector = Array.isArray(adapter.selectors?.messageSentAt)
+    ? adapter.selectors.messageSentAt[0]
+    : typeof adapter.selectors?.messageSentAt === "string"
+    ? adapter.selectors.messageSentAt
+    : null;
   const leadNameSelector = Array.isArray(adapter.selectors?.leadName)
     ? adapter.selectors.leadName[0]
     : typeof adapter.selectors?.leadName === "string"
     ? adapter.selectors.leadName
     : null;
+  const now = clock();
   const messages = await page.$$eval(
     selector,
     (elements, meta) => elements.map((element, index) => {
@@ -240,6 +425,7 @@ async function defaultIngestHandler({ adapter, page, clock }) {
       const messageId = element.getAttribute("data-message-id") || `message-${index + 1}`;
       const bodyElement = element.querySelector(meta.bodySelector);
       const body = bodyElement?.textContent?.trim() || element.textContent?.trim() || "";
+      const sentAtText = meta.sentAtSelector ? element.querySelector(meta.sentAtSelector)?.textContent?.trim() : null;
       const leadNameRaw = element.getAttribute("data-lead-name")
         || (meta.leadNameSelector ? element.querySelector(meta.leadNameSelector)?.textContent?.trim() : null)
         || null;
@@ -249,8 +435,8 @@ async function defaultIngestHandler({ adapter, page, clock }) {
         externalMessageId: messageId,
         body,
         leadName,
+        sentAtText,
         channel: "in_app",
-        sentAt: new Date(meta.nowIso).toISOString(),
         metadata: {
           adapter: meta.platform,
           source: "playwright_rpa"
@@ -259,13 +445,98 @@ async function defaultIngestHandler({ adapter, page, clock }) {
     }),
     {
       bodySelector,
+      sentAtSelector,
       leadNameSelector,
       platform: adapter.platform,
-      nowIso: clock().toISOString()
+      nowIso: now.toISOString()
     }
   );
 
-  return { messages };
+  const normalizedMessages = messages.map((message) => {
+    const parsed = message.sentAtText ? parseHumanDateText(message.sentAtText, now) : null;
+    const sentAt = parsed ? parsed.toISOString() : now.toISOString();
+    const sentAtSource = parsed ? "platform_inbox" : "clock";
+
+    return {
+      ...message,
+      body: sanitizeMessageBody(message.body),
+      sentAt,
+      metadata: {
+        ...(message.metadata || {}),
+        sentAtSource,
+        ...(message.sentAtText ? { sentAtText: message.sentAtText } : {})
+      }
+    };
+  });
+
+  return { messages: normalizedMessages };
+}
+
+async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
+  const threadId = payload?.externalThreadId || payload?.threadId;
+  if (!threadId) {
+    throw createRunnerError("THREAD_ID_REQUIRED", `Missing externalThreadId for ${adapter.platform}`, {
+      retryable: false
+    });
+  }
+
+  const response = await page.goto(adapter.threadUrl(threadId), { waitUntil: "domcontentloaded" });
+  await detectProtectionLayer(page, adapter, response);
+
+  if (adapter.platform !== "spareroom") {
+    throw createRunnerError("THREAD_SYNC_UNSUPPORTED", `Thread sync is not supported for ${adapter.platform}`, {
+      retryable: false
+    });
+  }
+
+  const selector = adapter.selectors?.threadMessageItems?.[0] || "li.message[id^='msg_']";
+  const bodySelector = adapter.selectors?.threadMessageBody?.[0] || "dd.message_body";
+  const sentAtSelector = adapter.selectors?.threadMessageSentAt?.[0] || "dd.message_date";
+  const now = clock();
+
+  const rawMessages = await page.$$eval(
+    selector,
+    (elements, meta) => elements.map((element, index) => {
+      const idValue = element.getAttribute("id") || "";
+      const match = idValue.match(/^msg_(.+)$/);
+      const messageId = match?.[1] || element.getAttribute("data-message-id") || `message-${index + 1}`;
+      const bodyElement = element.querySelector(meta.bodySelector);
+      const body = bodyElement?.textContent?.trim() || "";
+      const sentAtText = element.querySelector(meta.sentAtSelector)?.textContent?.trim() || "";
+      const className = element.getAttribute("class") || "";
+      const isOutbound = className.includes("message_out");
+
+      return {
+        externalThreadId: meta.threadId,
+        externalMessageId: messageId,
+        direction: isOutbound ? "outbound" : "inbound",
+        body,
+        channel: "in_app",
+        sentAtText
+      };
+    }),
+    { threadId, bodySelector, sentAtSelector }
+  );
+
+  const normalizedMessages = rawMessages
+    .map((message) => {
+      const parsed = message.sentAtText ? parseHumanDateText(message.sentAtText, now) : null;
+      const sentAt = parsed ? parsed.toISOString() : now.toISOString();
+      return {
+        ...message,
+        body: sanitizeMessageBody(message.body),
+        sentAt,
+        metadata: {
+          adapter: adapter.platform,
+          source: "playwright_rpa",
+          sentAtSource: "platform_thread",
+          ...(message.sentAtText ? { sentAtText: message.sentAtText } : {})
+        }
+      };
+    })
+    .filter((message) => message.body.length > 0);
+
+  return { messages: normalizedMessages };
 }
 
 async function defaultSendHandler({ adapter, page, payload, clock }) {
@@ -297,6 +568,9 @@ function createMockRpaRunner() {
   return {
     async run({ action, platform }) {
       if (action === "ingest") {
+        return { messages: [] };
+      }
+      if (action === "thread_sync") {
         return { messages: [] };
       }
       return {
@@ -375,7 +649,13 @@ export function createPlaywrightRpaRunner(options = {}) {
       }
 
       const actionHandler = actionHandlers?.[platform]?.[action]
-        || (action === "ingest" ? defaultIngestHandler : action === "send" ? defaultSendHandler : null);
+        || (action === "ingest"
+          ? defaultIngestHandler
+          : action === "send"
+            ? defaultSendHandler
+            : action === "thread_sync"
+              ? defaultThreadSyncHandler
+              : null);
 
       if (!actionHandler) {
         throw createRunnerError("UNSUPPORTED_ACTION", `Unsupported action '${action}' for ${platform}`, {

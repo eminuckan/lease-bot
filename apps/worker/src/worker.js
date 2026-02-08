@@ -8,7 +8,7 @@ import { processPendingMessagesWithAi } from "./decision-pipeline.js";
 
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS || 15000);
 const queueBatchSize = Number(process.env.WORKER_QUEUE_BATCH_SIZE || 20);
-const ingestBatchSize = Number(process.env.WORKER_INGEST_BATCH_SIZE || 50);
+const ingestBatchSize = Number(process.env.WORKER_INGEST_BATCH_SIZE || 250);
 const claimTtlMs = Number(process.env.WORKER_CLAIM_TTL_MS || Math.max(pollIntervalMs * 4, 60000));
 const workerInstanceId = process.env.WORKER_INSTANCE_ID || `worker-${process.pid}`;
 const ingestPlatforms = process.env.WORKER_INGEST_PLATFORMS

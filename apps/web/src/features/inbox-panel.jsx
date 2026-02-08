@@ -17,11 +17,22 @@ const STATUS_OPTIONS = [
   { value: "hold", label: "Hold" },
 ];
 
+const PLATFORM_OPTIONS = [
+  { value: "all", label: "All platforms" },
+  { value: "spareroom", label: "SpareRoom" },
+  { value: "roomies", label: "Roomies" },
+  { value: "leasebreak", label: "Leasebreak" },
+  { value: "renthop", label: "RentHop" },
+  { value: "furnishedfinder", label: "FurnishedFinder" }
+];
+
 export function InboxPanel() {
   const {
     inboxItems,
     selectedInboxStatus,
     setSelectedInboxStatus,
+    selectedInboxPlatform,
+    setSelectedInboxPlatform,
     selectedConversationId,
     setSelectedConversationId,
     conversationDetail,
@@ -60,7 +71,7 @@ export function InboxPanel() {
 
   useEffect(() => {
     setInboxPage(1);
-  }, [selectedInboxStatus, inboxItems.length]);
+  }, [selectedInboxStatus, selectedInboxPlatform, inboxItems.length]);
 
   useEffect(() => {
     if (inboxPage > inboxPageCount) {
@@ -125,6 +136,16 @@ export function InboxPanel() {
                 ))}
               </SelectContent>
             </Select>
+            <Select value={selectedInboxPlatform} onValueChange={setSelectedInboxPlatform}>
+              <SelectTrigger className="h-9 w-36 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PLATFORM_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <button
               type="button"
               onClick={handleRefreshInbox}
@@ -179,21 +200,34 @@ export function InboxPanel() {
                   <span className="truncate text-sm font-medium">
                     {item.leadName || item.externalThreadId || "Unknown lead"}
                   </span>
-                  <span className={cn(
-                    "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium",
-                    selectedConversationId === item.id
-                      ? "bg-primary-foreground/15 text-primary-foreground"
-                      : "bg-muted text-muted-foreground"
-                  )}>
-                    {item.conversationStatus || item.messageStatus || item.status || "unknown"}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {item.platform ? (
+                      <span className={cn(
+                        "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide",
+                        selectedConversationId === item.id
+                          ? "bg-primary-foreground/15 text-primary-foreground"
+                          : "bg-muted text-muted-foreground"
+                      )}>
+                        {item.platform}
+                      </span>
+                    ) : null}
+                    <span className={cn(
+                      "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                      selectedConversationId === item.id
+                        ? "bg-primary-foreground/15 text-primary-foreground"
+                        : "bg-muted text-muted-foreground"
+                    )}>
+                      {item.conversationStatus || item.messageStatus || item.status || "unknown"}
+                    </span>
+                  </div>
                 </div>
-                <span className={cn(
-                  "mt-0.5 text-xs",
+                <div className={cn(
+                  "mt-0.5 flex items-center justify-between gap-2 text-xs",
                   selectedConversationId === item.id ? "text-primary-foreground/70" : "text-muted-foreground"
                 )}>
-                  {item.unit || "No unit"}
-                </span>
+                  <span className="truncate">{item.unit || "No unit"}</span>
+                  <span className="shrink-0">{formatTimestamp(item.lastMessageAt)}</span>
+                </div>
                 <span className={cn(
                   "mt-1 line-clamp-1 text-xs",
                   selectedConversationId === item.id ? "text-primary-foreground/50" : "text-muted-foreground/70"
@@ -272,6 +306,9 @@ export function InboxPanel() {
                         {conversationDetail.conversation.unit}
                       </span>
                     ) : null}
+                    {conversationDetail.conversation.platform ? (
+                      <span className="uppercase tracking-wide">{conversationDetail.conversation.platform}</span>
+                    ) : null}
                     {conversationDetail.templateContext?.slot ? (
                       <span>Slot: {conversationDetail.templateContext.slot}</span>
                     ) : null}
@@ -319,7 +356,7 @@ export function InboxPanel() {
                             "mt-2 flex items-center justify-between gap-4 text-[11px]",
                             isOutbound ? "text-primary-foreground/60" : "text-muted-foreground"
                           )}>
-                            <span>{formatTimestamp(item.createdAt)}</span>
+                            <span>{formatTimestamp(item.sentAt || item.createdAt)}</span>
                             <span className="font-medium capitalize">{item.status}</span>
                           </div>
                           {item.status === "draft" || item.status === "hold" ? (

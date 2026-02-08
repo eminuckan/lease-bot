@@ -1004,6 +1004,165 @@ export function createPostgresQueueAdapter(client, options = {}) {
       });
     },
 
+    async syncConversationThread({ conversationId }) {
+      if (!conversationId) {
+        return { synced: false, reason: "missing_conversation_id" };
+      }
+
+      const conversationResult = await client.query(
+        `SELECT c.id,
+                c.platform_account_id,
+                c.external_thread_id,
+                pa.platform,
+                pa.credentials
+           FROM "Conversations" c
+           JOIN "PlatformAccounts" pa ON pa.id = c.platform_account_id
+          WHERE c.id = $1::uuid
+          LIMIT 1`,
+        [conversationId]
+      );
+
+      if (conversationResult.rowCount === 0) {
+        return { synced: false, reason: "not_found" };
+      }
+
+      const conversation = conversationResult.rows[0];
+      const platform = conversation.platform;
+      const externalThreadId = conversation.external_thread_id;
+      const platformAccountId = conversation.platform_account_id;
+      if (!platform || !externalThreadId || !platformAccountId) {
+        return { synced: false, reason: "missing_platform_details" };
+      }
+
+      const registry = getConnectorRegistry();
+      const threadMessages = await registry.syncThreadForAccount({
+        account: {
+          id: platformAccountId,
+          platform,
+          credentials: conversation.credentials || {}
+        },
+        externalThreadId
+      });
+
+      const messages = Array.isArray(threadMessages) ? threadMessages : [];
+      if (messages.length === 0) {
+        return { synced: true, scanned: 0, inserted: 0, updated: 0, skipped: 0 };
+      }
+
+      let inserted = 0;
+      let updated = 0;
+      let skipped = 0;
+
+      await client.query("BEGIN");
+      try {
+        for (const message of messages) {
+          const externalMessageId = typeof message?.externalMessageId === "string"
+            ? message.externalMessageId.trim()
+            : typeof message?.external_message_id === "string"
+            ? message.external_message_id.trim()
+            : "";
+          if (!externalMessageId) {
+            skipped += 1;
+            continue;
+          }
+
+          const direction = message.direction === "outbound" ? "outbound" : "inbound";
+          const senderType = direction === "outbound" ? "agent" : "lead";
+          const channel = message.channel || "in_app";
+          const body = message.body || "";
+          const metadata = message.metadata || {};
+          const sentAt = message.sentAt || new Date().toISOString();
+
+          const upsertResult = await client.query(
+            `INSERT INTO "Messages" (
+               conversation_id,
+               sender_type,
+               sender_agent_id,
+               external_message_id,
+               direction,
+               channel,
+               body,
+               metadata,
+               sent_at
+             ) VALUES ($1::uuid, $2, NULL, $3, $4, $5, $6, $7::jsonb, $8::timestamptz)
+             ON CONFLICT (conversation_id, external_message_id)
+             DO UPDATE SET
+               body = EXCLUDED.body,
+               channel = EXCLUDED.channel,
+               direction = EXCLUDED.direction,
+               metadata = COALESCE("Messages".metadata, '{}'::jsonb) || EXCLUDED.metadata,
+               sent_at = CASE
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_thread' THEN EXCLUDED.sent_at
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
+                   AND COALESCE("Messages".metadata->>'sentAtSource', '') <> 'platform_thread'
+                 THEN EXCLUDED.sent_at
+                 ELSE "Messages".sent_at
+               END
+             WHERE
+               "Messages".body IS DISTINCT FROM EXCLUDED.body
+               OR "Messages".channel IS DISTINCT FROM EXCLUDED.channel
+               OR "Messages".direction IS DISTINCT FROM EXCLUDED.direction
+               OR "Messages".metadata IS DISTINCT FROM (COALESCE("Messages".metadata, '{}'::jsonb) || EXCLUDED.metadata)
+               OR "Messages".sent_at IS DISTINCT FROM CASE
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_thread' THEN EXCLUDED.sent_at
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
+                   AND COALESCE("Messages".metadata->>'sentAtSource', '') <> 'platform_thread'
+                 THEN EXCLUDED.sent_at
+                 ELSE "Messages".sent_at
+               END
+             RETURNING id, (xmax = 0) AS inserted`,
+            [
+              conversationId,
+              senderType,
+              externalMessageId,
+              direction,
+              channel,
+              body,
+              JSON.stringify(metadata),
+              sentAt
+            ]
+          );
+
+          if (upsertResult.rowCount === 0) {
+            continue;
+          }
+          if (upsertResult.rows[0]?.inserted) {
+            inserted += 1;
+          } else {
+            updated += 1;
+          }
+        }
+
+        await client.query(
+          `UPDATE "Conversations" c
+              SET last_message_at = latest.max_sent_at,
+                  updated_at = NOW()
+             FROM (
+               SELECT MAX(sent_at) AS max_sent_at
+                 FROM "Messages"
+                WHERE conversation_id = $1::uuid
+             ) latest
+            WHERE c.id = $1::uuid
+              AND latest.max_sent_at IS NOT NULL
+              AND (c.last_message_at IS NULL OR c.last_message_at IS DISTINCT FROM latest.max_sent_at)`,
+          [conversationId]
+        );
+
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+
+      return {
+        synced: true,
+        scanned: messages.length,
+        inserted,
+        updated,
+        skipped
+      };
+    },
+
     async ingestInboundMessages({ limit = 50, platforms = null } = {}) {
       const registry = getConnectorRegistry();
       const activeAccounts = await client.query(
@@ -1014,13 +1173,29 @@ export function createPostgresQueueAdapter(client, options = {}) {
 
       let ingested = 0;
       let scanned = 0;
+      const threadSyncEnabled = process.env.WORKER_THREAD_SYNC_ON_NEW_INBOUND !== "0";
+      const threadSyncPlatforms = process.env.WORKER_THREAD_SYNC_PLATFORMS
+        ? process.env.WORKER_THREAD_SYNC_PLATFORMS.split(",").map((value) => value.trim()).filter(Boolean)
+        : ["spareroom"];
+      const threadSyncMaxPerCycle = Number(process.env.WORKER_THREAD_SYNC_MAX_PER_CYCLE || 2);
+      let threadSyncUsed = 0;
 
       for (const account of activeAccounts.rows) {
         if (platforms && !platforms.includes(account.platform)) {
           continue;
         }
 
-        const inboundMessages = await registry.ingestMessagesForAccount(account);
+        let inboundMessages = [];
+        try {
+          inboundMessages = await registry.ingestMessagesForAccount(account);
+        } catch (error) {
+          console.warn("[ingest] failed ingesting messages for account", {
+            platform: account.platform,
+            accountId: account.id,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          continue;
+        }
         scanned += inboundMessages.length;
 
         for (const inbound of inboundMessages.slice(0, limit)) {
@@ -1039,10 +1214,12 @@ export function createPostgresQueueAdapter(client, options = {}) {
              DO UPDATE SET
                listing_id = COALESCE("Conversations".listing_id, EXCLUDED.listing_id),
                lead_name = COALESCE(EXCLUDED.lead_name, "Conversations".lead_name),
-               lead_contact = COALESCE(EXCLUDED.lead_contact, "Conversations".lead_contact),
-               last_message_at = EXCLUDED.last_message_at,
-               updated_at = NOW()
-             RETURNING id, listing_id`,
+               lead_contact = CASE
+                 WHEN "Conversations".lead_contact IS NULL OR "Conversations".lead_contact = '{}'::jsonb THEN EXCLUDED.lead_contact
+                 ELSE "Conversations".lead_contact
+               END,
+               last_message_at = COALESCE("Conversations".last_message_at, EXCLUDED.last_message_at)
+             RETURNING id, listing_id, (xmax = 0) AS inserted`,
             [
               account.id,
               linkage.listingId,
@@ -1055,7 +1232,9 @@ export function createPostgresQueueAdapter(client, options = {}) {
 
           const conversation = conversationResult.rows[0];
           const conversationId = conversation.id;
-          const insertResult = await client.query(
+          const conversationInserted = Boolean(conversation.inserted);
+
+          const upsertResult = await client.query(
             `INSERT INTO "Messages" (
                conversation_id,
                sender_type,
@@ -1066,39 +1245,106 @@ export function createPostgresQueueAdapter(client, options = {}) {
                metadata,
                sent_at
              ) VALUES ($1::uuid, 'lead', $2, 'inbound', $3, $4, $5::jsonb, $6::timestamptz)
-             ON CONFLICT (conversation_id, external_message_id) DO NOTHING`,
+             ON CONFLICT (conversation_id, external_message_id)
+             DO UPDATE SET
+               body = EXCLUDED.body,
+               channel = EXCLUDED.channel,
+               direction = EXCLUDED.direction,
+               metadata = COALESCE("Messages".metadata, '{}'::jsonb) || EXCLUDED.metadata,
+               sent_at = CASE
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_thread' THEN EXCLUDED.sent_at
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
+                   AND COALESCE("Messages".metadata->>'sentAtSource', '') <> 'platform_thread'
+                 THEN EXCLUDED.sent_at
+                 ELSE "Messages".sent_at
+               END
+             WHERE
+               "Messages".body IS DISTINCT FROM EXCLUDED.body
+               OR "Messages".channel IS DISTINCT FROM EXCLUDED.channel
+               OR "Messages".direction IS DISTINCT FROM EXCLUDED.direction
+               OR "Messages".metadata IS DISTINCT FROM (COALESCE("Messages".metadata, '{}'::jsonb) || EXCLUDED.metadata)
+               OR "Messages".sent_at IS DISTINCT FROM CASE
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_thread' THEN EXCLUDED.sent_at
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
+                   AND COALESCE("Messages".metadata->>'sentAtSource', '') <> 'platform_thread'
+                 THEN EXCLUDED.sent_at
+                 ELSE "Messages".sent_at
+               END
+             RETURNING id, (xmax = 0) AS inserted`,
             [conversationId, inbound.externalMessageId, inbound.channel, inbound.body, JSON.stringify(inbound.metadata || {}), inbound.sentAt]
           );
 
-          const linkageAuditAction = linkage.resolved
-            ? "ingest_conversation_linkage_resolved"
-            : "ingest_conversation_linkage_unresolved";
-          const linkagePreserved = Boolean(linkage.listingId && conversation.listing_id && linkage.listingId !== conversation.listing_id);
+          const messageChanged = upsertResult.rowCount > 0;
+          const messageInserted = Boolean(upsertResult.rows[0]?.inserted);
 
-          await client.query(
-            `INSERT INTO "AuditLogs" (actor_type, entity_type, entity_id, action, details)
-             VALUES ('system', 'conversation', $1, $2, $3::jsonb)`,
-            [
-              String(conversationId),
-              linkageAuditAction,
-              JSON.stringify({
-                externalThreadId: inbound.externalThreadId || null,
-                externalMessageId: inbound.externalMessageId || null,
-                linkage: {
-                  resolved: linkage.resolved,
-                  strategy: linkage.strategy,
-                  attempted: linkage.context,
-                  matchedListingId: linkage.listingId,
-                  matchedUnitId: linkage.unitId,
-                  appliedListingId: conversation.listing_id || null,
-                  preservedExistingListing: linkagePreserved
-                }
-              })
-            ]
-          );
+          if (messageChanged) {
+            await client.query(
+              `UPDATE "Conversations" c
+                  SET last_message_at = latest.max_sent_at,
+                      updated_at = NOW()
+                 FROM (
+                   SELECT MAX(sent_at) AS max_sent_at
+                     FROM "Messages"
+                    WHERE conversation_id = $1::uuid
+                 ) latest
+                WHERE c.id = $1::uuid
+                  AND latest.max_sent_at IS NOT NULL
+                  AND (c.last_message_at IS NULL OR c.last_message_at IS DISTINCT FROM latest.max_sent_at)`,
+              [conversationId]
+            );
+          }
 
-          if (insertResult.rowCount > 0) {
+          if (messageInserted) {
+            const linkageAuditAction = linkage.resolved
+              ? "ingest_conversation_linkage_resolved"
+              : "ingest_conversation_linkage_unresolved";
+            const linkagePreserved = Boolean(linkage.listingId && conversation.listing_id && linkage.listingId !== conversation.listing_id);
+
+            await client.query(
+              `INSERT INTO "AuditLogs" (actor_type, entity_type, entity_id, action, details)
+               VALUES ('system', 'conversation', $1, $2, $3::jsonb)`,
+              [
+                String(conversationId),
+                linkageAuditAction,
+                JSON.stringify({
+                  externalThreadId: inbound.externalThreadId || null,
+                  externalMessageId: inbound.externalMessageId || null,
+                  linkage: {
+                    resolved: linkage.resolved,
+                    strategy: linkage.strategy,
+                    attempted: linkage.context,
+                    matchedListingId: linkage.listingId,
+                    matchedUnitId: linkage.unitId,
+                    appliedListingId: conversation.listing_id || null,
+                    preservedExistingListing: linkagePreserved
+                  }
+                })
+              ]
+            );
+          }
+
+          if (messageInserted) {
             ingested += 1;
+          }
+
+          if (
+            threadSyncEnabled
+            && messageInserted
+            && !conversationInserted
+            && threadSyncUsed < threadSyncMaxPerCycle
+            && threadSyncPlatforms.includes(account.platform)
+          ) {
+            threadSyncUsed += 1;
+            try {
+              await this.syncConversationThread({ conversationId });
+            } catch (error) {
+              console.warn("[ingest] thread sync failed", {
+                platform: account.platform,
+                accountId: account.id,
+                conversationId,
+                error: error instanceof Error ? error.message : String(error)
+              });
+            }
           }
         }
       }

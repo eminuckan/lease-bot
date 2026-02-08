@@ -101,7 +101,7 @@ export async function ensureRequiredPlatformAccounts(db, options = {}) {
       const updateResult = await db.query(
         `UPDATE "PlatformAccounts"
             SET credentials = COALESCE(credentials, '{}'::jsonb) || $1::jsonb,
-                is_active = CASE WHEN $2::boolean THEN TRUE ELSE is_active END,
+                is_active = $2::boolean,
                 updated_at = NOW()
           WHERE platform = $3
             AND account_external_id = $4`,
@@ -119,8 +119,7 @@ export async function ensureRequiredPlatformAccounts(db, options = {}) {
            is_active,
            send_mode,
            integration_mode
-         )
-         SELECT
+         ) VALUES (
            $1::uuid,
            $2,
            $3,
@@ -129,13 +128,8 @@ export async function ensureRequiredPlatformAccounts(db, options = {}) {
            $6::boolean,
            $7,
            $8
-         WHERE NOT EXISTS (
-           SELECT 1
-             FROM "PlatformAccounts"
-            WHERE platform = $2
-            LIMIT 1
          )
-         ON CONFLICT DO NOTHING`,
+         ON CONFLICT (platform, account_external_id) DO NOTHING`,
         [
           account.id,
           account.platform,
