@@ -7,6 +7,7 @@ import { getAuth, hasAnyRole, normalizeRole, roles } from "@lease-bot/auth";
 import { createConnectorRegistry, createPostgresQueueAdapter } from "../../../packages/integrations/src/index.js";
 import { ensureRequiredPlatformAccounts } from "../../../packages/integrations/src/bootstrap-platform-accounts.js";
 import { LocalTimeValidationError, formatInTimezone, zonedTimeToUtc } from "./availability-timezone.js";
+import { ensureDevAdminUser } from "./bootstrap-dev-admin.js";
 import {
   extractVariablesFromBody,
   normalizeMessageStatus,
@@ -4958,16 +4959,28 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (process.env.NODE_ENV !== "test") {
-  const bootstrapEnabled = process.env.LEASE_BOT_BOOTSTRAP_PLATFORM_ACCOUNTS !== "0";
-  const bootstrap = bootstrapEnabled
-    ? ensureRequiredPlatformAccounts(pool, { env: process.env, logger: console }).catch((error) => {
+  const bootstrapTasks = [];
+
+  const platformBootstrapEnabled = process.env.LEASE_BOT_BOOTSTRAP_PLATFORM_ACCOUNTS !== "0";
+  if (platformBootstrapEnabled) {
+    bootstrapTasks.push(
+      ensureRequiredPlatformAccounts(pool, { env: process.env, logger: console }).catch((error) => {
         console.warn("[bootstrap] failed ensuring required platform accounts", {
           error: error instanceof Error ? error.message : String(error)
         });
       })
-    : Promise.resolve();
+    );
+  }
 
-  bootstrap.finally(() => {
+  bootstrapTasks.push(
+    ensureDevAdminUser(pool, auth, { env: process.env, logger: console }).catch((error) => {
+      console.warn("[bootstrap] failed ensuring dev admin", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    })
+  );
+
+  Promise.allSettled(bootstrapTasks).finally(() => {
     server.listen(port, host, () => {
       console.log(`api listening on http://${host}:${port}`);
     });
