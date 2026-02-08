@@ -3,6 +3,27 @@ import { REQUIRED_RPA_PLATFORMS } from "./platform-adapters.js";
 import { createRpaRunner } from "./rpa-runner.js";
 import { readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// Resolve relative session/profile paths against the monorepo root, not the current workspace/package.
+const workspaceRootDir = path.resolve(__dirname, "../../..");
+
+function resolveWorkspacePath(value) {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return trimmed;
+  }
+  if (path.isAbsolute(trimmed)) {
+    return trimmed;
+  }
+  return path.resolve(workspaceRootDir, trimmed);
+}
 
 const SUPPORTED_PLATFORMS = [...REQUIRED_RPA_PLATFORMS];
 
@@ -147,64 +168,35 @@ function resolveCredentials(platform, rawCredentials = {}, env = process.env) {
 
   const resolved = {};
 
-  const loginId = rawCredentials.loginIdRef
-    ? resolveReferencedCredential(rawCredentials.loginIdRef, env, platform, "loginId")
-    : rawCredentials.loginId
-    ? resolveCredentialValue(rawCredentials.loginId, env, platform, "loginId")
-    : null;
-
-  const username = rawCredentials.usernameRef
-    ? resolveReferencedCredential(rawCredentials.usernameRef, env, platform, "username")
-    : rawCredentials.username
-    ? resolveCredentialValue(rawCredentials.username, env, platform, "username")
-    : null;
-
-  const email = rawCredentials.emailRef
-    ? resolveReferencedCredential(rawCredentials.emailRef, env, platform, "email")
-    : rawCredentials.email
-    ? resolveCredentialValue(rawCredentials.email, env, platform, "email")
-    : null;
-
-  const password = rawCredentials.passwordRef
-    ? resolveReferencedCredential(rawCredentials.passwordRef, env, platform, "password")
-    : rawCredentials.password
-    ? resolveCredentialValue(rawCredentials.password, env, platform, "password")
-    : null;
-
-  const storageState = rawCredentials.storageStateRef
-    ? resolveReferencedCredential(rawCredentials.storageStateRef, env, platform, "storageStateRef")
-    : rawCredentials.sessionRef
-    ? resolveReferencedCredential(rawCredentials.sessionRef, env, platform, "sessionRef")
-    : rawCredentials.storageState
-    ? resolveCredentialValue(rawCredentials.storageState, env, platform, "storageState")
-    : rawCredentials.session
-    ? resolveCredentialValue(rawCredentials.session, env, platform, "session")
-    : null;
-
-  const storageStatePath = rawCredentials.storageStatePathRef
-    ? resolveReferencedCredential(rawCredentials.storageStatePathRef, env, platform, "storageStatePathRef")
-    : rawCredentials.storageStatePath
-    ? resolveCredentialValue(rawCredentials.storageStatePath, env, platform, "storageStatePath")
-    : null;
-
+  // Prefer session-based auth (persistent profile > storageState path > storageState blob/path).
+  // When a session/profile is present, other credential refs may legitimately be unset, so we resolve
+  // loginId/password only when we actually need them.
   const userDataDir = rawCredentials.userDataDirRef
     ? resolveReferencedCredential(rawCredentials.userDataDirRef, env, platform, "userDataDirRef")
     : rawCredentials.userDataDir
     ? resolveCredentialValue(rawCredentials.userDataDir, env, platform, "userDataDir")
     : null;
 
-  if (loginId) {
-    resolved.loginId = loginId;
-  }
-  if (username) {
-    resolved.username = username;
-  }
-  if (email) {
-    resolved.email = email;
-  }
-  if (password) {
-    resolved.password = password;
-  }
+  const storageStatePath = !userDataDir
+    ? rawCredentials.storageStatePathRef
+      ? resolveReferencedCredential(rawCredentials.storageStatePathRef, env, platform, "storageStatePathRef")
+      : rawCredentials.storageStatePath
+      ? resolveCredentialValue(rawCredentials.storageStatePath, env, platform, "storageStatePath")
+      : null
+    : null;
+
+  const storageState = !userDataDir && !storageStatePath
+    ? rawCredentials.storageStateRef
+      ? resolveReferencedCredential(rawCredentials.storageStateRef, env, platform, "storageStateRef")
+      : rawCredentials.sessionRef
+      ? resolveReferencedCredential(rawCredentials.sessionRef, env, platform, "sessionRef")
+      : rawCredentials.storageState
+      ? resolveCredentialValue(rawCredentials.storageState, env, platform, "storageState")
+      : rawCredentials.session
+      ? resolveCredentialValue(rawCredentials.session, env, platform, "session")
+      : null
+    : null;
+
   if (storageState) {
     resolved.storageState = storageState;
   }
@@ -216,10 +208,48 @@ function resolveCredentials(platform, rawCredentials = {}, env = process.env) {
   }
 
   const hasSession = Boolean(resolved.storageState || resolved.storageStatePath || resolved.userDataDir);
-  const hasLoginId = Boolean(resolved.loginId || resolved.username || resolved.email);
-  const hasPassword = Boolean(resolved.password);
 
   if (!hasSession) {
+    const loginId = rawCredentials.loginIdRef
+      ? resolveReferencedCredential(rawCredentials.loginIdRef, env, platform, "loginId")
+      : rawCredentials.loginId
+      ? resolveCredentialValue(rawCredentials.loginId, env, platform, "loginId")
+      : null;
+
+    const username = rawCredentials.usernameRef
+      ? resolveReferencedCredential(rawCredentials.usernameRef, env, platform, "username")
+      : rawCredentials.username
+      ? resolveCredentialValue(rawCredentials.username, env, platform, "username")
+      : null;
+
+    const email = rawCredentials.emailRef
+      ? resolveReferencedCredential(rawCredentials.emailRef, env, platform, "email")
+      : rawCredentials.email
+      ? resolveCredentialValue(rawCredentials.email, env, platform, "email")
+      : null;
+
+    const password = rawCredentials.passwordRef
+      ? resolveReferencedCredential(rawCredentials.passwordRef, env, platform, "password")
+      : rawCredentials.password
+      ? resolveCredentialValue(rawCredentials.password, env, platform, "password")
+      : null;
+
+    if (loginId) {
+      resolved.loginId = loginId;
+    }
+    if (username) {
+      resolved.username = username;
+    }
+    if (email) {
+      resolved.email = email;
+    }
+    if (password) {
+      resolved.password = password;
+    }
+
+    const hasLoginId = Boolean(resolved.loginId || resolved.username || resolved.email);
+    const hasPassword = Boolean(resolved.password);
+
     if (!hasLoginId) {
       throw createMissingCredentialError(platform, "loginId");
     }
@@ -335,7 +365,7 @@ async function parseStorageStateValue(value) {
   }
 
   // Otherwise treat it as a path.
-  const file = await readFile(trimmed, "utf8");
+  const file = await readFile(resolveWorkspacePath(trimmed), "utf8");
   return JSON.parse(file);
 }
 
@@ -343,7 +373,7 @@ function createEnvSessionManager(logger = console) {
   return {
     async get({ platform, account }) {
       const creds = account?.credentials || {};
-      const userDataDirValue = creds.userDataDir || null;
+      const userDataDirValue = creds.userDataDir ? resolveWorkspacePath(creds.userDataDir) : null;
       const storageStateValue = creds.storageStatePath || creds.storageState || null;
       if (!userDataDirValue && !storageStateValue) {
         return null;

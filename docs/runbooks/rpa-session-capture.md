@@ -27,6 +27,12 @@ playwright-cli -s=spareroom state-save /tmp/spareroom-auth.json
 playwright-cli -s=spareroom close
 ```
 
+If you don't want to remember the CLI flags, you can also use the repo helper:
+
+```bash
+npm run rpa:login -- spareroom
+```
+
 Set env:
 
 ```bash
@@ -51,6 +57,14 @@ And set platform account credentials:
 
 ```json
 { "userDataDirRef": "env:SPAREROOM_RPA_PROFILE" }
+```
+
+## Unlocking a stuck profile (ProcessSingleton / SingletonLock)
+
+If Playwright refuses to start a persistent profile with a `ProcessSingleton` / `SingletonLock` error, close any Chrome/Playwright instances using that profile and remove the lock files:
+
+```bash
+npm run rpa:unlock -- spareroom
 ```
 
 ## Run the worker with Playwright runtime

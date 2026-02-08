@@ -96,6 +96,19 @@ export async function ensureRequiredPlatformAccounts(db, options = {}) {
     const { credentials, isActive, authMode, authEnvVar } = buildDefaultCredentials(account, env);
 
     try {
+      // If the default record already exists, keep it aligned with env-provided auth.
+      // This avoids manual SQL edits when switching from sessionRef to userDataDirRef.
+      const updateResult = await db.query(
+        `UPDATE "PlatformAccounts"
+            SET credentials = COALESCE(credentials, '{}'::jsonb) || $1::jsonb,
+                is_active = CASE WHEN $2::boolean THEN TRUE ELSE is_active END,
+                updated_at = NOW()
+          WHERE platform = $3
+            AND account_external_id = $4`,
+        [JSON.stringify(credentials), isActive, account.platform, account.accountExternalId]
+      );
+      const updated = updateResult.rowCount > 0;
+
       const insertResult = await db.query(
         `INSERT INTO "PlatformAccounts" (
            id,
@@ -143,6 +156,7 @@ export async function ensureRequiredPlatformAccounts(db, options = {}) {
       results.push({
         platform: account.platform,
         inserted,
+        updated,
         isActive,
         authMode,
         authEnvVar
@@ -170,4 +184,3 @@ export async function ensureRequiredPlatformAccounts(db, options = {}) {
 }
 
 export { DEFAULT_REQUIRED_PLATFORM_ACCOUNTS };
-

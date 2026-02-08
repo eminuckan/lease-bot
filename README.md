@@ -91,6 +91,18 @@ Connector credentials use env references so secrets stay outside committed JSON.
 
 Some platforms require session-based auth due to anti-bot layers. See `docs/runbooks/rpa-session-capture.md` for capturing and configuring `sessionRef` / `storageStateRef`.
 
+To capture / refresh a persistent profile (recommended for SpareRoom), use:
+
+```bash
+npm run rpa:login -- spareroom
+```
+
+If Playwright reports a `ProcessSingleton` / `SingletonLock` profile-in-use error, close any Chrome instances using that profile and run:
+
+```bash
+npm run rpa:unlock -- spareroom
+```
+
 AI decision provider toggles:
 
 - `AI_DECISION_PROVIDER`: `heuristic` (default) or `gemini`

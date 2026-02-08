@@ -7,8 +7,8 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
     // US site uses /roommate/* routes (login: /roommate/logon.pl, messages: /roommate/mythreads*.pl).
     // Note: thread URL shape may differ across legacy/beta message UIs, so this is best-effort and
     // should be overridden per-account if needed.
-    inboxPath: "/roommate/mythreads.pl",
-    threadPath: (threadId) => `/roommate/messages.pl?thread_id=${encodeURIComponent(threadId)}`,
+    inboxPath: "/roommate/mythreads_beta.pl",
+    threadPath: (threadId) => `/roommate/mythreads_beta.pl?thread_id=${encodeURIComponent(threadId)}`,
     authRequiredUrlPatterns: ["/roommate/logon.pl"],
     authRequiredText: [
       // SpareRoom uses this copy on protected pages when the session is missing/expired.
@@ -17,10 +17,12 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
     selectors: {
       challenge: ["iframe[src*='challenge']", "#challenge-form", "[data-cy='bot-check']"],
       captcha: ["iframe[title*='captcha']", "[data-sitekey]", "#g-recaptcha-response"],
-      messageItems: ["[data-thread-id][data-message-id]", ".message-card"],
-      messageBody: ["[data-role='message-body']", ".message__body"],
+      // Inbox rows are anchors with data attributes for the most recent inbound message.
+      messageItems: ["a.thread_item.thread_in[data-thread-id][data-message-id]", "[data-thread-id][data-message-id]"],
+      messageBody: ["span.snippet"],
+      leadName: ["span.name"],
       composer: "textarea[name='message']",
-      submit: "button[type='submit']"
+      submit: "button[type='submit'][name='btnSubmit']"
     }
   },
   roomies: {

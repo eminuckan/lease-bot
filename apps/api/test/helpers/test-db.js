@@ -65,6 +65,12 @@ async function getExecutedMap(pool) {
 }
 
 async function runMigrations(pool) {
+  // Node's test runner may execute test files concurrently. Serialize migrations per DB to avoid
+  // DDL races (e.g. CREATE TYPE) when multiple test processes start at the same time.
+  // Advisory locks are connection-scoped and automatically released if the process dies.
+  const migrationLockKey = 915_000_123; // arbitrary constant for this repo
+  await pool.query("SELECT pg_advisory_lock($1)", [migrationLockKey]);
+  try {
   await ensureMigrationsTable(pool);
   const executed = await getExecutedMap(pool);
 
@@ -91,6 +97,9 @@ async function runMigrations(pool) {
     await pool.query("INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)", [fileName, digest]);
     executed.set(fileName, digest);
   }
+  } finally {
+    await pool.query("SELECT pg_advisory_unlock($1)", [migrationLockKey]);
+  }
 }
 
 export async function createTestPool(connectionString) {
@@ -99,4 +108,3 @@ export async function createTestPool(connectionString) {
   await runMigrations(pool);
   return pool;
 }
-

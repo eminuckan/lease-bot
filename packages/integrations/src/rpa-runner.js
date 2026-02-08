@@ -228,6 +228,11 @@ async function defaultIngestHandler({ adapter, page, clock }) {
 
   const selector = adapter.selectors?.messageItems?.[0] || "[data-thread-id][data-message-id]";
   const bodySelector = adapter.selectors?.messageBody?.[0] || "[data-role='message-body']";
+  const leadNameSelector = Array.isArray(adapter.selectors?.leadName)
+    ? adapter.selectors.leadName[0]
+    : typeof adapter.selectors?.leadName === "string"
+    ? adapter.selectors.leadName
+    : null;
   const messages = await page.$$eval(
     selector,
     (elements, meta) => elements.map((element, index) => {
@@ -235,7 +240,10 @@ async function defaultIngestHandler({ adapter, page, clock }) {
       const messageId = element.getAttribute("data-message-id") || `message-${index + 1}`;
       const bodyElement = element.querySelector(meta.bodySelector);
       const body = bodyElement?.textContent?.trim() || element.textContent?.trim() || "";
-      const leadName = element.getAttribute("data-lead-name") || null;
+      const leadNameRaw = element.getAttribute("data-lead-name")
+        || (meta.leadNameSelector ? element.querySelector(meta.leadNameSelector)?.textContent?.trim() : null)
+        || null;
+      const leadName = leadNameRaw ? leadNameRaw.replace(/\s*\(\d+\)\s*$/, "").trim() : null;
       return {
         externalThreadId: threadId,
         externalMessageId: messageId,
@@ -251,6 +259,7 @@ async function defaultIngestHandler({ adapter, page, clock }) {
     }),
     {
       bodySelector,
+      leadNameSelector,
       platform: adapter.platform,
       nowIso: clock().toISOString()
     }
@@ -332,10 +341,13 @@ export function createPlaywrightRpaRunner(options = {}) {
     };
 
     try {
-      const [html, url] = await Promise.all([
-        page.content().catch(() => ""),
-        page.url().catch(() => "")
-      ]);
+      const html = await page.content().catch(() => "");
+      let url = "";
+      try {
+        url = page.url();
+      } catch {
+        url = "";
+      }
       await Promise.allSettled([
         page.screenshot({ path: result.screenshotPath, fullPage: true }),
         writeFile(result.htmlPath, html || "", "utf8"),
