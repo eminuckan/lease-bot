@@ -59,7 +59,7 @@ export function LeaseBotProvider({ children }) {
   const [selectedInboxPlatform, setSelectedInboxPlatform] = useState("all");
   const [selectedConversationId, setSelectedConversationId] = useState("");
   const [conversationDetail, setConversationDetail] = useState(null);
-  const [draftForm, setDraftForm] = useState({ templateId: "", body: "" });
+  const [draftForm, setDraftForm] = useState({ body: "" });
   const [syncedConversations, setSyncedConversations] = useState({});
   const [appointments, setAppointments] = useState([]);
   const [appointmentFilters, setAppointmentFilters] = useState({
@@ -119,9 +119,6 @@ export function LeaseBotProvider({ children }) {
     try {
       const result = await request(`/api/inbox/${conversationId}`);
       setConversationDetail(result);
-      if (!draftForm.templateId && result.templates?.[0]?.id) {
-        setDraftForm((current) => ({ ...current, templateId: result.templates[0].id }));
-      }
 
       const platform = result?.conversation?.platform;
       const messages = Array.isArray(result?.messages) ? result.messages : [];
@@ -409,7 +406,6 @@ export function LeaseBotProvider({ children }) {
         method: "POST",
         body: JSON.stringify({
           dispatchNow: true,
-          templateId: draftForm.templateId || null,
           body: draftForm.body || null
         })
       });

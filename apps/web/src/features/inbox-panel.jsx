@@ -406,20 +406,6 @@ export function InboxPanel() {
               {/* Compose */}
               <div className="border-t border-dashed border-border bg-card px-4 py-4 md:px-6">
                 <form onSubmit={createDraft} className="mx-auto max-w-2xl space-y-3">
-                  <TemplateSelect
-                    templates={conversationDetail.templates || []}
-                    value={draftForm.templateId}
-                    onChange={(templateId) => {
-                      const template = (conversationDetail.templates || []).find(
-                        (t) => t.id === templateId
-                      );
-                      setDraftForm((c) => ({
-                        ...c,
-                        templateId,
-                        body: template ? template.body : c.body,
-                      }));
-                    }}
-                  />
                   <div className="flex items-end gap-3">
                     <Textarea
                       rows={2}
@@ -444,23 +430,6 @@ export function InboxPanel() {
         </div>
       </div>
     </div>
-  );
-}
-
-function TemplateSelect({ templates, value, onChange }) {
-  if (!templates.length) return null;
-  return (
-    <Select value={value || "__none__"} onValueChange={(v) => onChange(v === "__none__" ? "" : v)}>
-      <SelectTrigger className="h-9 text-sm">
-        <SelectValue placeholder="No template" />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="__none__">No template</SelectItem>
-        {templates.map((t) => (
-          <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
   );
 }
 

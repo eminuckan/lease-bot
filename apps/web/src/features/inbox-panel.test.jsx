@@ -10,7 +10,7 @@ const mockLeaseBot = vi.hoisted(() => ({
   selectedConversationId: "",
   setSelectedConversationId: vi.fn(),
   conversationDetail: null,
-  draftForm: { templateId: "", body: "" },
+  draftForm: { body: "" },
   setDraftForm: vi.fn(),
   createDraft: vi.fn((event) => event?.preventDefault?.()),
   updateConversationWorkflow: vi.fn(async () => ({})),
