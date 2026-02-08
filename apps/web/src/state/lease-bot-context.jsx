@@ -376,6 +376,13 @@ export function LeaseBotProvider({ children }) {
     setApiError("");
     setMessage("");
 
+    if (!assignmentForm.unitId) {
+      const errorMessage = "Select a listing first";
+      setApiError(errorMessage);
+      toast.error("Assignment update failed", { description: errorMessage });
+      return;
+    }
+
     try {
       await request(`/api/units/${assignmentForm.unitId}/assignment`, {
         method: "PUT",

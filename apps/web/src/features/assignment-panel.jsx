@@ -1,5 +1,5 @@
 import { Save, Building2, List, Users } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { Button } from "../components/ui/button";
 import { Label } from "../components/ui/label";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
@@ -19,7 +19,7 @@ function sortListingsForAssignment(a, b) {
   return parseDateValue(b.updatedAt) - parseDateValue(a.updatedAt);
 }
 
-function formatListingLabel(item) {
+function formatListingLabel(item, unitLabel) {
   const metadata = item?.metadata && typeof item.metadata === "object" ? item.metadata : {};
   const title = typeof metadata.title === "string" ? metadata.title.trim() : "";
   const location = typeof metadata.location === "string" ? metadata.location.trim() : "";
@@ -30,6 +30,9 @@ function formatListingLabel(item) {
     || (listingExternalId ? `Listing #${listingExternalId}` : `Listing ${String(item.id || "").slice(0, 8)}`);
 
   const details = [];
+  if (unitLabel) {
+    details.push(unitLabel);
+  }
   if (location) {
     details.push(location);
   }
@@ -49,12 +52,52 @@ export function AssignmentPanel() {
     await saveAssignment(event);
   }
 
-  const filteredListings = useMemo(
-    () => listings
-      .filter((item) => item.unitId === assignmentForm.unitId)
-      .sort(sortListingsForAssignment),
-    [listings, assignmentForm.unitId]
+  const unitLabelById = useMemo(
+    () =>
+      new Map(
+        units.map((item) => [
+          item.id,
+          [item.propertyName, item.unitNumber].filter(Boolean).join(" ").trim() || "Unknown unit"
+        ])
+      ),
+    [units]
   );
+
+  const sortedListings = useMemo(
+    () => [...listings].sort(sortListingsForAssignment),
+    [listings]
+  );
+
+  useEffect(() => {
+    if (sortedListings.length === 0) {
+      return;
+    }
+
+    const selected = sortedListings.find((item) => item.id === assignmentForm.listingId) || null;
+    if (!selected) {
+      const first = sortedListings[0];
+      setAssignmentForm((current) => ({
+        ...current,
+        listingId: first.id,
+        unitId: first.unitId || ""
+      }));
+      return;
+    }
+
+    if (selected.unitId && selected.unitId !== assignmentForm.unitId) {
+      setAssignmentForm((current) => ({
+        ...current,
+        unitId: selected.unitId
+      }));
+    }
+  }, [sortedListings, assignmentForm.listingId, assignmentForm.unitId, setAssignmentForm]);
+
+  const selectedListing = useMemo(
+    () => sortedListings.find((item) => item.id === assignmentForm.listingId) || null,
+    [sortedListings, assignmentForm.listingId]
+  );
+
+  const selectedUnitLabel = selectedListing?.unitId ? unitLabelById.get(selectedListing.unitId) || "" : "";
 
   return (
     <div className="p-6">
@@ -92,10 +135,10 @@ export function AssignmentPanel() {
 
         {/* Assignment form */}
         <div>
-          <h2 className="text-sm font-semibold">Assign unit</h2>
-          <p className="mt-1 text-xs text-muted-foreground">Link a unit to a listing and agent for automated management.</p>
+          <h2 className="text-sm font-semibold">Assign listing</h2>
+          <p className="mt-1 text-xs text-muted-foreground">Select listing and assign responsible agent.</p>
           <div className="mt-4">
-            {units.length === 0 || agents.length === 0 ? (
+            {listings.length === 0 || agents.length === 0 ? (
               <div className="rounded-lg bg-card px-5 py-8 text-center text-sm text-muted-foreground shadow-card">
                 Loading required data...
               </div>
@@ -103,57 +146,39 @@ export function AssignmentPanel() {
               <form onSubmit={handleSubmit}>
                 <div className="space-y-3">
                   <div className="rounded-lg bg-card p-4 shadow-card">
-                    <Label className="text-xs text-muted-foreground">Unit</Label>
+                    <Label className="text-xs text-muted-foreground">Listing</Label>
                     <Select
-                      value={assignmentForm.unitId || "__none__"}
+                      value={assignmentForm.listingId || "__none__"}
                       onValueChange={(v) => {
-                        const nextUnitId = v === "__none__" ? "" : v;
-                        const preferredListingId = nextUnitId
-                          ? listings
-                            .filter((item) => item.unitId === nextUnitId)
-                            .sort(sortListingsForAssignment)[0]?.id || ""
-                          : "";
+                        const nextListingId = v === "__none__" ? "" : v;
+                        const nextListing = sortedListings.find((item) => item.id === nextListingId) || null;
                         setAssignmentForm((current) => ({
                           ...current,
-                          unitId: nextUnitId,
-                          listingId: preferredListingId
+                          listingId: nextListingId,
+                          unitId: nextListing?.unitId || ""
                         }));
                       }}
                     >
                       <SelectTrigger className="mt-1.5 h-9 text-sm">
-                        <SelectValue placeholder="Select unit" />
+                        <SelectValue placeholder="Select listing" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="__none__">Select unit</SelectItem>
-                        {units.map((item) => (
-                          <SelectItem key={item.id} value={item.id}>
-                            {item.propertyName} {item.unitNumber}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="rounded-lg bg-card p-4 shadow-card">
-                    <Label className="text-xs text-muted-foreground">Listing</Label>
-                    <Select
-                      value={assignmentForm.listingId || "__none__"}
-                      onValueChange={(v) => setAssignmentForm((c) => ({ ...c, listingId: v === "__none__" ? "" : v }))}
-                    >
-                      <SelectTrigger className="mt-1.5 h-9 text-sm">
-                        <SelectValue placeholder="Latest for unit" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none__">Latest for unit</SelectItem>
-                        {filteredListings.length === 0 ? (
-                          <SelectItem value="__empty__" disabled>No listings for selected unit</SelectItem>
+                        <SelectItem value="__none__">Select listing</SelectItem>
+                        {sortedListings.length === 0 ? (
+                          <SelectItem value="__empty__" disabled>No listings available</SelectItem>
                         ) : null}
-                        {filteredListings.map((item) => (
+                        {sortedListings.map((item) => (
                           <SelectItem key={item.id} value={item.id}>
-                            {formatListingLabel(item)}
+                            {formatListingLabel(item, unitLabelById.get(item.unitId))}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    {selectedUnitLabel ? (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Unit: {selectedUnitLabel}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="rounded-lg bg-card p-4 shadow-card">
                     <Label className="text-xs text-muted-foreground">Agent</Label>
@@ -176,7 +201,7 @@ export function AssignmentPanel() {
                   </div>
                 </div>
                 <div className="mt-4">
-                  <Button type="submit" size="sm">
+                  <Button type="submit" size="sm" disabled={!assignmentForm.listingId}>
                     <Save className="mr-2 h-3.5 w-3.5" />
                     Save assignment
                   </Button>
