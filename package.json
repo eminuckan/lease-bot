@@ -12,6 +12,8 @@
     "dev:web": "npm run dev -w @lease-bot/web",
     "dev:api": "npm run dev -w @lease-bot/api",
     "dev:worker": "npm run dev -w @lease-bot/worker",
+    "db:setup": "npm run db:setup -w @lease-bot/db",
+    "db:reset": "npm run db:reset -w @lease-bot/db",
     "build": "npm run build --workspaces --if-present",
     "check": "npm run build",
     "rpa:login": "node scripts/rpa-login.mjs",
