@@ -435,14 +435,14 @@ export async function ensureDevTestData(db, options = {}) {
     "",
     "Yes, it's available.",
     "",
-    "We’re having showings at the following times:",
+    "We're having showings at the following times:",
     "{{slot_options_list}}",
     "",
     "Please let us know what works best. We can also do virtual tours.",
     "",
     "Regards,",
     "Maurik"
-  ].join("\\n");
+  ].join("\n");
 
   const variables = ["lead_name", "slot_options_list", "slot_options_inline", "unit", "unit_number"];
 

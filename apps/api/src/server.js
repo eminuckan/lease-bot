@@ -2396,7 +2396,7 @@ async function fetchConversationDetail(client, conversationId, access = null) {
     [conversation.platform_account_id]
   );
 
-  let nextSlot = null;
+  const slotLabels = [];
   if (conversation.unit_id) {
     const slotResult = await client.query(
       `SELECT starts_at, ends_at, timezone
@@ -2405,22 +2405,33 @@ async function fetchConversationDetail(client, conversationId, access = null) {
           AND status = 'open'
           AND starts_at >= NOW()
         ORDER BY starts_at ASC
-        LIMIT 1`,
+        LIMIT 3`,
       [conversation.unit_id]
     );
 
     if (slotResult.rowCount > 0) {
-      const slot = slotResult.rows[0];
-      const timezone = slot.timezone || "UTC";
-      nextSlot = `${formatInTimezone(slot.starts_at, timezone)} - ${formatInTimezone(slot.ends_at, timezone)} ${timezone}`;
+      for (const slot of slotResult.rows) {
+        const timezone = slot.timezone || "UTC";
+        slotLabels.push(`${formatInTimezone(slot.starts_at, timezone)} - ${formatInTimezone(slot.ends_at, timezone)} ${timezone}`);
+      }
     }
   }
+
+  const nextSlot = slotLabels[0] || "";
+  const slotOptionsList = slotLabels.length > 0 ? slotLabels.map((label) => `- ${label}`).join("\n") : "";
+  const slotOptionsInline = slotLabels.join(", ");
 
   const templateContext = {
     unit: conversation.property_name && conversation.unit_number
       ? `${conversation.property_name} ${conversation.unit_number}`
       : conversation.external_thread_label || "",
-    slot: nextSlot || ""
+    unit_number: conversation.unit_number || "",
+    lead_name: conversation.lead_name || "",
+    slot: nextSlot,
+    slot_options_list: slotOptionsList,
+    slot_options_inline: slotOptionsInline,
+    // Keep a backwards compatible alias used by some templates/contexts.
+    slot_options: slotOptionsList || slotOptionsInline
   };
 
   return {
@@ -3072,13 +3083,15 @@ export async function routeApi(req, res, url) {
         const autoSendEnabled = platformPolicy.sendMode === "auto_send";
         const manualDispatchRequested = payload.dispatchNow !== false;
 
-        let messageBody = payload.body;
+        const rawBody = typeof payload.body === "string" ? payload.body : null;
+        let messageBody = rawBody;
         let templateId = null;
+        let template = null;
         if (payload.templateId) {
           if (!isUuid(payload.templateId)) {
             return { error: "template_id_invalid" };
           }
-          const template = detail.templates.find((item) => item.id === payload.templateId);
+          template = detail.templates.find((item) => item.id === payload.templateId);
           if (!template) {
             return { error: "template_not_found" };
           }
@@ -3087,7 +3100,15 @@ export async function routeApi(req, res, url) {
             ...detail.templateContext,
             ...(payload.variables && typeof payload.variables === "object" ? payload.variables : {})
           };
-          messageBody = renderTemplate(template.body, context);
+
+          // If the UI provides a body (even when templateId is selected), prefer the user's body.
+          // When body matches the template body exactly, treat it as "send this template" and render it.
+          const bodySource =
+            typeof rawBody === "string" && rawBody.trim().length > 0
+              ? (rawBody === template.body ? template.body : rawBody)
+              : template.body;
+
+          messageBody = renderTemplate(bodySource, context);
         }
 
         if (typeof messageBody !== "string" || messageBody.trim().length < 1) {
