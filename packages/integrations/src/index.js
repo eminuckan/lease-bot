@@ -565,6 +565,91 @@ export function createPostgresQueueAdapter(client, options = {}) {
       }));
     },
 
+    async fetchConversationRecentMessages({ conversationId, limit = 12 } = {}) {
+      if (!conversationId) {
+        return [];
+      }
+
+      const resolvedLimit = Math.max(1, Number(limit || 12));
+      const result = await client.query(
+        `SELECT id,
+                direction,
+                sender_type,
+                sender_agent_id,
+                body,
+                sent_at,
+                created_at
+           FROM "Messages"
+          WHERE conversation_id = $1::uuid
+          ORDER BY sent_at DESC NULLS LAST, created_at DESC
+          LIMIT $2`,
+        [conversationId, resolvedLimit]
+      );
+
+      // Provide context chronologically (oldest -> newest).
+      return result.rows
+        .slice()
+        .reverse()
+        .map((row) => ({
+          id: row.id,
+          direction: row.direction,
+          senderType: row.sender_type,
+          senderAgentId: row.sender_agent_id,
+          body: row.body,
+          sentAt: row.sent_at,
+          createdAt: row.created_at
+        }));
+    },
+
+    async fetchFewShotExamples({ platformAccountId, limit = 3, excludeConversationId = null } = {}) {
+      if (!platformAccountId) {
+        return [];
+      }
+
+      const resolvedLimit = Math.max(1, Number(limit || 3));
+      const excluded = excludeConversationId || null;
+      const result = await client.query(
+        `SELECT c.id AS conversation_id,
+                mi.body AS inbound_body,
+                mo.body AS outbound_body,
+                mi.sent_at AS inbound_sent_at,
+                mo.sent_at AS outbound_sent_at
+           FROM "Conversations" c
+           JOIN LATERAL (
+             SELECT id, body, sent_at, created_at
+               FROM "Messages"
+              WHERE conversation_id = c.id
+                AND direction = 'outbound'
+                AND COALESCE(body, '') <> ''
+              ORDER BY sent_at DESC NULLS LAST, created_at DESC
+              LIMIT 1
+           ) mo ON TRUE
+           JOIN LATERAL (
+             SELECT id, body, sent_at, created_at
+               FROM "Messages"
+              WHERE conversation_id = c.id
+                AND direction = 'inbound'
+                AND COALESCE(body, '') <> ''
+                AND sent_at <= mo.sent_at
+              ORDER BY sent_at DESC NULLS LAST, created_at DESC
+              LIMIT 1
+           ) mi ON TRUE
+          WHERE c.platform_account_id = $1::uuid
+            AND ($2::uuid IS NULL OR c.id <> $2::uuid)
+          ORDER BY mo.sent_at DESC NULLS LAST, mo.created_at DESC
+          LIMIT $3`,
+        [platformAccountId, excluded, resolvedLimit]
+      );
+
+      return result.rows.map((row) => ({
+        conversationId: row.conversation_id,
+        inboundBody: row.inbound_body,
+        outboundBody: row.outbound_body,
+        inboundSentAt: row.inbound_sent_at,
+        outboundSentAt: row.outbound_sent_at
+      }));
+    },
+
     async fetchSlotOptions(unitId, limit = 3) {
       const result = await client.query(
         `SELECT starts_at, ends_at, timezone

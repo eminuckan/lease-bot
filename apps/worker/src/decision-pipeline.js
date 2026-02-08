@@ -1,6 +1,37 @@
 import { classifyIntent, detectFollowUp, runReplyPipelineWithAI } from "../../../packages/ai/src/index.js";
 
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+
+let cachedPlaybookText = null;
+let cachedPlaybookPath = null;
+
+async function loadAiPlaybook() {
+  const inline = process.env.WORKER_AI_PLAYBOOK;
+  const path = process.env.WORKER_AI_PLAYBOOK_PATH;
+
+  if (typeof inline === "string" && inline.trim()) {
+    return inline;
+  }
+
+  if (!path) {
+    return "";
+  }
+
+  if (cachedPlaybookText !== null && cachedPlaybookPath === path) {
+    return cachedPlaybookText;
+  }
+
+  try {
+    cachedPlaybookText = await readFile(path, "utf8");
+    cachedPlaybookPath = path;
+    return cachedPlaybookText;
+  } catch {
+    cachedPlaybookText = "";
+    cachedPlaybookPath = path;
+    return "";
+  }
+}
 
 function parseCsvEnv(value) {
   if (typeof value !== "string") {
@@ -387,6 +418,47 @@ export async function processPendingMessagesWithAi({
         : null;
 
       const templateContext = buildTemplateContext(msg, slotOptions);
+
+      const provider = process.env.AI_DECISION_PROVIDER || "heuristic";
+      const geminiEnabled = Boolean(aiEnabled ?? provider === "gemini");
+      const contextMessageLimit = Math.max(0, Number(process.env.WORKER_AI_CONTEXT_MESSAGE_LIMIT || 12));
+      const fewShotLimit = Math.max(0, Number(process.env.WORKER_AI_FEWSHOT_EXAMPLE_LIMIT || 3));
+
+      const playbook = geminiEnabled ? await loadAiPlaybook() : "";
+      let conversationContext = [];
+      let fewShotExamples = [];
+
+      if (geminiEnabled) {
+        if (contextMessageLimit > 0 && typeof adapter.fetchConversationRecentMessages === "function" && msg.conversationId) {
+          try {
+            conversationContext = await adapter.fetchConversationRecentMessages({
+              conversationId: msg.conversationId,
+              limit: contextMessageLimit
+            });
+          } catch (error) {
+            logger.warn?.("[worker] failed fetching conversation context", {
+              conversationId: msg.conversationId,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+
+        if (fewShotLimit > 0 && typeof adapter.fetchFewShotExamples === "function") {
+          try {
+            fewShotExamples = await adapter.fetchFewShotExamples({
+              platformAccountId: msg.platformAccountId,
+              limit: fewShotLimit,
+              excludeConversationId: msg.conversationId
+            });
+          } catch (error) {
+            logger.warn?.("[worker] failed fetching few-shot examples", {
+              platformAccountId: msg.platformAccountId,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+      }
+
       const pipeline = await runReplyPipelineWithAI({
         inboundBody: msg.body,
         hasRecentOutbound: msg.hasRecentOutbound,
@@ -397,7 +469,10 @@ export async function processPendingMessagesWithAi({
         autoSendEnabled: Boolean(rule?.enabled) && platformPolicy.sendMode === "auto_send",
         aiClassifier,
         aiEnabled,
-        geminiModel
+        geminiModel,
+        conversationContext,
+        fewShotExamples,
+        playbook
       });
       const humanActionRequired = requiresHumanAction(pipeline);
       const workflowPersistencePayload = buildWorkflowPersistencePayload(pipeline.workflowOutcome);

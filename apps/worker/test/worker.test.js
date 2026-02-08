@@ -15,7 +15,9 @@ function createMemoryAdapter({
   ruleByIntent,
   templatesByName,
   slotOptionsByUnit = {},
-  assignedSlotOptionsByUnitAndAgent = null
+  assignedSlotOptionsByUnitAndAgent = null,
+  conversationContextByConversationId = {},
+  fewShotExamplesByPlatformAccountId = {}
 }) {
   const processed = [];
   const outbound = [];
@@ -40,6 +42,15 @@ function createMemoryAdapter({
       async fetchSlotOptions(unitId) {
         slotOptionCalls.push({ unitId });
         return slotOptionsByUnit[unitId] || [];
+      },
+      async fetchConversationRecentMessages({ conversationId, limit = 12 } = {}) {
+        const rows = conversationId ? conversationContextByConversationId[conversationId] || [] : [];
+        return rows.slice(-Math.max(1, Number(limit || 12)));
+      },
+      async fetchFewShotExamples({ platformAccountId, limit = 3, excludeConversationId = null } = {}) {
+        const rows = platformAccountId ? fewShotExamplesByPlatformAccountId[platformAccountId] || [] : [];
+        const filtered = excludeConversationId ? rows.filter((row) => row.conversationId !== excludeConversationId) : rows;
+        return filtered.slice(0, Math.max(1, Number(limit || 3)));
       },
       async findRule({ intent, fallbackIntent }) {
         return ruleByIntent[intent] || ruleByIntent[fallbackIntent] || null;
@@ -254,12 +265,100 @@ test("gemini env toggles set provider enablement and model", async () => {
   assert.equal(calls[0].geminiModel, "gemini-2.0-flash");
 });
 
+test("gemini worker passes conversation context + few-shot examples to classifier", async () => {
+  const previousProvider = process.env.AI_DECISION_PROVIDER;
+  const previousAllowlist = process.env.WORKER_AUTOREPLY_ALLOW_LEAD_NAMES;
+  process.env.AI_DECISION_PROVIDER = "gemini";
+  delete process.env.WORKER_AUTOREPLY_ALLOW_LEAD_NAMES;
+
+  const now = new Date("2026-02-08T12:00:00.000Z");
+  const calls = [];
+  const aiClassifier = async (payload) => {
+    calls.push(payload);
+    return null;
+  };
+
+  try {
+    const fixture = createMemoryAdapter({
+      pendingMessages: [
+        {
+          id: "m-context-1",
+          conversationId: "c-context-1",
+          body: "Is this still available?",
+          metadata: {},
+          sentAt: now.toISOString(),
+          platformAccountId: "p-context-1",
+          platform: "spareroom",
+          platformCredentials: {},
+          assignedAgentId: null,
+          externalThreadId: "t-1",
+          leadName: "Emin Uckan",
+          unitId: "u-1",
+          propertyName: "Private Room",
+          unitNumber: "1A",
+          hasRecentOutbound: true
+        }
+      ],
+      ruleByIntent: {
+        availability_question: { enabled: false, actionConfig: { template: "dev" } },
+        tour_request: { enabled: false, actionConfig: { template: "dev" } }
+      },
+      templatesByName: {
+        dev: { id: "tmpl-dev", name: "dev", body: "Hi {{lead_name}}\\n{{slot_options_list}}" }
+      },
+      slotOptionsByUnit: {
+        "u-1": []
+      },
+      conversationContextByConversationId: {
+        "c-context-1": [
+          { direction: "inbound", body: "hello", sentAt: "2026-02-08T11:50:00.000Z" },
+          { direction: "outbound", body: "hi", sentAt: "2026-02-08T11:51:00.000Z" }
+        ]
+      },
+      fewShotExamplesByPlatformAccountId: {
+        "p-context-1": [
+          {
+            conversationId: "c-other",
+            inboundBody: "Can I tour this week?",
+            outboundBody: "Yes its available. Next showings: ..."
+          }
+        ]
+      }
+    });
+
+    await processPendingMessages({
+      adapter: fixture.adapter,
+      logger: console,
+      limit: 1,
+      now,
+      aiClassifier
+    });
+  } finally {
+    if (previousProvider === undefined) {
+      delete process.env.AI_DECISION_PROVIDER;
+    } else {
+      process.env.AI_DECISION_PROVIDER = previousProvider;
+    }
+    if (previousAllowlist === undefined) {
+      delete process.env.WORKER_AUTOREPLY_ALLOW_LEAD_NAMES;
+    } else {
+      process.env.WORKER_AUTOREPLY_ALLOW_LEAD_NAMES = previousAllowlist;
+    }
+  }
+
+  assert.equal(calls.length, 1);
+  assert.equal(Array.isArray(calls[0].conversationContext), true);
+  assert.equal(calls[0].conversationContext.length, 2);
+  assert.equal(Array.isArray(calls[0].fewShotExamples), true);
+  assert.equal(calls[0].fewShotExamples.length, 1);
+});
+
 test("generation failure falls back to heuristic policy path", async () => {
   const result = await runReplyPipelineWithAI({
     inboundBody: "Can I tour this week?",
     hasRecentOutbound: false,
     fallbackIntent: "tour_request",
-    rule: { enabled: false },
+    rule: { enabled: true },
     template: {
       body: "Tours for {{unit_number}}: {{slot_options}}"
     },
@@ -267,6 +366,7 @@ test("generation failure falls back to heuristic policy path", async () => {
       unit_number: "4B",
       slot_options: "2026-02-10T17:00:00.000Z - 2026-02-10T17:30:00.000Z UTC"
     },
+    autoSendEnabled: false,
     aiClassifier: async () => {
       throw new Error("gemini unavailable");
     }
@@ -309,12 +409,13 @@ test("R13 slot-aware flow drafts when slots are present", async () => {
     inboundBody: "Can I schedule a showing tomorrow?",
     hasRecentOutbound: false,
     fallbackIntent: "tour_request",
-    rule: { enabled: false },
+    rule: { enabled: true },
     template: null,
     templateContext: {
       unit: "Atlas Apartments 4B",
       slot_options: slotWindow
     },
+    autoSendEnabled: false,
     aiClassifier: async () => ({
       intent: "tour_request",
       ambiguity: false,
@@ -389,8 +490,8 @@ test("R3: worker slot context uses assigned-agent candidate source", async () =>
   assert.equal(fixture.assignedSlotOptionCalls.length, 1);
   assert.deepEqual(fixture.assignedSlotOptionCalls[0], { unitId: "u1", assignedAgentId: "a1" });
   assert.equal(fixture.slotOptionCalls.length, 0);
-  assert.match(fixture.outbound[0].body, /2026-02-10T18:00:00.000Z/);
-  assert.doesNotMatch(fixture.outbound[0].body, /2026-02-10T17:00:00.000Z/);
+  assert.match(fixture.outbound[0].body, /Feb 10.*6:00 PM - 6:30 PM UTC/);
+  assert.doesNotMatch(fixture.outbound[0].body, /5:00 PM/);
 });
 
 test("R9: no candidate slots preserves escalation path", async () => {
@@ -1886,6 +1987,12 @@ test("auto-send disabled drafts policy-eligible tour replies", async () => {
         body: "Can I schedule a showing this week?",
         metadata: {},
         platformAccountId: "p7",
+        platformPolicy: {
+          isActive: true,
+          sendMode: "draft_only",
+          sendModeOverride: "draft_only",
+          globalDefaultSendMode: "draft_only"
+        },
         assignedAgentId: "a1",
         leadName: "Jamie",
         unitId: "u1",
@@ -1897,7 +2004,7 @@ test("auto-send disabled drafts policy-eligible tour replies", async () => {
     ruleByIntent: {
       tour_request: {
         id: "r1",
-        enabled: false,
+        enabled: true,
         actionConfig: { template: "tour_invite_v1" }
       }
     },

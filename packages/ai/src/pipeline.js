@@ -95,26 +95,108 @@ function createDefaultTourReply(templateContext = {}) {
   return `Thanks for your interest in ${unit}. Here are the next available showing windows: ${slotOptions}`;
 }
 
-async function classifyWithGemini({ inboundBody, templateContext = {}, geminiModel = "gemini-2.5-flash", enabled = false }) {
+function truncateForPrompt(value, maxChars = 1200) {
+  const text = String(value || "");
+  if (text.length <= maxChars) {
+    return text;
+  }
+  return `${text.slice(0, maxChars)}...`;
+}
+
+function redactPromptPII(value) {
+  let text = String(value || "");
+
+  // Emails
+  text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]");
+
+  // Phone-like numbers (US-ish + international-ish). This will still miss some formats but
+  // the goal is to avoid leaking obvious PII into model prompts.
+  text = text.replace(
+    /(\+?\d{1,3}[\s.-]?)?(?:\(?\d{2,4}\)?[\s.-]?)?\d{3,4}[\s.-]?\d{4}\b/g,
+    "[REDACTED_PHONE]"
+  );
+
+  // Long numeric sequences (often phone numbers / IDs)
+  text = text.replace(/\b\d{9,}\b/g, "[REDACTED_NUMBER]");
+
+  return text;
+}
+
+function formatConversationContext(conversationContext = []) {
+  if (!Array.isArray(conversationContext) || conversationContext.length === 0) {
+    return "";
+  }
+
+  const lines = conversationContext
+    .filter((msg) => msg && typeof msg === "object")
+    .map((msg) => {
+      const direction = msg.direction === "outbound" ? "agent" : "lead";
+      const body = truncateForPrompt(redactPromptPII(msg.body || ""), 800);
+      return `- ${direction}: ${body}`;
+    });
+
+  return lines.join("\n");
+}
+
+function formatFewShotExamples(fewShotExamples = []) {
+  if (!Array.isArray(fewShotExamples) || fewShotExamples.length === 0) {
+    return "";
+  }
+
+  return fewShotExamples
+    .filter((ex) => ex && typeof ex === "object")
+    .map((ex, index) => {
+      const inbound = truncateForPrompt(redactPromptPII(ex.inboundBody || ""), 800);
+      const outbound = truncateForPrompt(redactPromptPII(ex.outboundBody || ""), 800);
+      return [`Example ${index + 1}:`, `Inbound: ${inbound}`, `Our reply: ${outbound}`].join("\n");
+    })
+    .join("\n\n");
+}
+
+async function classifyWithGemini({
+  inboundBody,
+  templateContext = {},
+  geminiModel = "gemini-2.5-flash",
+  enabled = false,
+  conversationContext = [],
+  fewShotExamples = [],
+  playbook = ""
+}) {
   if (!enabled) {
     return null;
   }
 
   try {
+    const inboundForPrompt = truncateForPrompt(redactPromptPII(inboundBody || ""), 2000);
+    const unitForPrompt = truncateForPrompt(redactPromptPII(templateContext.unit || ""), 400);
+    const slotOptionsForPrompt = truncateForPrompt(redactPromptPII(templateContext.slot_options || ""), 2000);
+    const contextBlock = formatConversationContext(conversationContext);
+    const examplesBlock = formatFewShotExamples(fewShotExamples);
+    const playbookBlock = typeof playbook === "string" && playbook.trim()
+      ? truncateForPrompt(playbook.trim(), 4000)
+      : "";
+
+    const promptParts = [
+      "You are an assistant for a leasing inbox automation system.",
+      "Return a JSON object that matches the schema exactly.",
+      "Goal: classify the inbound message intent and recommend a safe workflow outcome for operations.",
+      "If you are uncertain, set ambiguity=true and workflowOutcome=human_required.",
+      "Allowed intents: tour_request, pricing_question, availability_question, unsubscribe, unknown.",
+      "Choose workflowOutcome from: not_interested, wants_reschedule, no_reply, showing_confirmed, general_question, human_required.",
+      "Provide confidence between 0 and 1 and riskLevel from low, medium, high, critical.",
+      "For tour_request or availability_question you may provide a concise suggestedReply that references slot options if present.",
+      playbookBlock ? `Playbook (style guidance):\n${playbookBlock}` : null,
+      examplesBlock ? `Past reply examples (style guidance only):\n${examplesBlock}` : null,
+      contextBlock ? `Conversation context (oldest -> newest):\n${contextBlock}` : null,
+      `Inbound message:\n${inboundForPrompt}`,
+      `Unit context:\n${unitForPrompt}`,
+      `Slot options (if any):\n${slotOptionsForPrompt}`
+    ].filter(Boolean);
+
     const result = await generateObject({
       model: google(geminiModel),
       schema: decisionSchema,
-      prompt: [
-        "Classify leasing inbound intent for operations policy.",
-        "Allowed intents: tour_request, pricing_question, availability_question, unsubscribe, unknown.",
-        "Choose workflowOutcome from: not_interested, wants_reschedule, no_reply, showing_confirmed, general_question, human_required.",
-        "Provide confidence between 0 and 1 and riskLevel from low, medium, high, critical.",
-        "Mark ambiguity=true when message is unclear or risky to auto-handle.",
-        "For tour_request you may provide a concise suggestedReply that references slot options if present.",
-        `Inbound message: ${String(inboundBody || "")}`,
-        `Unit context: ${String(templateContext.unit || "")}`,
-        `Slot options: ${String(templateContext.slot_options || "")}`
-      ].join("\n")
+      prompt: promptParts.join("\n\n")
     });
 
     return result.object;
@@ -308,7 +390,10 @@ export async function runReplyPipelineWithAI(input) {
       inboundBody: input.inboundBody,
       templateContext: input.templateContext || {},
       geminiModel,
-      enabled: aiEnabled
+      enabled: aiEnabled,
+      conversationContext: input.conversationContext || [],
+      fewShotExamples: input.fewShotExamples || [],
+      playbook: input.playbook || ""
     });
   } catch {
     aiDecision = null;
