@@ -33,13 +33,70 @@ function envPrefixForPlatform(platform) {
   }
 }
 
-async function waitForEnter(prompt) {
-  if (process.stdin.isTTY) {
-    process.stdout.write(prompt);
-    await new Promise((resolve) => process.stdin.once("data", resolve));
-    return true;
+function waitForEnterPrompt(prompt) {
+  if (!process.stdin.isTTY) {
+    return { promise: Promise.resolve(false), cleanup() {} };
   }
-  return false;
+
+  process.stdout.write(prompt);
+  let handler;
+  const promise = new Promise((resolve) => {
+    handler = () => resolve(true);
+    process.stdin.once("data", handler);
+  });
+
+  return {
+    promise,
+    cleanup() {
+      if (handler) {
+        process.stdin.removeListener("data", handler);
+      }
+    }
+  };
+}
+
+async function isAuthRequired(page, adapter) {
+  // Fast path: explicit auth URL patterns.
+  let url = "";
+  try {
+    url = typeof page?.url === "function" ? page.url() : "";
+  } catch {
+    url = "";
+  }
+  for (const pattern of adapter.authRequiredUrlPatterns || []) {
+    if (typeof pattern === "string" && pattern.length > 0 && url.includes(pattern)) {
+      return true;
+    }
+  }
+
+  const markers = adapter.authRequiredText || [];
+  if (markers.length === 0) {
+    return false;
+  }
+
+  let text = "";
+  try {
+    text = await page.evaluate(() => (document.body?.innerText || ""));
+  } catch {
+    text = "";
+  }
+  const normalized = String(text || "").toLowerCase();
+  return markers.some((marker) => typeof marker === "string" && marker.length > 0 && normalized.includes(marker.toLowerCase()));
+}
+
+async function prepareSpareRoomRememberMe(page, adapter) {
+  const loginUrl = new URL("/roommate/logon.pl", adapter.baseUrl).toString();
+  await page.goto(loginUrl, { waitUntil: "domcontentloaded" });
+
+  // SpareRoom keeps the "remember_me" flag in a hidden input that's toggled by the checkbox.
+  // Some environments show consent overlays; force the check to avoid pointer interception.
+  try {
+    await page.check("#remember_me_checkbox", { force: true, timeout: 5_000 });
+    console.log("[rpa-login] SpareRoom: remember-me enabled");
+  } catch {
+    // Best-effort; user can still check manually.
+    console.warn("[rpa-login] SpareRoom: could not auto-enable remember-me; please tick it manually");
+  }
 }
 
 async function main() {
@@ -99,6 +156,12 @@ async function main() {
     const page = context.pages().length > 0 ? context.pages()[0] : await context.newPage();
     await page.goto(adapter.inboxUrl, { waitUntil: "domcontentloaded" });
 
+    if (await isAuthRequired(page, adapter)) {
+      if (platform === "spareroom") {
+        await prepareSpareRoomRememberMe(page, adapter);
+      }
+    }
+
     console.log("");
     console.log(`[rpa-login] platform=${platform}`);
     console.log(`[rpa-login] inboxUrl=${adapter.inboxUrl}`);
@@ -111,9 +174,35 @@ async function main() {
     console.log("After login, confirm the inbox loads (no 'log in or register' gate).");
     console.log("");
 
-    await waitForEnter("Press Enter here once login is complete to close the browser...\n");
+    let interrupted = false;
+    let resolveSigint;
+    const sigintPromise = new Promise((resolve) => {
+      resolveSigint = resolve;
+    });
+
+    const handleSigint = () => {
+      interrupted = true;
+      process.stdout.write("\n[rpa-login] received SIGINT, closing browser...\n");
+      resolveSigint?.();
+    };
+
+    process.once("SIGINT", handleSigint);
+    const enter = waitForEnterPrompt("Press Enter here once login is complete to close the browser...\n");
+    await Promise.race([enter.promise, sigintPromise]);
+    process.removeListener("SIGINT", handleSigint);
+    enter.cleanup();
+
+    if (!interrupted) {
+      await page.goto(adapter.inboxUrl, { waitUntil: "domcontentloaded" });
+      if (await isAuthRequired(page, adapter)) {
+        console.warn("[rpa-login] warning: inbox still looks logged out; worker will report SESSION_EXPIRED");
+      } else {
+        console.log("[rpa-login] inbox looks logged in; profile should work for worker ingest");
+      }
+    }
   } finally {
-    await context.close();
+    // Ensure profile data flushes even when the user hits Ctrl-C.
+    await context.close().catch(() => {});
   }
 }
 
