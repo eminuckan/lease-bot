@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 
 import { createClient } from "../../../packages/db/src/index.js";
 import { createPostgresQueueAdapter } from "../../../packages/integrations/src/index.js";
+import { ensureRequiredPlatformAccounts } from "../../../packages/integrations/src/bootstrap-platform-accounts.js";
 
 import { processPendingMessagesWithAi } from "./decision-pipeline.js";
 
@@ -57,6 +58,16 @@ export async function processPendingMessages(params) {
 export async function startWorker() {
   const client = createClient();
   await client.connect();
+
+  if (process.env.LEASE_BOT_BOOTSTRAP_PLATFORM_ACCOUNTS !== "0") {
+    try {
+      await ensureRequiredPlatformAccounts(client, { env: process.env, logger: console });
+    } catch (error) {
+      console.warn("[bootstrap] failed ensuring required platform accounts", {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
 
   console.log(`worker started (${task}) interval=${pollIntervalMs}ms batch=${queueBatchSize}`);
 

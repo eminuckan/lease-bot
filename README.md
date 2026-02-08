@@ -59,6 +59,9 @@ npm run migrate -w @lease-bot/db
 # npm run seed -w @lease-bot/db
 ```
 
+On startup, the API/worker will bootstrap the 5 required `PlatformAccounts` in the DB if they are missing.
+You can disable this with `LEASE_BOT_BOOTSTRAP_PLATFORM_ACCOUNTS=0`.
+
 Run apps in separate terminals:
 
 ```bash

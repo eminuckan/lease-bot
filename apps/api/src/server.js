@@ -5,6 +5,7 @@ import { Pool } from "pg";
 
 import { getAuth, hasAnyRole, normalizeRole, roles } from "@lease-bot/auth";
 import { createConnectorRegistry } from "../../../packages/integrations/src/index.js";
+import { ensureRequiredPlatformAccounts } from "../../../packages/integrations/src/bootstrap-platform-accounts.js";
 import { LocalTimeValidationError, formatInTimezone, zonedTimeToUtc } from "./availability-timezone.js";
 import {
   extractVariablesFromBody,
@@ -4910,8 +4911,19 @@ const server = http.createServer(async (req, res) => {
 });
 
 if (process.env.NODE_ENV !== "test") {
-  server.listen(port, host, () => {
-    console.log(`api listening on http://${host}:${port}`);
+  const bootstrapEnabled = process.env.LEASE_BOT_BOOTSTRAP_PLATFORM_ACCOUNTS !== "0";
+  const bootstrap = bootstrapEnabled
+    ? ensureRequiredPlatformAccounts(pool, { env: process.env, logger: console }).catch((error) => {
+        console.warn("[bootstrap] failed ensuring required platform accounts", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      })
+    : Promise.resolve();
+
+  bootstrap.finally(() => {
+    server.listen(port, host, () => {
+      console.log(`api listening on http://${host}:${port}`);
+    });
   });
 }
 
