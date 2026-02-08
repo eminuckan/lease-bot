@@ -487,6 +487,43 @@ export function createPostgresQueueAdapter(client, options = {}) {
     return Math.round(dollars * 100);
   }
 
+  function normalizeUnitIdentityPart(value) {
+    if (typeof value !== "string") {
+      return "";
+    }
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .replace(/\s+/g, " ");
+  }
+
+  function stableHashBase36(value) {
+    let hash = 2166136261;
+    const input = typeof value === "string" ? value : "";
+    for (let index = 0; index < input.length; index += 1) {
+      hash ^= input.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+  }
+
+  function buildUnitSyncKey(title, location) {
+    const normalizedTitle = normalizeUnitIdentityPart(title);
+    if (!normalizedTitle) {
+      return null;
+    }
+    const normalizedLocation = normalizeUnitIdentityPart(location);
+    return `listing-sync:${normalizedTitle}|${normalizedLocation || "na"}`;
+  }
+
+  function buildGeneratedUnitNumber(unitSyncKey, listingExternalId) {
+    if (unitSyncKey) {
+      return `#u${stableHashBase36(unitSyncKey).slice(0, 8)}`;
+    }
+    return `#${listingExternalId}`;
+  }
+
   return {
     async fetchPendingMessages(request = {}) {
       const normalizedRequest = typeof request === "number" ? { limit: request } : request;
@@ -1442,6 +1479,8 @@ export function createPostgresQueueAdapter(client, options = {}) {
             const priceText = typeof rawListing?.priceText === "string" ? rawListing.priceText.trim() : "";
             const status = rawListing?.status === "active" ? "active" : "inactive";
             const currencyCode = "USD";
+            const unitSyncKey = buildUnitSyncKey(title, location);
+            const generatedUnitNumber = buildGeneratedUnitNumber(unitSyncKey, listingExternalId);
 
             const lookup = await client.query(
               `SELECT id, unit_id, rent_cents
@@ -1455,24 +1494,37 @@ export function createPostgresQueueAdapter(client, options = {}) {
             let unitId = lookup.rows?.[0]?.unit_id || null;
             const existingRentCents = lookup.rows?.[0]?.rent_cents ?? null;
 
+            if (!unitId && unitSyncKey) {
+              const existingUnit = await client.query(
+                `SELECT id
+                   FROM "Units"
+                  WHERE external_id = $1
+                  LIMIT 1`,
+                [unitSyncKey]
+              );
+              unitId = existingUnit.rows?.[0]?.id || null;
+            }
+
             if (unitId) {
               await client.query(
                 `UPDATE "Units"
                     SET property_name = COALESCE(NULLIF($2, ''), property_name),
                         is_active = $3::boolean,
+                        external_id = COALESCE(external_id, NULLIF($4, '')),
                         updated_at = NOW()
                   WHERE id = $1::uuid`,
-                [unitId, title, status === "active"]
+                [unitId, title, status === "active", unitSyncKey]
               );
             } else {
               const unitInsert = await client.query(
-                `INSERT INTO "Units" (property_name, unit_number, is_active)
-                 VALUES ($1, $2, $3::boolean)
+                `INSERT INTO "Units" (external_id, property_name, unit_number, is_active)
+                 VALUES ($1, $2, $3, $4::boolean)
                  ON CONFLICT (property_name, unit_number) DO UPDATE
                  SET is_active = EXCLUDED.is_active,
+                     external_id = COALESCE("Units".external_id, EXCLUDED.external_id),
                      updated_at = NOW()
                  RETURNING id`,
-                [title || `Listing ${listingExternalId}`, `#${listingExternalId}`, status === "active"]
+                [unitSyncKey, title || `Listing ${listingExternalId}`, generatedUnitNumber, status === "active"]
               );
               unitId = unitInsert.rows?.[0]?.id || null;
             }

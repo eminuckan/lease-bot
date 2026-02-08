@@ -283,10 +283,16 @@ export function LeaseBotProvider({ children }) {
       setListings(listingsResponse.items || []);
 
       const fallbackUnitId = selectedUnitId || unitsResponse.items?.[0]?.id || "";
+      const fallbackListingId = listingsResponse.items?.[0]?.id || "";
       setSelectedUnitId((current) => current || fallbackUnitId);
       setAssignmentForm((current) => ({
         ...current,
-        unitId: current.unitId || fallbackUnitId
+        listingId: current.listingId || fallbackListingId,
+        unitId:
+          current.unitId
+          || listingsResponse.items?.find((item) => item.id === current.listingId)?.unitId
+          || listingsResponse.items?.find((item) => item.id === fallbackListingId)?.unitId
+          || fallbackUnitId
       }));
 
       await Promise.all([
@@ -371,10 +377,96 @@ export function LeaseBotProvider({ children }) {
     }
   }
 
-  async function saveAssignment(event) {
-    event.preventDefault();
+  async function updateUnitAssignment(unitId, agentId, options = {}) {
+    const { refresh = true, suppressToast = false, successLabel = "Unit assignment updated" } = options;
+    if (!unitId) {
+      return { ok: false, error: "unitId_required" };
+    }
+
     setApiError("");
     setMessage("");
+
+    try {
+      await request(`/api/units/${unitId}/assignment`, {
+        method: "PUT",
+        body: JSON.stringify({
+          agentId: agentId || null
+        })
+      });
+
+      setMessage(successLabel);
+      if (!suppressToast) {
+        toast.success(successLabel);
+      }
+      if (refresh) {
+        await refreshData();
+      }
+      return { ok: true };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setApiError(errorMessage);
+      if (!suppressToast) {
+        toast.error("Assignment update failed", { description: errorMessage });
+      }
+      return { ok: false, error: errorMessage };
+    }
+  }
+
+  async function bulkUpdateUnitAssignments(unitIds, agentId, options = {}) {
+    const uniqueUnitIds = Array.from(new Set((Array.isArray(unitIds) ? unitIds : []).filter(Boolean)));
+    if (uniqueUnitIds.length === 0) {
+      return { updated: 0, failed: 0, failures: [] };
+    }
+
+    const { successLabel = "Bulk assignment updated" } = options;
+    setApiError("");
+    setMessage("");
+
+    const failures = [];
+    let updated = 0;
+
+    for (const unitId of uniqueUnitIds) {
+      try {
+        await request(`/api/units/${unitId}/assignment`, {
+          method: "PUT",
+          body: JSON.stringify({
+            agentId: agentId || null
+          })
+        });
+        updated += 1;
+      } catch (error) {
+        failures.push({
+          unitId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    await refreshData();
+
+    if (updated > 0) {
+      const summary = failures.length > 0
+        ? `${successLabel}: ${updated} updated, ${failures.length} failed`
+        : `${successLabel}: ${updated} updated`;
+      setMessage(summary);
+      toast.success(summary);
+    }
+
+    if (failures.length > 0) {
+      const errorSummary = failures[0]?.error || "Bulk assignment failed for some rows";
+      setApiError(errorSummary);
+      toast.error("Bulk assignment partially failed", { description: errorSummary });
+    }
+
+    return {
+      updated,
+      failed: failures.length,
+      failures
+    };
+  }
+
+  async function saveAssignment(event) {
+    event.preventDefault();
 
     if (!assignmentForm.unitId) {
       const errorMessage = "Select a listing first";
@@ -383,21 +475,11 @@ export function LeaseBotProvider({ children }) {
       return;
     }
 
-    try {
-      await request(`/api/units/${assignmentForm.unitId}/assignment`, {
-        method: "PUT",
-        body: JSON.stringify({
-          agentId: assignmentForm.agentId || null,
-          listingId: assignmentForm.listingId || null
-        })
-      });
-      setMessage("Unit assignment updated");
-      toast.success("Unit assignment updated");
-      await refreshData();
-    } catch (error) {
-      setApiError(error.message);
-      toast.error("Assignment update failed", { description: error.message });
-    }
+    await updateUnitAssignment(assignmentForm.unitId, assignmentForm.agentId || null, {
+      refresh: true,
+      suppressToast: false,
+      successLabel: "Listing assignment updated"
+    });
   }
 
   async function createDraft(event) {
@@ -582,6 +664,8 @@ export function LeaseBotProvider({ children }) {
     signUpEmail,
     signOut,
     saveAssignment,
+    updateUnitAssignment,
+    bulkUpdateUnitAssignments,
     createDraft,
     updateConversationWorkflow,
     approveMessage,
