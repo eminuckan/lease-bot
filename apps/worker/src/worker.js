@@ -1,7 +1,11 @@
 import { fileURLToPath } from "node:url";
 
 import { createClient } from "../../../packages/db/src/index.js";
-import { createPostgresQueueAdapter } from "../../../packages/integrations/src/index.js";
+import {
+  createConnectorRegistry,
+  createPostgresQueueAdapter,
+  createRpaAlertDispatcher
+} from "../../../packages/integrations/src/index.js";
 import { ensureDevTestData } from "../../../packages/integrations/src/bootstrap-dev-test-data.js";
 import { ensureRequiredPlatformAccounts } from "../../../packages/integrations/src/bootstrap-platform-accounts.js";
 
@@ -59,6 +63,19 @@ export async function processPendingMessages(params) {
 export async function startWorker() {
   const client = createClient();
   await client.connect();
+  const rpaAlertDispatcher = createRpaAlertDispatcher({
+    env: process.env,
+    logger: console,
+    source: "worker"
+  });
+  const connectorRegistry = createConnectorRegistry({
+    observabilityHook(event) {
+      rpaAlertDispatcher.handleEvent(event);
+    }
+  });
+  const adapter = createPostgresQueueAdapter(client, {
+    connectorRegistry
+  });
 
   if (process.env.LEASE_BOT_BOOTSTRAP_PLATFORM_ACCOUNTS !== "0") {
     try {
@@ -89,7 +106,7 @@ export async function startWorker() {
     }
     running = true;
     try {
-      await runWorkerCycle(client, console);
+      await runWorkerCycle(client, console, { adapter });
     } catch (error) {
       console.error("[worker] cycle failed", error);
     } finally {

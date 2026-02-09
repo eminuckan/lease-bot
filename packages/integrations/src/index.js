@@ -1,6 +1,7 @@
 import { runReplyPipeline } from "../../ai/src/index.js";
 import { createConnectorRegistry, listSupportedPlatforms, resolvePlatformCredentials } from "./connectors.js";
 import { createPlaywrightRpaRunner, createRpaRunner } from "./rpa-runner.js";
+import { createRpaAlertDispatcher } from "./rpa-alerts.js";
 import { createPlatformAdapterRegistry, REQUIRED_RPA_PLATFORMS } from "./platform-adapters.js";
 import { calculateBackoffDelay, isRetryableError, withRetry } from "./retry.js";
 
@@ -1884,6 +1885,7 @@ export {
   resolvePlatformCredentials,
   createPlaywrightRpaRunner,
   createRpaRunner,
+  createRpaAlertDispatcher,
   createPlatformAdapterRegistry,
   REQUIRED_RPA_PLATFORMS,
   withRetry,

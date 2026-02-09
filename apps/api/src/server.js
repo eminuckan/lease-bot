@@ -5,7 +5,11 @@ import { Pool } from "pg";
 import nodemailer from "nodemailer";
 
 import { getAuth, hasAnyRole, normalizeRole, roles } from "@lease-bot/auth";
-import { createConnectorRegistry, createPostgresQueueAdapter } from "../../../packages/integrations/src/index.js";
+import {
+  createConnectorRegistry,
+  createPostgresQueueAdapter,
+  createRpaAlertDispatcher
+} from "../../../packages/integrations/src/index.js";
 import { ensureDevTestData } from "../../../packages/integrations/src/bootstrap-dev-test-data.js";
 import { ensureRequiredPlatformAccounts } from "../../../packages/integrations/src/bootstrap-platform-accounts.js";
 import { LocalTimeValidationError, formatInTimezone, zonedTimeToUtc } from "./availability-timezone.js";
@@ -30,7 +34,17 @@ if (!databaseUrl) {
 }
 
 const pool = new Pool({ connectionString: databaseUrl });
-const connectorRegistry = createConnectorRegistry();
+const rpaAlertDispatcher = createRpaAlertDispatcher({
+  env: process.env,
+  logger: console,
+  source: "api"
+});
+
+const connectorRegistry = createConnectorRegistry({
+  observabilityHook(event) {
+    rpaAlertDispatcher.handleEvent(event);
+  }
+});
 
 const allowedOrigins = new Set(
   (process.env.BETTER_AUTH_TRUSTED_ORIGINS || process.env.WEB_BASE_URL || "http://localhost:5173")
