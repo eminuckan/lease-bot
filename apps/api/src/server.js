@@ -2441,13 +2441,7 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
   }
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
-  const orderByClause = platformFilter === "spareroom"
-    ? `ORDER BY c.external_inbox_sort_rank ASC NULLS LAST, c.last_message_at DESC NULLS LAST, c.updated_at DESC`
-    : platformFilter
-    ? `ORDER BY c.last_message_at DESC NULLS LAST, c.updated_at DESC`
-    : `ORDER BY CASE WHEN pa.platform = 'spareroom' THEN c.external_inbox_sort_rank END ASC NULLS LAST,
-              c.last_message_at DESC NULLS LAST,
-              c.updated_at DESC`;
+  const orderByClause = `ORDER BY c.last_message_at DESC NULLS LAST, c.updated_at DESC`;
   const result = await client.query(
     `SELECT c.id,
             c.platform_account_id,

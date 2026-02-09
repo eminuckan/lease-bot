@@ -7,6 +7,8 @@ const inboxPollIntervalMs = Number(import.meta.env.VITE_INBOX_POLL_INTERVAL_MS |
 const inboxCacheTtlMs = Number(import.meta.env.VITE_INBOX_CACHE_TTL_MS || 10000);
 const conversationCacheTtlMs = Number(import.meta.env.VITE_CONVERSATION_CACHE_TTL_MS || 12000);
 const conversationThreadSyncRetryMs = Number(import.meta.env.VITE_CONVERSATION_THREAD_SYNC_RETRY_MS || 60000);
+const conversationPrefetchCount = Number(import.meta.env.VITE_CONVERSATION_PREFETCH_COUNT || 6);
+const conversationPrefetchTtlMs = Number(import.meta.env.VITE_CONVERSATION_PREFETCH_TTL_MS || 45000);
 const listingsCacheTtlMs = Number(import.meta.env.VITE_LISTINGS_CACHE_TTL_MS || 180000);
 const listingsPollIntervalMs = Number(import.meta.env.VITE_LISTINGS_POLL_INTERVAL_MS || 180000);
 
@@ -98,6 +100,8 @@ export function LeaseBotProvider({ children }) {
   const conversationRequestSeq = useRef(0);
   const inboxCacheRef = useRef(new Map());
   const conversationCacheRef = useRef(new Map());
+  const conversationPrefetchInFlightRef = useRef(new Set());
+  const conversationSyncInFlightRef = useRef(new Set());
   const listingsCacheRef = useRef({ items: [], fetchedAt: 0 });
 
   const isAdmin = user?.role === "admin";
@@ -160,6 +164,159 @@ export function LeaseBotProvider({ children }) {
     });
   }
 
+  function shouldAutoSyncConversationThread(conversationId, detail) {
+    const platform = detail?.conversation?.platform;
+    if (platform !== "spareroom") {
+      return false;
+    }
+
+    const messages = Array.isArray(detail?.messages) ? detail.messages : [];
+    const threadMessageCount = Number(detail?.conversation?.threadMessageCount);
+    const threadMessages = messages.filter((item) => item?.metadata?.sentAtSource === "platform_thread");
+    const syncState = syncedConversations[conversationId];
+    const nowMs = Date.now();
+    const hasKnownThreadGap = Number.isFinite(threadMessageCount) && threadMessageCount > threadMessages.length;
+    const hasNoThreadHistory = threadMessages.length === 0;
+    const canRetrySync = !syncState?.nextRetryAt || nowMs >= syncState.nextRetryAt;
+
+    return !syncState?.inFlight && canRetrySync && (hasNoThreadHistory || hasKnownThreadGap);
+  }
+
+  async function runConversationThreadSync(conversationId, requestId = null) {
+    if (!conversationId) {
+      return;
+    }
+
+    if (conversationSyncInFlightRef.current.has(conversationId)) {
+      return;
+    }
+
+    const syncState = syncedConversations[conversationId];
+    if (syncState?.inFlight) {
+      return;
+    }
+    if (syncState?.nextRetryAt && Date.now() < syncState.nextRetryAt) {
+      return;
+    }
+
+    conversationSyncInFlightRef.current.add(conversationId);
+    setSyncedConversations((current) => ({
+      ...current,
+      [conversationId]: {
+        ...(current[conversationId] || {}),
+        inFlight: true
+      }
+    }));
+
+    try {
+      const synced = await request(`/api/inbox/${conversationId}/sync`, { method: "POST" });
+      const syncedAt = Date.now();
+      conversationCacheRef.current.set(conversationId, { detail: synced, fetchedAt: syncedAt });
+
+      const syncedThreadMessageCount = Number(synced?.conversation?.threadMessageCount);
+      const syncedMessages = Array.isArray(synced?.messages) ? synced.messages : [];
+      const syncedThreadMessages = syncedMessages.filter((item) => item?.metadata?.sentAtSource === "platform_thread");
+
+      if (requestId === null || requestId === conversationRequestSeq.current) {
+        setConversationDetail((current) => {
+          if (!current || current?.conversation?.id !== conversationId) {
+            return current;
+          }
+          return synced;
+        });
+      }
+
+      setSyncedConversations((current) => ({
+        ...current,
+        [conversationId]: {
+          inFlight: false,
+          nextRetryAt: null,
+          lastSyncedAt: syncedAt,
+          threadMessageCount: Number.isFinite(syncedThreadMessageCount)
+            ? syncedThreadMessageCount
+            : syncedThreadMessages.length
+        }
+      }));
+
+      await refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, {
+        force: true,
+        background: true
+      });
+    } catch {
+      // Best-effort; keep previous detail/cache and retry later.
+      setSyncedConversations((current) => ({
+        ...current,
+        [conversationId]: {
+          ...(current[conversationId] || {}),
+          inFlight: false,
+          nextRetryAt: Date.now() + conversationThreadSyncRetryMs
+        }
+      }));
+    } finally {
+      conversationSyncInFlightRef.current.delete(conversationId);
+    }
+  }
+
+  async function prefetchConversationDetail(conversationId) {
+    if (!conversationId) {
+      return;
+    }
+
+    if (conversationPrefetchInFlightRef.current.has(conversationId)) {
+      return;
+    }
+
+    const cached = conversationCacheRef.current.get(conversationId);
+    if (cached?.detail && isFresh(cached.fetchedAt, conversationPrefetchTtlMs)) {
+      if (shouldAutoSyncConversationThread(conversationId, cached.detail)) {
+        void runConversationThreadSync(conversationId);
+      }
+      return;
+    }
+
+    conversationPrefetchInFlightRef.current.add(conversationId);
+    try {
+      const result = await request(`/api/inbox/${conversationId}`);
+      const fetchedAt = Date.now();
+      conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
+
+      setConversationDetail((current) => {
+        if (!current || current?.conversation?.id !== conversationId) {
+          return current;
+        }
+        return result;
+      });
+
+      if (shouldAutoSyncConversationThread(conversationId, result)) {
+        void runConversationThreadSync(conversationId);
+      }
+    } catch {
+      // Best-effort prefetch.
+    } finally {
+      conversationPrefetchInFlightRef.current.delete(conversationId);
+    }
+  }
+
+  function prefetchInboxConversations(items, preserveSelection) {
+    const normalizedCount = Number.isFinite(conversationPrefetchCount) ? Math.max(0, Math.trunc(conversationPrefetchCount)) : 0;
+    if (normalizedCount <= 0 || !Array.isArray(items) || items.length === 0) {
+      return;
+    }
+
+    const effectiveSelectedId = preserveSelection && selectedConversationId && items.some((item) => item.id === selectedConversationId)
+      ? selectedConversationId
+      : items[0]?.id || null;
+
+    const candidateIds = items
+      .map((item) => item?.id)
+      .filter((id) => id && id !== effectiveSelectedId)
+      .slice(0, normalizedCount);
+
+    for (const conversationId of candidateIds) {
+      void prefetchConversationDetail(conversationId);
+    }
+  }
+
   async function refreshListingsSnapshot(options = {}) {
     const { force = false, background = false } = options;
     const cached = listingsCacheRef.current;
@@ -216,6 +373,9 @@ export function LeaseBotProvider({ children }) {
     if (!force && cached?.detail && isFresh(cached.fetchedAt, conversationCacheTtlMs)) {
       setConversationLoading(false);
       setConversationRefreshing(false);
+      if (shouldAutoSyncConversationThread(conversationId, cached.detail)) {
+        void runConversationThreadSync(conversationId, requestId);
+      }
       return;
     }
 
@@ -234,65 +394,8 @@ export function LeaseBotProvider({ children }) {
       const fetchedAt = Date.now();
       setConversationDetail(result);
       conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
-
-      const platform = result?.conversation?.platform;
-      const messages = Array.isArray(result?.messages) ? result.messages : [];
-      const threadMessageCount = Number(result?.conversation?.threadMessageCount);
-      const threadMessages = messages.filter((item) => item?.metadata?.sentAtSource === "platform_thread");
-      const syncState = syncedConversations[conversationId];
-      const nowMs = Date.now();
-      const hasKnownThreadGap = Number.isFinite(threadMessageCount) && threadMessageCount > threadMessages.length;
-      const hasNoThreadHistory = threadMessages.length === 0;
-      const canRetrySync = !syncState?.nextRetryAt || nowMs >= syncState.nextRetryAt;
-      const shouldAutoSync = platform === "spareroom"
-        && !syncState?.inFlight
-        && canRetrySync
-        && (hasNoThreadHistory || hasKnownThreadGap);
-      if (shouldAutoSync) {
-        setSyncedConversations((current) => ({
-          ...current,
-          [conversationId]: {
-            ...(current[conversationId] || {}),
-            inFlight: true
-          }
-        }));
-        try {
-          const synced = await request(`/api/inbox/${conversationId}/sync`, { method: "POST" });
-          if (requestId !== conversationRequestSeq.current) {
-            return;
-          }
-          const syncedAt = Date.now();
-          setConversationDetail(synced);
-          conversationCacheRef.current.set(conversationId, { detail: synced, fetchedAt: syncedAt });
-          const syncedThreadMessageCount = Number(synced?.conversation?.threadMessageCount);
-          const syncedMessages = Array.isArray(synced?.messages) ? synced.messages : [];
-          const syncedThreadMessages = syncedMessages.filter((item) => item?.metadata?.sentAtSource === "platform_thread");
-          setSyncedConversations((current) => ({
-            ...current,
-            [conversationId]: {
-              inFlight: false,
-              nextRetryAt: null,
-              lastSyncedAt: syncedAt,
-              threadMessageCount: Number.isFinite(syncedThreadMessageCount)
-                ? syncedThreadMessageCount
-                : syncedThreadMessages.length
-            }
-          }));
-          await refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, {
-            force: true,
-            background: true
-          });
-        } catch {
-          // Best-effort; keep the previously fetched detail if sync fails and retry later.
-          setSyncedConversations((current) => ({
-            ...current,
-            [conversationId]: {
-              ...(current[conversationId] || {}),
-              inFlight: false,
-              nextRetryAt: Date.now() + conversationThreadSyncRetryMs
-            }
-          }));
-        }
+      if (shouldAutoSyncConversationThread(conversationId, result)) {
+        void runConversationThreadSync(conversationId, requestId);
       }
     } catch (error) {
       if (requestId === conversationRequestSeq.current) {
@@ -324,6 +427,7 @@ export function LeaseBotProvider({ children }) {
     if (!force && cached?.items && isFresh(cached.fetchedAt, inboxCacheTtlMs)) {
       applyInboxItems(cached.items, preserveSelection);
       setInboxLastFetchedAt(new Date(cached.fetchedAt).toISOString());
+      prefetchInboxConversations(cached.items, preserveSelection);
       return;
     }
 
@@ -352,6 +456,7 @@ export function LeaseBotProvider({ children }) {
       inboxCacheRef.current.set(cacheKey, { items, fetchedAt });
       setInboxLastFetchedAt(new Date(fetchedAt).toISOString());
       applyInboxItems(items, preserveSelection);
+      prefetchInboxConversations(items, preserveSelection);
     } catch (error) {
       if (requestId === inboxRequestSeq.current) {
         setApiError(error.message);
@@ -611,6 +716,8 @@ export function LeaseBotProvider({ children }) {
       });
       inboxCacheRef.current.clear();
       conversationCacheRef.current.clear();
+      conversationPrefetchInFlightRef.current.clear();
+      conversationSyncInFlightRef.current.clear();
       listingsCacheRef.current = { items: [], fetchedAt: 0 };
       setInboxItems([]);
       setSelectedConversationId("");
@@ -829,6 +936,8 @@ export function LeaseBotProvider({ children }) {
     if (!user) {
       inboxCacheRef.current.clear();
       conversationCacheRef.current.clear();
+      conversationPrefetchInFlightRef.current.clear();
+      conversationSyncInFlightRef.current.clear();
       listingsCacheRef.current = { items: [], fetchedAt: 0 };
       setInboxItems([]);
       setSelectedConversationId("");
