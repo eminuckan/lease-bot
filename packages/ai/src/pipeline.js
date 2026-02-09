@@ -200,7 +200,11 @@ async function classifyWithGemini({
       "Allowed intents: tour_request, pricing_question, availability_question, unsubscribe, unknown.",
       "Choose workflowOutcome from: not_interested, wants_reschedule, no_reply, showing_confirmed, general_question, human_required.",
       "Provide confidence between 0 and 1 and riskLevel from low, medium, high, critical.",
-      "For tour_request or availability_question you may provide a concise suggestedReply that references slot options if present.",
+      "For tour_request or availability_question, provide suggestedReply as a natural human message.",
+      "Do not copy examples verbatim. Keep tone concise, friendly, and conversational.",
+      "If slot options exist, include 2-4 relevant options and ask what works best.",
+      "If no slots exist, ask for preferred days/times and offer a virtual tour.",
+      "Do not fabricate unavailable data. Keep PII-safe wording.",
       playbookBlock ? `Playbook (style guidance):\n${playbookBlock}` : null,
       examplesBlock ? `Past reply examples (style guidance only):\n${examplesBlock}` : null,
       contextBlock ? `Conversation context (oldest -> newest):\n${contextBlock}` : null,
@@ -424,7 +428,11 @@ export async function runReplyPipelineWithAI(input) {
   const aiSuggestedReply = aiDecision?.suggestedReply ? String(aiDecision.suggestedReply) : "";
   const renderedReply = renderTemplate(templateBody, input.templateContext || {});
   const replyBody =
-    renderedReply || (AUTO_REPLY_INTENTS.has(effectiveIntent) && slotCount > 0 ? aiSuggestedReply || createDefaultTourReply(input.templateContext) : "");
+    (
+      aiSuggestedReply
+      || renderedReply
+      || (AUTO_REPLY_INTENTS.has(effectiveIntent) && slotCount > 0 ? createDefaultTourReply(input.templateContext) : "")
+    );
 
   const guardrails = evaluateGuardrails({
     inboundBody: input.inboundBody,

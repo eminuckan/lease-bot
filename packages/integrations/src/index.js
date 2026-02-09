@@ -743,16 +743,25 @@ export function createPostgresQueueAdapter(client, options = {}) {
       return result.rows;
     },
 
-    async fetchAssignedAgentSlotOptions({ unitId, assignedAgentId, limit = 3 }) {
-      if (!unitId || !assignedAgentId) {
+    async fetchAssignedAgentSlotOptions({ unitId, assignedAgentId, limit = 3, includeAllAssignedAgents = false }) {
+      if (!unitId) {
         return [];
       }
 
+      const resolvedLimit = Math.max(1, Number(limit || 3));
+      const normalizedAssignedAgentId = normalizeUuid(assignedAgentId);
+      const preferAssignedAgent = includeAllAssignedAgents && normalizedAssignedAgentId ? 0 : 1;
+
       const result = await client.query(
-        `SELECT GREATEST(unit_slot.starts_at, agent_slot.starts_at) AS starts_at,
+        `SELECT ua.agent_id,
+                ag.full_name AS agent_name,
+                GREATEST(unit_slot.starts_at, agent_slot.starts_at) AS starts_at,
                 LEAST(unit_slot.ends_at, agent_slot.ends_at) AS ends_at,
-                COALESCE(unit_slot.timezone, agent_slot.timezone, 'UTC') AS timezone
+                COALESCE(unit_slot.timezone, agent_slot.timezone, 'UTC') AS timezone,
+                ua.priority
            FROM "UnitAgentAssignments" ua
+           JOIN "Agents" ag
+             ON ag.id = ua.agent_id
            JOIN "AvailabilitySlots" unit_slot
              ON unit_slot.unit_id = ua.unit_id
             AND unit_slot.status = 'open'
@@ -760,8 +769,11 @@ export function createPostgresQueueAdapter(client, options = {}) {
              ON agent_slot.agent_id = ua.agent_id
             AND agent_slot.status = 'available'
           WHERE ua.unit_id = $1::uuid
-            AND ua.agent_id = $2::uuid
             AND ua.assignment_mode = 'active'
+            AND (
+              $2::boolean = TRUE
+              OR ($3::uuid IS NOT NULL AND ua.agent_id = $3::uuid)
+            )
             AND tstzrange(unit_slot.starts_at, unit_slot.ends_at, '[)')
                 && tstzrange(agent_slot.starts_at, agent_slot.ends_at, '[)')
             AND NOT EXISTS (
@@ -790,9 +802,13 @@ export function createPostgresQueueAdapter(client, options = {}) {
             )
             AND GREATEST(unit_slot.starts_at, agent_slot.starts_at) < LEAST(unit_slot.ends_at, agent_slot.ends_at)
             AND GREATEST(unit_slot.starts_at, agent_slot.starts_at) >= NOW()
-          ORDER BY starts_at ASC
-          LIMIT $3`,
-        [unitId, assignedAgentId, limit]
+          ORDER BY
+            CASE WHEN $4::int = 0 AND ua.agent_id = $3::uuid THEN 0 ELSE 1 END ASC,
+            GREATEST(unit_slot.starts_at, agent_slot.starts_at) ASC,
+            ua.priority ASC,
+            ua.created_at ASC
+          LIMIT $5`,
+        [unitId, includeAllAssignedAgents, normalizedAssignedAgentId, preferAssignedAgent, resolvedLimit]
       );
 
       return result.rows;
@@ -1362,7 +1378,10 @@ export function createPostgresQueueAdapter(client, options = {}) {
                  WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_thread' THEN EXCLUDED.sent_at
                  WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
                    AND COALESCE("Messages".metadata->>'sentAtSource', '') <> 'platform_thread'
-                 THEN EXCLUDED.sent_at
+                 THEN CASE
+                   WHEN COALESCE(EXCLUDED.metadata->>'sentAtHasTime', 'false') = 'true' THEN EXCLUDED.sent_at
+                   ELSE "Messages".sent_at
+                 END
                  ELSE "Messages".sent_at
                END
              WHERE
@@ -1374,7 +1393,10 @@ export function createPostgresQueueAdapter(client, options = {}) {
                  WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_thread' THEN EXCLUDED.sent_at
                  WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
                    AND COALESCE("Messages".metadata->>'sentAtSource', '') <> 'platform_thread'
-                 THEN EXCLUDED.sent_at
+                 THEN CASE
+                   WHEN COALESCE(EXCLUDED.metadata->>'sentAtHasTime', 'false') = 'true' THEN EXCLUDED.sent_at
+                   ELSE "Messages".sent_at
+                 END
                  ELSE "Messages".sent_at
                END
              RETURNING id, (xmax = 0) AS inserted`,
@@ -1656,16 +1678,17 @@ export function createPostgresQueueAdapter(client, options = {}) {
           continue;
         }
 
+        const inboundWindow = inboundMessages.slice(0, limit);
+
         // SpareRoom: inbox sort rank is only valid for threads present in the current inbox snapshot.
         // When we limit scanned threads (e.g. to 20), previously-seen ranks become stale and can
         // incorrectly float older conversations to the top. Clear ranks for threads not present now.
-        if (account.platform === "spareroom" && Array.isArray(inboundMessages) && inboundMessages.length > 0) {
-          const seenThreadIds = [...new Set(inboundMessages.map((msg) => msg?.externalThreadId).filter(Boolean))];
+        if (account.platform === "spareroom" && Array.isArray(inboundWindow) && inboundWindow.length > 0) {
+          const seenThreadIds = [...new Set(inboundWindow.map((msg) => msg?.externalThreadId).filter(Boolean))];
           if (seenThreadIds.length > 0) {
             await client.query(
               `UPDATE "Conversations"
-                  SET external_inbox_sort_rank = NULL,
-                      updated_at = NOW()
+                  SET external_inbox_sort_rank = NULL
                 WHERE platform_account_id = $1::uuid
                   AND external_inbox_sort_rank IS NOT NULL
                   AND NOT (external_thread_id = ANY($2::text[]))`,
@@ -1712,7 +1735,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
         }
         scanned += inboundMessages.length;
 
-        for (const inbound of inboundMessages.slice(0, limit)) {
+        for (const inbound of inboundWindow) {
           const linkage = await resolveInboundListingLinkage(client, account.id, inbound);
           const conversationResult = await client.query(
             `INSERT INTO "Conversations" (
@@ -1790,7 +1813,10 @@ export function createPostgresQueueAdapter(client, options = {}) {
                  WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_thread' THEN EXCLUDED.sent_at
                  WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
                    AND COALESCE("Messages".metadata->>'sentAtSource', '') <> 'platform_thread'
-                 THEN EXCLUDED.sent_at
+                 THEN CASE
+                   WHEN COALESCE(EXCLUDED.metadata->>'sentAtHasTime', 'false') = 'true' THEN EXCLUDED.sent_at
+                   ELSE "Messages".sent_at
+                 END
                  ELSE "Messages".sent_at
                END
              WHERE
@@ -1802,7 +1828,10 @@ export function createPostgresQueueAdapter(client, options = {}) {
                  WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_thread' THEN EXCLUDED.sent_at
                  WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
                    AND COALESCE("Messages".metadata->>'sentAtSource', '') <> 'platform_thread'
-                 THEN EXCLUDED.sent_at
+                 THEN CASE
+                   WHEN COALESCE(EXCLUDED.metadata->>'sentAtHasTime', 'false') = 'true' THEN EXCLUDED.sent_at
+                   ELSE "Messages".sent_at
+                 END
                  ELSE "Messages".sent_at
                END
              RETURNING id, (xmax = 0) AS inserted`,

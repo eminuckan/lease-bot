@@ -146,6 +146,37 @@ function parseTimeOfDay(text) {
   return { hours, minutes, seconds };
 }
 
+function hasExplicitTimeInHumanDateText(text) {
+  const raw = typeof text === "string" ? text.trim() : "";
+  if (!raw) {
+    return false;
+  }
+
+  const normalized = raw.replace(/\s+/g, " ").trim();
+
+  const relMatch = normalized.match(/^(today|yesterday)(?:\s+(.*))?$/i);
+  if (relMatch) {
+    const timePart = relMatch[2] ? relMatch[2].trim() : "";
+    return Boolean(parseTimeOfDay(timePart));
+  }
+
+  const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(.*))?$/);
+  if (slashMatch) {
+    const timePart = slashMatch[4] ? slashMatch[4].trim() : "";
+    return Boolean(parseTimeOfDay(timePart));
+  }
+
+  const monthMatch = normalized.match(
+    /^([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?[,]?\s+(\d{4})(?:\s+(.*))?$/
+  );
+  if (monthMatch) {
+    const timePart = monthMatch[4] ? monthMatch[4].trim() : "";
+    return Boolean(parseTimeOfDay(timePart));
+  }
+
+  return Boolean(parseTimeOfDay(normalized));
+}
+
 function parseHumanDateTextInTimezone(text, now, timezone) {
   const raw = typeof text === "string" ? text.trim() : "";
   if (!raw) {
@@ -688,6 +719,7 @@ async function defaultIngestHandler({ adapter, page, clock }) {
   );
 
   const normalizedMessages = messages.map((message) => {
+    const sentAtHasTime = message.sentAtText ? hasExplicitTimeInHumanDateText(message.sentAtText) : false;
     const parsingTimezone = message.sentAtText ? resolveParsingTimezone(adapter, message.sentAtText) : null;
     let parsed = null;
     if (message.sentAtText) {
@@ -709,6 +741,7 @@ async function defaultIngestHandler({ adapter, page, clock }) {
       metadata: {
         ...(message.metadata || {}),
         sentAtSource,
+        sentAtHasTime,
         ...(message.sentAtText ? { sentAtText: message.sentAtText } : {})
       }
     };
@@ -786,7 +819,7 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
           parsed = null;
         }
       }
-      const sentAt = parsed ? parsed.toISOString() : now.toISOString();
+      const sentAt = parsed ? parsed.toISOString() : null;
       return {
         ...message,
         body: sanitizeMessageBody(message.body),

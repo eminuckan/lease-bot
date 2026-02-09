@@ -2619,11 +2619,39 @@ async function fetchConversationDetail(client, conversationId, access = null) {
 
   const conversation = conversationResult.rows[0];
 
-  // SpareRoom inbox ingestion stores a "preview" message for each thread row (sentAtSource=platform_inbox)
-  // which can duplicate real thread messages or locally-sent messages. For thread detail views we prefer
-  // real messages. Keep platform_inbox messages only when the conversation has no other message sources yet.
+  // SpareRoom inbox ingestion stores preview rows (sentAtSource=platform_inbox) and thread sync stores
+  // canonical rows (sentAtSource=platform_thread). Do not blanket-drop inbox rows: keep them when they are
+  // the only representation of a message, and dedupe by external_message_id preferring canonical sources.
   const messagesSql = conversation.platform === "spareroom"
-    ? `SELECT id,
+    ? `WITH ranked AS (
+         SELECT m.id,
+                m.conversation_id,
+                m.sender_type,
+                m.sender_agent_id,
+                m.direction,
+                m.body,
+                m.metadata,
+                m.sent_at,
+                m.created_at,
+                COALESCE(NULLIF(m.external_message_id, ''), '__row__' || m.id::text) AS dedupe_key,
+                CASE
+                  WHEN COALESCE(m.metadata->>'sentAtSource', '') = 'platform_thread' THEN 0
+                  WHEN COALESCE(m.metadata->>'sentAtSource', '') = 'platform_outbound_send' THEN 1
+                  WHEN COALESCE(m.metadata->>'sentAtSource', '') = 'platform_inbox' THEN 2
+                  ELSE 3
+                END AS source_rank
+           FROM "Messages" m
+          WHERE m.conversation_id = $1::uuid
+       ),
+       deduped AS (
+         SELECT *,
+                ROW_NUMBER() OVER (
+                  PARTITION BY dedupe_key
+                  ORDER BY source_rank ASC, sent_at DESC, created_at DESC, id DESC
+                ) AS rn
+           FROM ranked
+       )
+       SELECT id,
               conversation_id,
               sender_type,
               sender_agent_id,
@@ -2632,18 +2660,9 @@ async function fetchConversationDetail(client, conversationId, access = null) {
               metadata,
               sent_at,
               created_at
-         FROM "Messages" m
-        WHERE m.conversation_id = $1::uuid
-          AND (
-            COALESCE(m.metadata->>'sentAtSource', '') <> 'platform_inbox'
-            OR NOT EXISTS (
-              SELECT 1
-                FROM "Messages" m2
-               WHERE m2.conversation_id = $1::uuid
-                 AND COALESCE(m2.metadata->>'sentAtSource', '') <> 'platform_inbox'
-            )
-          )
-        ORDER BY m.sent_at ASC, m.created_at ASC`
+         FROM deduped
+        WHERE rn = 1
+        ORDER BY sent_at ASC, created_at ASC`
     : `SELECT id,
               conversation_id,
               sender_type,

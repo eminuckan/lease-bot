@@ -462,13 +462,7 @@ test("R3: worker slot context uses assigned-agent candidate source", async () =>
       }
     },
     slotOptionsByUnit: {
-      u1: [
-        {
-          starts_at: "2026-02-10T17:00:00.000Z",
-          ends_at: "2026-02-10T17:30:00.000Z",
-          timezone: "UTC"
-        }
-      ]
+      u1: []
     },
     assignedSlotOptionsByUnitAndAgent: {
       "u1:a1": [
@@ -526,13 +520,7 @@ test("R9: no candidate slots preserves escalation path", async () => {
       }
     },
     slotOptionsByUnit: {
-      u1: [
-        {
-          starts_at: "2026-02-10T17:00:00.000Z",
-          ends_at: "2026-02-10T17:30:00.000Z",
-          timezone: "UTC"
-        }
-      ]
+      u1: []
     },
     assignedSlotOptionsByUnitAndAgent: {
       "u1:a1": []
@@ -550,7 +538,7 @@ test("R9: no candidate slots preserves escalation path", async () => {
   assert.equal(fixture.processed[0].metadataPatch.outcome, "escalate");
   assert.equal(fixture.processed[0].metadataPatch.replyDecisionReason, "escalate_no_slot_candidates");
   assert.equal(fixture.assignedSlotOptionCalls.length, 1);
-  assert.equal(fixture.slotOptionCalls.length, 0);
+  assert.equal(fixture.slotOptionCalls.length, 1);
 });
 
 test("queue processing creates template-based reply and logs result", async () => {

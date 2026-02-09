@@ -399,14 +399,34 @@ export function LeaseBotProvider({ children }) {
       }
 
       const fetchedAt = Date.now();
-      if (!background && shouldAutoSyncConversationThread(conversationId, result)) {
-        const synced = await runConversationThreadSync(conversationId, requestId);
-        if (requestId !== conversationRequestSeq.current) {
-          return;
-        }
-        if (!synced) {
-          setConversationDetail(result);
-          conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
+      const shouldSyncThread = shouldAutoSyncConversationThread(conversationId, result);
+      if (shouldSyncThread) {
+        if (background) {
+          const existingDetail = conversationCacheRef.current.get(conversationId)?.detail || null;
+          const existingMessageCount = Array.isArray(existingDetail?.messages) ? existingDetail.messages.length : 0;
+          const resultMessageCount = Array.isArray(result?.messages) ? result.messages.length : 0;
+          const preserveExistingDetail = existingDetail && existingMessageCount > resultMessageCount;
+
+          if (preserveExistingDetail) {
+            conversationCacheRef.current.set(conversationId, { detail: existingDetail, fetchedAt });
+          } else {
+            setConversationDetail(result);
+            conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
+          }
+
+          await runConversationThreadSync(conversationId, requestId);
+          if (requestId !== conversationRequestSeq.current) {
+            return;
+          }
+        } else {
+          const synced = await runConversationThreadSync(conversationId, requestId);
+          if (requestId !== conversationRequestSeq.current) {
+            return;
+          }
+          if (!synced) {
+            setConversationDetail(result);
+            conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
+          }
         }
       } else {
         setConversationDetail(result);

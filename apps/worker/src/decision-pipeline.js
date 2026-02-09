@@ -74,7 +74,13 @@ function formatSlotWindow(slot) {
   const startLabel = timeFormatter.format(startsAt);
   const endLabel = timeFormatter.format(endsAt);
   const tzLabel = getTimezoneLabel(timezone, startsAt);
-  return `${dateLabel} ${startLabel} - ${endLabel} ${tzLabel}`;
+  const agentName = typeof slot.agent_name === "string"
+    ? slot.agent_name.trim()
+    : typeof slot.agentName === "string"
+    ? slot.agentName.trim()
+    : "";
+  const base = `${dateLabel} ${startLabel} - ${endLabel} ${tzLabel}`;
+  return agentName ? `${base} (${agentName})` : base;
 }
 
 function buildTemplateContext(message, slotOptions) {
@@ -211,15 +217,19 @@ async function fetchSlotRowsForMessage(adapter, message) {
   }
 
   if (typeof adapter.fetchAssignedAgentSlotOptions === "function") {
-    return adapter.fetchAssignedAgentSlotOptions({
+    const slotRows = await adapter.fetchAssignedAgentSlotOptions({
       unitId: message.unitId,
       assignedAgentId: message.assignedAgentId,
-      limit: 3
+      limit: 6,
+      includeAllAssignedAgents: true
     });
+    if (Array.isArray(slotRows) && slotRows.length > 0) {
+      return slotRows;
+    }
   }
 
   if (typeof adapter.fetchSlotOptions === "function") {
-    return adapter.fetchSlotOptions(message.unitId, 3);
+    return adapter.fetchSlotOptions(message.unitId, 6);
   }
 
   return [];
@@ -397,7 +407,14 @@ export async function processPendingMessagesWithAi({
       }
 
       const slotRows = await fetchSlotRowsForMessage(adapter, msg);
-      const slotOptions = slotRows.map((slot) => formatSlotWindow(slot));
+      const maxSlotOptions = Math.max(1, Number(process.env.WORKER_AUTOREPLY_SLOT_OPTION_LIMIT || 4));
+      const slotOptions = Array.from(
+        new Set(
+          (Array.isArray(slotRows) ? slotRows : [])
+            .map((slot) => formatSlotWindow(slot))
+            .filter(Boolean)
+        )
+      ).slice(0, maxSlotOptions);
       const followUpRuleFallbackIntent = message.metadata?.intent || "tour_request";
       const messageIntent = classifyIntent(msg.body);
       const followUp = detectFollowUp(msg.body, msg.hasRecentOutbound);
