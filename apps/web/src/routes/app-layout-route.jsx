@@ -154,7 +154,7 @@ function AppLayout() {
       {/* Desktop sidebar */}
       <aside
         className={cn(
-          "hidden flex-col border-r border-dashed border-border bg-card transition-all duration-200 md:flex",
+          "dark hidden flex-col border-r border-dashed border-border bg-card transition-all duration-200 md:flex",
           sidebarOpen ? "w-56" : "w-14"
         )}
       >
@@ -207,7 +207,7 @@ function AppLayout() {
       {/* Mobile drawer */}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-card shadow-elevated transition-transform duration-200 md:hidden",
+          "dark fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-card shadow-elevated transition-transform duration-200 md:hidden",
           mobileMenuOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
