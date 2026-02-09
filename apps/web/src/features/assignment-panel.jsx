@@ -256,7 +256,7 @@ export function AssignmentPanel() {
 
   return (
     <div className="p-6">
-      <div className="mx-auto max-w-4xl space-y-8">
+      <div className="mx-auto w-full max-w-[1500px] space-y-8">
         {/* Stats */}
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="flex items-center gap-4 rounded-lg bg-card px-5 py-5 shadow-card">
@@ -368,163 +368,161 @@ export function AssignmentPanel() {
 
         {/* Assignment table */}
         <div className="space-y-3">
-          <div className="rounded-lg bg-card p-4 shadow-card">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <h3 className="text-sm font-semibold">Assignment table</h3>
-                <p className="text-xs text-muted-foreground">
-                  Manage current listing assignments, edit rows, or run bulk actions.
-                </p>
-              </div>
-              <div className="relative w-full md:w-72">
-                <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                <Input
-                  value={searchTerm}
-                  onChange={(event) => setSearchTerm(event.target.value)}
-                  placeholder="Search listing / unit / agent"
-                  className="pl-9"
-                />
-              </div>
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h3 className="text-sm font-semibold">Assignment table</h3>
+              <p className="text-xs text-muted-foreground">
+                Manage current listing assignments, edit rows, or run bulk actions.
+              </p>
             </div>
-
-            <div className="mt-3 flex flex-col gap-2 rounded-md border border-dashed border-border bg-muted/30 p-3 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Rows3 className="h-4 w-4" />
-                <span>{selectedCount} selected</span>
-              </div>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <Select value={bulkAgentId} onValueChange={setBulkAgentId}>
-                  <SelectTrigger className="h-9 w-full sm:w-56">
-                    <SelectValue placeholder="Bulk assign agent" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">Unassign</SelectItem>
-                    {agents.map((agent) => (
-                      <SelectItem key={agent.id} value={agent.id}>
-                        {agent.fullName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={selectedCount === 0 || bulkBusy}
-                  onClick={() => runBulkAssign(bulkAgentId === "__none__" ? null : bulkAgentId)}
-                >
-                  <Users2 className="mr-2 h-3.5 w-3.5" />
-                  Apply to selected
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={selectedCount === 0 || bulkBusy}
-                  onClick={() => setSelectedUnitIds([])}
-                >
-                  Clear
-                </Button>
-              </div>
+            <div className="relative w-full md:w-80">
+              <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search listing / unit / agent"
+                className="pl-9"
+              />
             </div>
+          </div>
 
-            <div className="mt-3 rounded-md border border-dashed border-border">
-              <Table>
-                <TableHeader>
+          <div className="flex flex-col gap-2 rounded-md border border-dashed border-border bg-muted/30 p-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Rows3 className="h-4 w-4" />
+              <span>{selectedCount} selected</span>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Select value={bulkAgentId} onValueChange={setBulkAgentId}>
+                <SelectTrigger className="h-9 w-full sm:w-56">
+                  <SelectValue placeholder="Bulk assign agent" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Unassign</SelectItem>
+                  {agents.map((agent) => (
+                    <SelectItem key={agent.id} value={agent.id}>
+                      {agent.fullName}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                size="sm"
+                disabled={selectedCount === 0 || bulkBusy}
+                onClick={() => runBulkAssign(bulkAgentId === "__none__" ? null : bulkAgentId)}
+              >
+                <Users2 className="mr-2 h-3.5 w-3.5" />
+                Apply to selected
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={selectedCount === 0 || bulkBusy}
+                onClick={() => setSelectedUnitIds([])}
+              >
+                Clear
+              </Button>
+            </div>
+          </div>
+
+          <div className="rounded-md border border-dashed border-border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-10">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={(event) => toggleVisibleSelection(event.target.checked)}
+                      aria-label="Select all visible rows"
+                    />
+                  </TableHead>
+                  <TableHead>Listing</TableHead>
+                  <TableHead>Unit</TableHead>
+                  <TableHead>Sources</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>Updated</TableHead>
+                  <TableHead className="w-44">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredTargets.length === 0 ? (
                   <TableRow>
-                    <TableHead className="w-10">
-                      <input
-                        type="checkbox"
-                        checked={allVisibleSelected}
-                        onChange={(event) => toggleVisibleSelection(event.target.checked)}
-                        aria-label="Select all visible rows"
-                      />
-                    </TableHead>
-                    <TableHead>Listing</TableHead>
-                    <TableHead>Unit</TableHead>
-                    <TableHead>Sources</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Agent</TableHead>
-                    <TableHead>Updated</TableHead>
-                    <TableHead className="w-44">Actions</TableHead>
+                    <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
+                      No rows found.
+                    </TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredTargets.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
-                        No rows found.
+                ) : null}
+                {filteredTargets.map((target) => {
+                  const unitId = target.unit.id;
+                  const unitLabel = unitLabelById.get(unitId) || "Unknown unit";
+                  const assignedAgentName = target.unit.assignedAgentId
+                    ? (agentById.get(target.unit.assignedAgentId) || "Unknown agent")
+                    : "Unassigned";
+                  const isSelected = selectedUnitSet.has(unitId);
+                  return (
+                    <TableRow key={unitId}>
+                      <TableCell>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={(event) => toggleRowSelection(unitId, event.target.checked)}
+                          aria-label={`Select ${unitLabel}`}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <div className="max-w-[360px] truncate text-sm font-medium">
+                          {formatListingLabel(target.listing, "")}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-sm">{unitLabel}</TableCell>
+                      <TableCell>
+                        <Badge>{target.sourceCount}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          className={
+                            target.listing.status === "active"
+                              ? "bg-emerald-500/15 text-emerald-300"
+                              : "bg-muted text-muted-foreground"
+                          }
+                        >
+                          {target.listing.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm">{assignedAgentName}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {formatTimestamp(target.listing.updatedAt)}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => editAssignment(target)}
+                          >
+                            <Pencil className="mr-1.5 h-3.5 w-3.5" />
+                            Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => unassignRow(target)}
+                          >
+                            <UserMinus className="mr-1.5 h-3.5 w-3.5" />
+                            Unassign
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
-                  ) : null}
-                  {filteredTargets.map((target) => {
-                    const unitId = target.unit.id;
-                    const unitLabel = unitLabelById.get(unitId) || "Unknown unit";
-                    const assignedAgentName = target.unit.assignedAgentId
-                      ? (agentById.get(target.unit.assignedAgentId) || "Unknown agent")
-                      : "Unassigned";
-                    const isSelected = selectedUnitSet.has(unitId);
-                    return (
-                      <TableRow key={unitId}>
-                        <TableCell>
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={(event) => toggleRowSelection(unitId, event.target.checked)}
-                            aria-label={`Select ${unitLabel}`}
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <div className="max-w-[260px] truncate text-sm font-medium">
-                            {formatListingLabel(target.listing, "")}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-sm">{unitLabel}</TableCell>
-                        <TableCell>
-                          <Badge>{target.sourceCount}</Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge
-                            className={
-                              target.listing.status === "active"
-                                ? "bg-emerald-500/15 text-emerald-300"
-                                : "bg-muted text-muted-foreground"
-                            }
-                          >
-                            {target.listing.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-sm">{assignedAgentName}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {formatTimestamp(target.listing.updatedAt)}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={() => editAssignment(target)}
-                            >
-                              <Pencil className="mr-1.5 h-3.5 w-3.5" />
-                              Edit
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={() => unassignRow(target)}
-                            >
-                              <UserMinus className="mr-1.5 h-3.5 w-3.5" />
-                              Unassign
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
+                  );
+                })}
+              </TableBody>
+            </Table>
           </div>
         </div>
       </div>
