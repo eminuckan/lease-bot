@@ -69,6 +69,8 @@ export function LeaseBotProvider({ children }) {
   const [selectedUnitId, setSelectedUnitId] = useState("");
   const [availability, setAvailability] = useState([]);
   const [weeklyRules, setWeeklyRules] = useState([]);
+  const [agentAvailability, setAgentAvailability] = useState([]);
+  const [agentWeeklyRules, setAgentWeeklyRules] = useState([]);
   const [assignmentForm, setAssignmentForm] = useState({ unitId: "", listingId: "", agentId: "" });
   const [inboxItems, setInboxItems] = useState([]);
   const [inboxLoading, setInboxLoading] = useState(false);
@@ -86,6 +88,7 @@ export function LeaseBotProvider({ children }) {
   const [listingsLastFetchedAt, setListingsLastFetchedAt] = useState(null);
   const [appointmentFilters, setAppointmentFilters] = useState({
     status: "all",
+    agentId: "all",
     unitId: "all",
     fromDate: "",
     toDate: ""
@@ -369,25 +372,29 @@ export function LeaseBotProvider({ children }) {
       setConversationDetail(null);
     }
 
+    let syncTriggered = false;
+    const triggerThreadSync = () => {
+      syncTriggered = true;
+      if (!background) {
+        setConversationRefreshing(true);
+      }
+      void runConversationThreadSync(conversationId, requestId)
+        .catch(() => null)
+        .finally(() => {
+          if (requestId === conversationRequestSeq.current) {
+            setConversationRefreshing(false);
+          }
+        });
+    };
+
     if (!force && cached?.detail && isFresh(cached.fetchedAt, conversationCacheTtlMs)) {
-      if (!background && shouldAutoSyncConversationThread(conversationId, cached.detail)) {
-        // Avoid showing partial history while a full thread sync is in-flight.
-        setConversationDetail(null);
-        setConversationLoading(true);
-        setConversationRefreshing(false);
-        const synced = await runConversationThreadSync(conversationId, requestId);
-        if (requestId !== conversationRequestSeq.current) {
-          return;
-        }
-        if (!synced) {
-          setConversationDetail(cached.detail);
-        }
-        setConversationLoading(false);
-        setConversationRefreshing(false);
-        return;
+      if (shouldAutoSyncConversationThread(conversationId, cached.detail)) {
+        triggerThreadSync();
       }
       setConversationLoading(false);
-      setConversationRefreshing(false);
+      if (!syncTriggered) {
+        setConversationRefreshing(false);
+      }
       return;
     }
 
@@ -404,38 +411,19 @@ export function LeaseBotProvider({ children }) {
       }
 
       const fetchedAt = Date.now();
+      const existingDetail = conversationCacheRef.current.get(conversationId)?.detail || null;
+      const existingMessageCount = Array.isArray(existingDetail?.messages) ? existingDetail.messages.length : 0;
+      const resultMessageCount = Array.isArray(result?.messages) ? result.messages.length : 0;
+      const preserveExistingDetail = existingDetail && existingMessageCount > resultMessageCount;
       const shouldSyncThread = shouldAutoSyncConversationThread(conversationId, result);
-      if (shouldSyncThread) {
-        if (background) {
-          const existingDetail = conversationCacheRef.current.get(conversationId)?.detail || null;
-          const existingMessageCount = Array.isArray(existingDetail?.messages) ? existingDetail.messages.length : 0;
-          const resultMessageCount = Array.isArray(result?.messages) ? result.messages.length : 0;
-          const preserveExistingDetail = existingDetail && existingMessageCount > resultMessageCount;
-
-          if (preserveExistingDetail) {
-            conversationCacheRef.current.set(conversationId, { detail: existingDetail, fetchedAt });
-          } else {
-            setConversationDetail(result);
-            conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
-          }
-
-          await runConversationThreadSync(conversationId, requestId);
-          if (requestId !== conversationRequestSeq.current) {
-            return;
-          }
-        } else {
-          const synced = await runConversationThreadSync(conversationId, requestId);
-          if (requestId !== conversationRequestSeq.current) {
-            return;
-          }
-          if (!synced) {
-            setConversationDetail(result);
-            conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
-          }
-        }
+      if (preserveExistingDetail) {
+        conversationCacheRef.current.set(conversationId, { detail: existingDetail, fetchedAt });
       } else {
         setConversationDetail(result);
         conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
+      }
+      if (shouldSyncThread) {
+        triggerThreadSync();
       }
     } catch (error) {
       if (requestId === conversationRequestSeq.current) {
@@ -444,7 +432,9 @@ export function LeaseBotProvider({ children }) {
     } finally {
       if (requestId === conversationRequestSeq.current) {
         setConversationLoading(false);
-        setConversationRefreshing(false);
+        if (!syncTriggered) {
+          setConversationRefreshing(false);
+        }
       }
     }
   }
@@ -541,6 +531,9 @@ export function LeaseBotProvider({ children }) {
     if (filters.status && filters.status !== "all") {
       params.set("status", filters.status);
     }
+    if (filters.agentId && filters.agentId !== "all") {
+      params.set("agentId", filters.agentId);
+    }
     if (filters.unitId && filters.unitId !== "all") {
       params.set("unitId", filters.unitId);
     }
@@ -558,6 +551,122 @@ export function LeaseBotProvider({ children }) {
       setAppointments(response.items || []);
     } catch (error) {
       setApiError(error.message);
+    }
+  }
+
+  async function refreshAgentAvailability(agentId, filters = {}) {
+    if (!user || !agentId) {
+      setAgentAvailability([]);
+      return [];
+    }
+
+    const params = new URLSearchParams();
+    if (filters.fromDate) {
+      params.set("fromDate", filters.fromDate);
+    }
+    if (filters.toDate) {
+      params.set("toDate", filters.toDate);
+    }
+    if (filters.timezone) {
+      params.set("timezone", filters.timezone);
+    }
+    const query = params.toString() ? `?${params.toString()}` : "";
+
+    try {
+      const response = await request(`/api/agents/${agentId}/availability${query}`);
+      const items = response.items || [];
+      setAgentAvailability(items);
+      return items;
+    } catch (error) {
+      setApiError(error.message);
+      return [];
+    }
+  }
+
+  async function refreshAgentWeeklyRules(agentId) {
+    if (!user || !agentId) {
+      setAgentWeeklyRules([]);
+      return [];
+    }
+
+    try {
+      const response = await request(`/api/agents/${agentId}/availability/weekly-rules`);
+      const items = response.items || [];
+      setAgentWeeklyRules(items);
+      return items;
+    } catch (error) {
+      setApiError(error.message);
+      return [];
+    }
+  }
+
+  async function createAgentWeeklyRule(agentId, payload) {
+    if (!agentId) {
+      return null;
+    }
+
+    try {
+      const response = await request(`/api/agents/${agentId}/availability/weekly-rules`, {
+        method: "POST",
+        body: JSON.stringify(payload || {})
+      });
+      await refreshAgentWeeklyRules(agentId);
+      return response;
+    } catch (error) {
+      setApiError(error.message);
+      throw error;
+    }
+  }
+
+  async function updateAgentWeeklyRule(agentId, ruleId, payload) {
+    if (!agentId || !ruleId) {
+      return null;
+    }
+
+    try {
+      const response = await request(`/api/agents/${agentId}/availability/weekly-rules/${ruleId}`, {
+        method: "PUT",
+        body: JSON.stringify(payload || {})
+      });
+      await refreshAgentWeeklyRules(agentId);
+      return response;
+    } catch (error) {
+      setApiError(error.message);
+      throw error;
+    }
+  }
+
+  async function deleteAgentWeeklyRule(agentId, ruleId) {
+    if (!agentId || !ruleId) {
+      return null;
+    }
+
+    try {
+      const response = await request(`/api/agents/${agentId}/availability/weekly-rules/${ruleId}`, {
+        method: "DELETE"
+      });
+      await refreshAgentWeeklyRules(agentId);
+      return response;
+    } catch (error) {
+      setApiError(error.message);
+      throw error;
+    }
+  }
+
+  async function createAgentDailyOverride(agentId, payload) {
+    if (!agentId) {
+      return null;
+    }
+
+    try {
+      const response = await request(`/api/agents/${agentId}/availability/daily-overrides`, {
+        method: "POST",
+        body: JSON.stringify(payload || {})
+      });
+      return response;
+    } catch (error) {
+      setApiError(error.message);
+      throw error;
     }
   }
 
@@ -768,6 +877,8 @@ export function LeaseBotProvider({ children }) {
       setConversationDetail(null);
       setConversationLoading(false);
       setConversationRefreshing(false);
+      setAgentAvailability([]);
+      setAgentWeeklyRules([]);
       setUser(null);
       toast.success("Signed out");
     } catch {
@@ -988,6 +1099,8 @@ export function LeaseBotProvider({ children }) {
       setConversationDetail(null);
       setConversationLoading(false);
       setConversationRefreshing(false);
+      setAgentAvailability([]);
+      setAgentWeeklyRules([]);
       return;
     }
     refreshData({ forceListings: true });
@@ -1086,6 +1199,8 @@ export function LeaseBotProvider({ children }) {
     setSelectedUnitId,
     availability,
     weeklyRules,
+    agentAvailability,
+    agentWeeklyRules,
     assignmentForm,
     setAssignmentForm,
     selectedUnitListings,
@@ -1116,7 +1231,13 @@ export function LeaseBotProvider({ children }) {
     refreshListings: refreshListingsSnapshot,
     refreshInbox,
     refreshAvailability,
+    refreshAgentAvailability,
+    refreshAgentWeeklyRules,
     refreshAppointments,
+    createAgentWeeklyRule,
+    updateAgentWeeklyRule,
+    deleteAgentWeeklyRule,
+    createAgentDailyOverride,
     refreshAdminPlatformData,
     refreshAdminUsers,
     signInEmail,

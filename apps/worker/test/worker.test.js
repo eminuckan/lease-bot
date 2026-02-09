@@ -23,6 +23,7 @@ function createMemoryAdapter({
   const outbound = [];
   const logs = [];
   const workflowTransitions = [];
+  const showingOutcomeSyncs = [];
   const dispatchByMessageId = new Map();
   const slotOptionCalls = [];
   const assignedSlotOptionCalls = [];
@@ -128,6 +129,12 @@ function createMemoryAdapter({
           }
         };
       },
+      async syncShowingFromWorkflowOutcome(payload) {
+        showingOutcomeSyncs.push(payload);
+        return {
+          applied: true
+        };
+      },
       async recordLog(payload) {
         logs.push(payload);
       }
@@ -147,6 +154,7 @@ function createMemoryAdapter({
     outbound,
     logs,
     workflowTransitions,
+    showingOutcomeSyncs,
     dispatchByMessageId,
     slotOptionCalls,
     assignedSlotOptionCalls
@@ -1097,6 +1105,11 @@ test("R4/R8: worker persists AI outcomes through workflow transition-safe adapte
     { workflowOutcome: "no_reply", followUpStage: null },
     { workflowOutcome: "human_required", followUpStage: null }
   ]);
+  assert.equal(fixture.showingOutcomeSyncs.length, 3);
+  assert.deepEqual(
+    fixture.showingOutcomeSyncs.map((entry) => entry.workflowOutcome),
+    ["wants_reschedule", "no_reply", "human_required"]
+  );
   assert.equal(
     fixture.logs.filter((entry) => entry.action === "workflow_state_transitioned").length,
     3

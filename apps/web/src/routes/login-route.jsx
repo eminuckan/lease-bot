@@ -7,6 +7,44 @@ import { ThemeToggle } from "../components/theme-toggle";
 import { useLeaseBot } from "../state/lease-bot-context";
 import { rootRoute } from "./root-route";
 
+function getRequestedRedirect() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+
+  const value = new URLSearchParams(window.location.search).get("redirect") || "";
+  if (!value) {
+    return "";
+  }
+
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function resolvePostLoginTarget(currentUser) {
+  const fallback = currentUser.role === "admin" ? "/admin/inbox" : "/agent/inbox";
+  const requested = getRequestedRedirect();
+  if (!requested) {
+    return fallback;
+  }
+
+  const normalized = requested.startsWith("/") ? requested : `/${requested}`;
+  const isAdminPath = normalized === "/admin" || normalized.startsWith("/admin/");
+  const isAgentPath = normalized === "/agent" || normalized.startsWith("/agent/");
+
+  if (!isAdminPath && !isAgentPath) {
+    return fallback;
+  }
+  if (currentUser.role !== "admin" && isAdminPath) {
+    return fallback;
+  }
+
+  return normalized;
+}
+
 function LoginPage() {
   const router = useRouter();
   const { user, health, apiBaseUrl, authError, setAuthError, signInEmail } = useLeaseBot();
@@ -14,7 +52,7 @@ function LoginPage() {
   const [password, setPassword] = useState("password1234");
 
   if (user) {
-    return <Navigate to={user.role === "admin" ? "/admin/inbox" : "/agent/inbox"} />;
+    return <Navigate to={resolvePostLoginTarget(user)} />;
   }
 
   async function submitAuth(event) {
@@ -23,7 +61,7 @@ function LoginPage() {
     const currentUser = await signInEmail({ email, password });
 
     if (currentUser) {
-      router.navigate({ to: currentUser.role === "admin" ? "/admin/inbox" : "/agent/inbox" });
+      router.navigate({ to: resolvePostLoginTarget(currentUser) });
     }
   }
 

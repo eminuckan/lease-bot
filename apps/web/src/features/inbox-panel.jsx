@@ -85,7 +85,7 @@ export function InboxPanel() {
   async function handleRefreshInbox() {
     setIsRefreshing(true);
     try {
-      await refreshInbox(selectedInboxStatus, false, selectedInboxPlatform, { force: true });
+      await refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, { force: true });
     } finally {
       setIsRefreshing(false);
     }

@@ -1680,6 +1680,22 @@ async function fetchAgentAvailability(client, agentId, { fromDate, toDate, timez
   });
 }
 
+async function fetchAgentAvailabilitySlotOwner(client, slotId) {
+  const result = await client.query(
+    `SELECT agent_id
+       FROM "AgentAvailabilitySlots"
+      WHERE id = $1::uuid
+      LIMIT 1`,
+    [slotId]
+  );
+
+  if (result.rowCount === 0) {
+    return null;
+  }
+
+  return result.rows[0].agent_id || null;
+}
+
 async function upsertAgentWeeklyRule(client, agentId, payload, existingRuleId = null) {
   const ruleId = existingRuleId || randomUUID();
   const status = payload.status || "available";
@@ -2441,13 +2457,10 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
   }
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
-  const orderByClause = platformFilter === "spareroom"
-    ? `ORDER BY c.external_inbox_sort_rank ASC NULLS LAST, c.last_message_at DESC NULLS LAST, c.id ASC`
-    : platformFilter
-    ? `ORDER BY c.last_message_at DESC NULLS LAST, c.id ASC`
-    : `ORDER BY CASE WHEN pa.platform = 'spareroom' THEN c.external_inbox_sort_rank END ASC NULLS LAST,
-              c.last_message_at DESC NULLS LAST,
-              c.id ASC`;
+  const orderByClause = `ORDER BY effective_last_message_at DESC NULLS LAST,
+                                c.updated_at DESC NULLS LAST,
+                                c.external_inbox_sort_rank ASC NULLS LAST,
+                                c.id ASC`;
   const result = await client.query(
     `SELECT c.id,
             c.platform_account_id,
@@ -2470,11 +2483,17 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
             c.workflow_updated_at,
             c.last_message_at,
             c.updated_at,
+            COALESCE(
+              GREATEST(c.last_message_at, latest.sent_at),
+              c.last_message_at,
+              latest.sent_at
+            ) AS effective_last_message_at,
             pa.platform,
             u.property_name,
             u.unit_number,
             latest.body AS latest_body,
             latest.direction AS latest_direction,
+            latest.sent_at AS latest_sent_at,
             latest.metadata AS latest_metadata,
             COALESCE(counts.new_count, 0) AS new_count,
             COALESCE(counts.draft_count, 0) AS draft_count,
@@ -2485,7 +2504,7 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
        LEFT JOIN "Listings" l ON l.id = c.listing_id
        LEFT JOIN "Units" u ON u.id = l.unit_id
        LEFT JOIN LATERAL (
-         SELECT m.body, m.direction, m.metadata
+         SELECT m.body, m.direction, m.metadata, m.sent_at
            FROM "Messages" m
           WHERE m.conversation_id = c.id
           ORDER BY m.sent_at DESC, m.created_at DESC
@@ -2554,7 +2573,7 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
       latestDirection: row.latest_direction,
       latestStatus: normalizeMessageStatus(row.latest_direction, row.latest_metadata || {}),
       latestSentAtText: row.latest_metadata?.sentAtText || null,
-      lastMessageAt: row.last_message_at,
+      lastMessageAt: row.effective_last_message_at || row.last_message_at,
       updatedAt: row.updated_at
     };
   });
@@ -5413,6 +5432,10 @@ export async function routeApi(req, res, url) {
       badRequest(res, "agentId must be a UUID");
       return;
     }
+    const scopedAgentId = enforceAgentSelfScope(res, access, agentId);
+    if (!scopedAgentId) {
+      return;
+    }
 
     const fromDate = url.searchParams.get("fromDate");
     const toDate = url.searchParams.get("toDate");
@@ -5431,7 +5454,7 @@ export async function routeApi(req, res, url) {
       return;
     }
 
-    const items = await withClient((client) => fetchAgentAvailability(client, agentId, { fromDate, toDate, timezone }));
+    const items = await withClient((client) => fetchAgentAvailability(client, scopedAgentId, { fromDate, toDate, timezone }));
     json(res, 200, { items });
     return;
   }
@@ -5449,15 +5472,22 @@ export async function routeApi(req, res, url) {
       if (!access) {
         return;
       }
-
-      const items = await withClient((client) => fetchAgentWeeklyRules(client, agentId));
+      const scopedAgentId = enforceAgentSelfScope(res, access, agentId);
+      if (!scopedAgentId) {
+        return;
+      }
+      const items = await withClient((client) => fetchAgentWeeklyRules(client, scopedAgentId));
       json(res, 200, { items });
       return;
     }
 
     if (req.method === "POST") {
-      const access = await requireRole(req, res, [roles.admin]);
+      const access = await requireRole(req, res, [roles.agent, roles.admin]);
       if (!access) {
+        return;
+      }
+      const scopedAgentId = enforceAgentSelfScope(res, access, agentId);
+      if (!scopedAgentId) {
         return;
       }
 
@@ -5477,7 +5507,7 @@ export async function routeApi(req, res, url) {
 
       let result;
       try {
-        result = await withClient((client) => upsertAgentWeeklyRule(client, agentId, payload));
+        result = await withClient((client) => upsertAgentWeeklyRule(client, scopedAgentId, payload));
       } catch (error) {
         if (handleLocalTimeValidationError(res, error)) {
           return;
@@ -5504,8 +5534,12 @@ export async function routeApi(req, res, url) {
     }
 
     if (req.method === "PUT") {
-      const access = await requireRole(req, res, [roles.admin]);
+      const access = await requireRole(req, res, [roles.agent, roles.admin]);
       if (!access) {
+        return;
+      }
+      const scopedAgentId = enforceAgentSelfScope(res, access, agentId);
+      if (!scopedAgentId) {
         return;
       }
 
@@ -5525,7 +5559,7 @@ export async function routeApi(req, res, url) {
 
       let result;
       try {
-        result = await withClient((client) => upsertAgentWeeklyRule(client, agentId, payload, ruleId));
+        result = await withClient((client) => upsertAgentWeeklyRule(client, scopedAgentId, payload, ruleId));
       } catch (error) {
         if (handleLocalTimeValidationError(res, error)) {
           return;
@@ -5541,8 +5575,12 @@ export async function routeApi(req, res, url) {
     }
 
     if (req.method === "DELETE") {
-      const access = await requireRole(req, res, [roles.admin]);
+      const access = await requireRole(req, res, [roles.agent, roles.admin]);
       if (!access) {
+        return;
+      }
+      const scopedAgentId = enforceAgentSelfScope(res, access, agentId);
+      if (!scopedAgentId) {
         return;
       }
 
@@ -5551,7 +5589,7 @@ export async function routeApi(req, res, url) {
           WHERE agent_id = $1::uuid
             AND source = 'weekly_recurring'
             AND notes LIKE $2`,
-        [agentId, `rule:${ruleId}%`]
+        [scopedAgentId, `rule:${ruleId}%`]
       );
 
       json(res, 200, { deletedSlots: result.rowCount });
@@ -5561,7 +5599,7 @@ export async function routeApi(req, res, url) {
 
   const agentDailyOverrideMatch = url.pathname.match(/^\/api\/agents\/([0-9a-f\-]+)\/availability\/daily-overrides$/i);
   if (agentDailyOverrideMatch && req.method === "POST") {
-    const access = await requireRole(req, res, [roles.admin]);
+    const access = await requireRole(req, res, [roles.agent, roles.admin]);
     if (!access) {
       return;
     }
@@ -5569,6 +5607,10 @@ export async function routeApi(req, res, url) {
     const agentId = agentDailyOverrideMatch[1];
     if (!isUuid(agentId)) {
       badRequest(res, "agentId must be a UUID");
+      return;
+    }
+    const scopedAgentId = enforceAgentSelfScope(res, access, agentId);
+    if (!scopedAgentId) {
       return;
     }
 
@@ -5612,7 +5654,7 @@ export async function routeApi(req, res, url) {
          ) VALUES ($1::uuid, $2::timestamptz, $3::timestamptz, $4, $5, 'daily_override', $6)
          RETURNING id`,
         [
-          agentId,
+          scopedAgentId,
           startsAt.toISOString(),
           endsAt.toISOString(),
           payload.timezone,
@@ -5640,9 +5682,20 @@ export async function routeApi(req, res, url) {
     }
 
     if (req.method === "PUT") {
-      const access = await requireRole(req, res, [roles.admin]);
+      const access = await requireRole(req, res, [roles.agent, roles.admin]);
       if (!access) {
         return;
+      }
+      if (access.role === roles.agent) {
+        const ownerAgentId = await withClient((client) => fetchAgentAvailabilitySlotOwner(client, slotId));
+        if (!ownerAgentId) {
+          notFound(res);
+          return;
+        }
+        const scopedAgentId = enforceAgentSelfScope(res, access, ownerAgentId);
+        if (!scopedAgentId) {
+          return;
+        }
       }
 
       let payload;
@@ -5712,9 +5765,20 @@ export async function routeApi(req, res, url) {
     }
 
     if (req.method === "DELETE") {
-      const access = await requireRole(req, res, [roles.admin]);
+      const access = await requireRole(req, res, [roles.agent, roles.admin]);
       if (!access) {
         return;
+      }
+      if (access.role === roles.agent) {
+        const ownerAgentId = await withClient((client) => fetchAgentAvailabilitySlotOwner(client, slotId));
+        if (!ownerAgentId) {
+          notFound(res);
+          return;
+        }
+        const scopedAgentId = enforceAgentSelfScope(res, access, ownerAgentId);
+        if (!scopedAgentId) {
+          return;
+        }
       }
 
       const result = await pool.query(`DELETE FROM "AgentAvailabilitySlots" WHERE id = $1::uuid`, [slotId]);

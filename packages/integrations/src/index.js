@@ -1232,6 +1232,91 @@ export function createPostgresQueueAdapter(client, options = {}) {
       };
     },
 
+    async syncShowingFromWorkflowOutcome({
+      conversationId,
+      workflowOutcome,
+      actorType = "worker",
+      actorId = null,
+      source = "worker",
+      messageId = null
+    }) {
+      if (!conversationId || !workflowOutcome) {
+        return { applied: false, reason: "missing_input" };
+      }
+
+      const statusMap = {
+        showing_confirmed: "confirmed",
+        wants_reschedule: "reschedule_requested",
+        completed: "completed",
+        no_show: "no_show",
+        not_interested: "cancelled"
+      };
+      const nextStatus = statusMap[workflowOutcome] || null;
+      if (!nextStatus) {
+        return { applied: false, reason: "unsupported_outcome" };
+      }
+
+      const activeResult = await client.query(
+        `SELECT id, status
+           FROM "ShowingAppointments"
+          WHERE conversation_id = $1::uuid
+          ORDER BY starts_at DESC, created_at DESC
+          LIMIT 1`,
+        [conversationId]
+      );
+
+      if (activeResult.rowCount === 0) {
+        return { applied: false, reason: "appointment_not_found" };
+      }
+
+      const appointment = activeResult.rows[0];
+      if (appointment.status === nextStatus) {
+        return { applied: false, reason: "no_change", appointmentId: appointment.id };
+      }
+
+      await client.query(
+        `UPDATE "ShowingAppointments"
+            SET status = $2,
+                metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
+                updated_at = NOW()
+          WHERE id = $1::uuid`,
+        [
+          appointment.id,
+          nextStatus,
+          JSON.stringify({
+            workflowOutcome,
+            workflowSyncedAt: new Date().toISOString(),
+            workflowSource: source,
+            workflowMessageId: messageId || null
+          })
+        ]
+      );
+
+      await client.query(
+        `INSERT INTO "AuditLogs" (actor_type, actor_id, entity_type, entity_id, action, details)
+         VALUES ($1, $2, 'showing_appointment', $3, 'showing_workflow_outcome_synced', $4::jsonb)`,
+        [
+          actorType,
+          actorId,
+          String(appointment.id),
+          JSON.stringify({
+            conversationId,
+            workflowOutcome,
+            previousStatus: appointment.status,
+            nextStatus,
+            source,
+            messageId
+          })
+        ]
+      );
+
+      return {
+        applied: true,
+        appointmentId: appointment.id,
+        status: nextStatus
+      };
+    },
+
     async recordLog({ actorType, entityType, entityId, action, details }) {
       await client.query(
         `INSERT INTO "AuditLogs" (actor_type, entity_type, entity_id, action, details)

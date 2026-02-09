@@ -185,6 +185,14 @@ export function buildWorkflowPersistencePayload(workflowOutcome) {
     };
   }
 
+  if (workflowOutcome === "showing_confirmed") {
+    return {
+      workflowOutcome: "showing_confirmed",
+      showingState: "confirmed",
+      followUpStage: null
+    };
+  }
+
   if (workflowOutcome === "wants_reschedule") {
     return {
       workflowOutcome: "wants_reschedule",
@@ -204,6 +212,22 @@ export function buildWorkflowPersistencePayload(workflowOutcome) {
     return {
       workflowOutcome: "completed",
       showingState: "completed",
+      followUpStage: null
+    };
+  }
+
+  if (workflowOutcome === "no_show") {
+    return {
+      workflowOutcome: "no_show",
+      showingState: "no_show",
+      followUpStage: null
+    };
+  }
+
+  if (workflowOutcome === "not_interested") {
+    return {
+      workflowOutcome: "not_interested",
+      showingState: "cancelled",
       followUpStage: null
     };
   }
@@ -499,6 +523,22 @@ export async function processPendingMessagesWithAi({
         await adapter.transitionConversationWorkflow({
           conversationId: message.conversationId,
           payload: workflowPersistencePayload,
+          actorType: "worker",
+          actorId: msg.assignedAgentId || null,
+          source: "ai_outcome_decision",
+          messageId: message.id
+        });
+      }
+
+      if (
+        workflowPersistencePayload
+        && message.conversationId
+        && typeof adapter.syncShowingFromWorkflowOutcome === "function"
+      ) {
+        failureStage = "sync_showing_from_workflow";
+        await adapter.syncShowingFromWorkflowOutcome({
+          conversationId: message.conversationId,
+          workflowOutcome: pipeline.workflowOutcome,
           actorType: "worker",
           actorId: msg.assignedAgentId || null,
           source: "ai_outcome_decision",

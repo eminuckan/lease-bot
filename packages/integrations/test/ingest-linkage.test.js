@@ -79,6 +79,13 @@ function createMockClient({ linkageRow = null, conversationListingId = null, mes
         };
       }
 
+      if (sql.includes("UPDATE \"Conversations\"") && sql.includes("SET external_inbox_sort_rank = NULL")) {
+        return {
+          rowCount: 0,
+          rows: []
+        };
+      }
+
       throw new Error(`Unexpected SQL in test: ${sql}`);
     }
   };
