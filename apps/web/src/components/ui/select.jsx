@@ -10,7 +10,7 @@ export function SelectTrigger({ className, children, ...props }) {
   return (
     <SelectPrimitive.Trigger
       className={cn(
-        "flex h-12 w-full items-center justify-between rounded-md bg-muted px-4 py-2.5 text-[15px] text-foreground transition-colors placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>span]:truncate sm:text-sm",
+        "flex h-11 w-full items-center justify-between rounded-md bg-muted px-4 py-2.5 text-[15px] text-foreground transition-colors placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>span]:truncate sm:text-sm",
         className
       )}
       {...props}

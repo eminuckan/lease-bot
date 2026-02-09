@@ -38,6 +38,22 @@ function AppLayout() {
   const { user, sessionLoading, health, signOut, isAdmin } = useLeaseBot();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const currentPath = matches[matches.length - 1]?.pathname || "";
+
+  // Close mobile menu on route change.
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [currentPath]);
+
+  // Lock body scroll when mobile menu is open.
+  useEffect(() => {
+    if (mobileMenuOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => { document.body.style.overflow = ""; };
+  }, [mobileMenuOpen]);
 
   if (sessionLoading) {
     return (
@@ -51,8 +67,6 @@ function AppLayout() {
     return <Navigate to="/login" />;
   }
 
-  const currentPath = matches[matches.length - 1]?.pathname || "";
-
   const showAdminNav = isAdmin;
   const showAgentNav = true;
 
@@ -60,21 +74,6 @@ function AppLayout() {
     router.navigate({ to });
     setMobileMenuOpen(false);
   }
-
-  // Close mobile menu on route change
-  useEffect(() => {
-    setMobileMenuOpen(false);
-  }, [currentPath]);
-
-  // Lock body scroll when mobile menu is open
-  useEffect(() => {
-    if (mobileMenuOpen) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
-    return () => { document.body.style.overflow = ""; };
-  }, [mobileMenuOpen]);
 
   function renderNavItems(showLabels) {
     return (

@@ -175,7 +175,7 @@ export function AdminUsersPanel() {
                 value={inviteForm.role}
                 onValueChange={(value) => setInviteForm((current) => ({ ...current, role: value }))}
               >
-                <SelectTrigger className="h-9">
+                <SelectTrigger>
                   <SelectValue placeholder="Role" />
                 </SelectTrigger>
                 <SelectContent>
@@ -211,17 +211,17 @@ export function AdminUsersPanel() {
             <h3 className="text-sm font-semibold">Users and invitations</h3>
             <div className="grid w-full gap-2 sm:grid-cols-2 lg:flex lg:items-center">
               <div className="relative w-full lg:min-w-[260px]">
-                <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
                   placeholder="Search name/email"
-                  className="pl-9"
+                  className="pl-10"
                 />
               </div>
 
               <Select value={typeFilter} onValueChange={setTypeFilter}>
-                <SelectTrigger className="h-9 w-full lg:min-w-[150px]">
+                <SelectTrigger className="w-full lg:min-w-[150px]">
                   <SelectValue placeholder="Type" />
                 </SelectTrigger>
                 <SelectContent>
@@ -232,7 +232,7 @@ export function AdminUsersPanel() {
               </Select>
 
               <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="h-9 w-full lg:min-w-[150px]">
+                <SelectTrigger className="w-full lg:min-w-[150px]">
                   <SelectValue placeholder="Status" />
                 </SelectTrigger>
                 <SelectContent>
@@ -246,7 +246,7 @@ export function AdminUsersPanel() {
               </Select>
 
               <Select value={roleFilter} onValueChange={setRoleFilter}>
-                <SelectTrigger className="h-9 w-full lg:min-w-[130px]">
+                <SelectTrigger className="w-full lg:min-w-[130px]">
                   <SelectValue placeholder="Role" />
                 </SelectTrigger>
                 <SelectContent>
