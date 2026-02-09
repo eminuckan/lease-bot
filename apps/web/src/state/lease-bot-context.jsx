@@ -240,6 +240,8 @@ export function LeaseBotProvider({ children }) {
             : syncedThreadMessages.length
         }
       }));
+
+      return synced;
     } catch {
       // Best-effort; keep previous detail/cache and retry later.
       setSyncedConversations((current) => ({
@@ -250,6 +252,7 @@ export function LeaseBotProvider({ children }) {
           nextRetryAt: Date.now() + conversationThreadSyncRetryMs
         }
       }));
+      return null;
     } finally {
       conversationSyncInFlightRef.current.delete(conversationId);
     }
@@ -363,11 +366,24 @@ export function LeaseBotProvider({ children }) {
     }
 
     if (!force && cached?.detail && isFresh(cached.fetchedAt, conversationCacheTtlMs)) {
+      if (!background && shouldAutoSyncConversationThread(conversationId, cached.detail)) {
+        // Avoid showing partial history while a full thread sync is in-flight.
+        setConversationDetail(null);
+        setConversationLoading(true);
+        setConversationRefreshing(false);
+        const synced = await runConversationThreadSync(conversationId, requestId);
+        if (requestId !== conversationRequestSeq.current) {
+          return;
+        }
+        if (!synced) {
+          setConversationDetail(cached.detail);
+        }
+        setConversationLoading(false);
+        setConversationRefreshing(false);
+        return;
+      }
       setConversationLoading(false);
       setConversationRefreshing(false);
-      if (!background && shouldAutoSyncConversationThread(conversationId, cached.detail)) {
-        void runConversationThreadSync(conversationId, requestId);
-      }
       return;
     }
 
@@ -384,10 +400,18 @@ export function LeaseBotProvider({ children }) {
       }
 
       const fetchedAt = Date.now();
-      setConversationDetail(result);
-      conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
       if (!background && shouldAutoSyncConversationThread(conversationId, result)) {
-        void runConversationThreadSync(conversationId, requestId);
+        const synced = await runConversationThreadSync(conversationId, requestId);
+        if (requestId !== conversationRequestSeq.current) {
+          return;
+        }
+        if (!synced) {
+          setConversationDetail(result);
+          conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
+        }
+      } else {
+        setConversationDetail(result);
+        conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
       }
     } catch (error) {
       if (requestId === conversationRequestSeq.current) {
