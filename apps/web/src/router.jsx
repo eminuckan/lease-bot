@@ -8,6 +8,7 @@ import { adminUsersRoute } from "./routes/admin-users-route";
 import { agentRoute, agentIndexRoute } from "./routes/agent-route";
 import { agentInboxRoute } from "./routes/agent-inbox-route";
 import { agentAppointmentsRoute } from "./routes/agent-appointments-route";
+import { agentAvailabilityRoute } from "./routes/agent-availability-route";
 import { appLayoutRoute } from "./routes/app-layout-route";
 import { indexRoute } from "./routes/index-route";
 import { loginRoute } from "./routes/login-route";
@@ -31,6 +32,7 @@ const routeTree = rootRoute.addChildren([
       agentIndexRoute,
       agentInboxRoute,
       agentAppointmentsRoute,
+      agentAvailabilityRoute,
     ]),
   ]),
 ]);

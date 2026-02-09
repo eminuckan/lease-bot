@@ -6,6 +6,7 @@ import {
   Settings2,
   UserRoundPlus,
   CalendarClock,
+  Clock3,
   LogOut,
   PanelLeftClose,
   PanelLeft,
@@ -30,6 +31,7 @@ const adminNav = [
 const agentNav = [
   { to: "/agent/inbox", label: "Inbox", icon: Inbox },
   { to: "/agent/appointments", label: "My Showings", icon: CalendarClock },
+  { to: "/agent/availability", label: "Availability", icon: Clock3 },
 ];
 
 function AppLayout() {
@@ -72,7 +74,7 @@ function AppLayout() {
   }
 
   const showAdminNav = isAdmin;
-  const showAgentNav = true;
+  const showAgentNav = user?.role === "agent";
 
   function handleNavigate(to) {
     router.navigate({ to });

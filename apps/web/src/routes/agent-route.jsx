@@ -3,7 +3,8 @@ import { useLeaseBot } from "../state/lease-bot-context";
 import { appLayoutRoute } from "./app-layout-route";
 
 function AgentLayout() {
-  const { canAccessAgent } = useLeaseBot();
+  const { user } = useLeaseBot();
+  const canAccessAgent = user?.role === "agent";
 
   if (!canAccessAgent) {
     return (
