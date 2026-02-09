@@ -136,7 +136,7 @@ export function InboxPanel() {
             </Select>
             <div className="flex items-center gap-2">
               <Select value={selectedInboxPlatform} onValueChange={setSelectedInboxPlatform}>
-                <SelectTrigger className="flex-1 sm:w-36 sm:flex-none">
+                <SelectTrigger className="min-w-0 flex-1">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -149,7 +149,7 @@ export function InboxPanel() {
                 type="button"
                 onClick={handleRefreshInbox}
                 disabled={listBusy}
-                className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                className="inline-flex h-11 w-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
                 title="Refresh"
               >
                 <RefreshCw className={cn("h-4 w-4", listBusy && "animate-spin")} />
