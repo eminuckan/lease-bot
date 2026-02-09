@@ -130,7 +130,10 @@ export function AssignmentPanel() {
   } = useLeaseBot();
   const [bulkAgentId, setBulkAgentId] = useState("__none__");
   const [bulkBusy, setBulkBusy] = useState(false);
-  const [sorting, setSorting] = useState([]);
+  const [sorting, setSorting] = useState([
+    { id: "status", desc: false },
+    { id: "updatedAt", desc: true }
+  ]);
   const [columnFilters, setColumnFilters] = useState([]);
   const [rowSelection, setRowSelection] = useState({});
 
@@ -248,6 +251,10 @@ export function AssignmentPanel() {
       {
         accessorKey: "status",
         filterFn: "equalsString",
+        sortingFn: (a, b) => {
+          const rank = (value) => (value === "active" ? 0 : 1);
+          return rank(a.original.status) - rank(b.original.status);
+        },
         header: ({ column }) => <SortableHead column={column} label="Status" />,
         cell: ({ row }) => (
           <Badge
@@ -470,6 +477,9 @@ export function AssignmentPanel() {
               <h3 className="text-sm font-semibold">Assignment table</h3>
               <p className="text-xs text-muted-foreground">
                 Manage listing assignments, sort columns, and apply bulk actions.
+              </p>
+              <p className="text-[11px] text-muted-foreground/80">
+                Default sorting: active listings first.
               </p>
             </div>
             <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-3">
