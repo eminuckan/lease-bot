@@ -163,7 +163,7 @@ function AppLayout() {
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 shrink-0"
+            className="h-8 w-8 shrink-0 text-muted-foreground hover:bg-muted hover:text-foreground"
             onClick={() => setSidebarOpen((prev) => !prev)}
             aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
           >
