@@ -62,12 +62,6 @@ export function InboxPanel() {
     () => inboxItems.filter((item) => item.workflowOutcome === "human_required" || item.latestStatus === "hold"),
     [inboxItems]
   );
-  const followUpQueue = useMemo(
-    () => inboxItems
-      .filter((item) => item.followUpStatus === "pending" && item.followUpDueAt)
-      .sort((a, b) => new Date(a.followUpDueAt).getTime() - new Date(b.followUpDueAt).getTime()),
-    [inboxItems]
-  );
   const todaysShowings = useMemo(
     () => appointments.filter((item) => (item.startsAt || "").slice(0, 10) === todayKey),
     [appointments, todayKey]
@@ -131,7 +125,7 @@ export function InboxPanel() {
           {/* Thread list header */}
           <div className="space-y-2 px-2 py-3">
             <Select value={selectedInboxStatus} onValueChange={setSelectedInboxStatus}>
-              <SelectTrigger className="h-9 w-full text-sm">
+              <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -142,7 +136,7 @@ export function InboxPanel() {
             </Select>
             <div className="flex items-center gap-2">
               <Select value={selectedInboxPlatform} onValueChange={setSelectedInboxPlatform}>
-                <SelectTrigger className="h-9 flex-1 text-sm sm:w-36 sm:flex-none">
+                <SelectTrigger className="flex-1 sm:w-36 sm:flex-none">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -163,28 +157,13 @@ export function InboxPanel() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 px-2 pb-2">
-            <div className="rounded-md bg-muted px-2 py-2">
-              <p className="text-[11px] text-muted-foreground">Human required</p>
-              <p className="text-sm font-semibold">{humanRequiredQueue.length}</p>
-            </div>
-            <div className="rounded-md bg-muted px-2 py-2">
-              <p className="text-[11px] text-muted-foreground">Today showings</p>
-              <p className="text-sm font-semibold">{todaysShowings.length}</p>
-            </div>
-            <div className="rounded-md bg-muted px-2 py-2">
-              <p className="text-[11px] text-muted-foreground">Follow-up queue</p>
-              <p className="text-sm font-semibold">{followUpQueue.length}</p>
-            </div>
-            <div className="rounded-md bg-muted px-2 py-2">
-              <p className="text-[11px] text-muted-foreground">Daily plan</p>
-              <p className="text-sm font-semibold">{humanRequiredQueue.length + todaysShowings.length + followUpQueue.length}</p>
-            </div>
-          </div>
-
-          <div className="space-y-2 px-2 pb-2">
-            <QueuePreview title="Human required" items={humanRequiredQueue} onSelect={handleSelectConversation} />
-            <QueuePreview title="Follow-up due" items={followUpQueue} onSelect={handleSelectConversation} />
+          <div className="flex flex-wrap items-center gap-2 px-2 pb-2 text-xs text-muted-foreground">
+            <span className="rounded-md bg-muted px-2 py-1">
+              Human required: <span className="font-semibold text-foreground">{humanRequiredQueue.length}</span>
+            </span>
+            <span className="rounded-md bg-muted px-2 py-1">
+              Today showings: <span className="font-semibold text-foreground">{todaysShowings.length}</span>
+            </span>
           </div>
 
           {/* Thread list */}
@@ -443,34 +422,6 @@ export function InboxPanel() {
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function QueuePreview({ title, items, onSelect }) {
-  const preview = items.slice(0, 3);
-  return (
-    <div className="rounded-md border border-dashed border-border p-2">
-      <div className="mb-1 flex items-center justify-between">
-        <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{title}</p>
-        <span className="text-[11px] text-muted-foreground">{items.length}</span>
-      </div>
-      {preview.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No items</p>
-      ) : (
-        <div className="space-y-1">
-          {preview.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => onSelect(item.id)}
-              className="w-full truncate rounded bg-muted px-2 py-1 text-left text-xs text-foreground hover:bg-accent"
-            >
-              {item.leadName || item.externalThreadId || "Conversation"}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

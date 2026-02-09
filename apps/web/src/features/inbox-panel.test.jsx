@@ -88,21 +88,21 @@ describe("InboxPanel workboard", () => {
     };
   });
 
-  it("R25/R26: renders daily plan counters and queue previews", async () => {
+  it("R25/R26: renders simplified workboard counters and keeps thread selection", async () => {
     render(<InboxPanel />);
 
-    expect(screen.getAllByText("Human required").length > 0).toBe(true);
-    expect(screen.getAllByText("Today showings").length > 0).toBe(true);
-    expect(screen.getAllByText("Follow-up queue").length > 0).toBe(true);
-    expect(screen.getAllByText("Daily plan").length > 0).toBe(true);
+    expect(screen.getAllByText(/Human required/i).length > 0).toBe(true);
+    expect(screen.getAllByText(/Today showings/i).length > 0).toBe(true);
+    expect(screen.queryByText(/Follow-up queue/i)).toBeNull();
+    expect(screen.queryByText(/Daily plan/i)).toBeNull();
 
     expect(screen.getAllByText("2").length > 0).toBe(true);
     expect(screen.getAllByText("1").length > 0).toBe(true);
-    expect(screen.getAllByRole("button", { name: "Hold Lead" }).length > 0).toBe(true);
-    expect(screen.getAllByRole("button", { name: "Follow Up Lead" }).length > 0).toBe(true);
+    expect(screen.getAllByRole("button", { name: /Hold Lead/i }).length > 0).toBe(true);
+    expect(screen.getAllByRole("button", { name: /Follow Up Lead/i }).length > 0).toBe(true);
 
     const user = userEvent.setup();
-    await user.click(screen.getAllByRole("button", { name: "Follow Up Lead" })[0]);
+    await user.click(screen.getAllByRole("button", { name: /Follow Up Lead/i })[0]);
     expect(mockLeaseBot.setSelectedConversationId).toHaveBeenCalledWith("22222222-2222-4222-8222-222222222222");
   });
 

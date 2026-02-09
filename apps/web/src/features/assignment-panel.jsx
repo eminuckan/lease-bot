@@ -425,7 +425,7 @@ export function AssignmentPanel() {
                         }));
                       }}
                     >
-                      <SelectTrigger className="mt-1.5 h-9 text-sm">
+                      <SelectTrigger className="mt-1.5">
                         <SelectValue placeholder="Select listing" />
                       </SelectTrigger>
                       <SelectContent>
@@ -447,7 +447,7 @@ export function AssignmentPanel() {
                       value={assignmentForm.agentId || "__none__"}
                       onValueChange={(v) => setAssignmentForm((c) => ({ ...c, agentId: v === "__none__" ? "" : v }))}
                     >
-                      <SelectTrigger className="mt-1.5 h-9 text-sm">
+                      <SelectTrigger className="mt-1.5">
                         <SelectValue placeholder="Unassign" />
                       </SelectTrigger>
                       <SelectContent>
@@ -483,21 +483,21 @@ export function AssignmentPanel() {
                 Default sorting: active listings first.
               </p>
             </div>
-            <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-3">
-              <div className="relative sm:col-span-2 xl:col-span-1 xl:w-80">
-                <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+            <div className="grid w-full gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              <div className="relative sm:col-span-2 xl:col-span-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={searchFilter}
                   onChange={(event) => table.getColumn("listing")?.setFilterValue(event.target.value)}
                   placeholder="Search listing"
-                  className="pl-9"
+                  className="pl-10"
                 />
               </div>
               <Select
                 value={statusFilter}
                 onValueChange={(value) => table.getColumn("status")?.setFilterValue(value === "__all__" ? undefined : value)}
               >
-                <SelectTrigger className="h-9">
+                <SelectTrigger className="w-full">
                   <SelectValue placeholder="All statuses" />
                 </SelectTrigger>
                 <SelectContent>
@@ -510,7 +510,7 @@ export function AssignmentPanel() {
                 value={assignedFilter}
                 onValueChange={(value) => table.getColumn("assignedState")?.setFilterValue(value === "__all__" ? undefined : value)}
               >
-                <SelectTrigger className="h-9">
+                <SelectTrigger className="w-full">
                   <SelectValue placeholder="All assignments" />
                 </SelectTrigger>
                 <SelectContent>
@@ -529,7 +529,7 @@ export function AssignmentPanel() {
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <Select value={bulkAgentId} onValueChange={setBulkAgentId}>
-                <SelectTrigger className="h-9 w-full sm:w-56">
+                <SelectTrigger className="w-full sm:w-56">
                   <SelectValue placeholder="Bulk assign agent" />
                 </SelectTrigger>
                 <SelectContent>

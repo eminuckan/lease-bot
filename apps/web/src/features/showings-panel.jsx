@@ -86,7 +86,7 @@ export function ShowingsPanel() {
               value={selectedUnitId || "__none__"}
               onValueChange={(v) => setSelectedUnitId(v === "__none__" ? "" : v)}
             >
-              <SelectTrigger className="mt-1.5 h-10 text-sm">
+              <SelectTrigger className="mt-1.5">
                 <SelectValue placeholder="Select unit" />
               </SelectTrigger>
               <SelectContent>
@@ -104,7 +104,7 @@ export function ShowingsPanel() {
               type="button"
               onClick={handleRefreshShowings}
               disabled={isRefreshing}
-              className="mb-px rounded-md bg-muted p-2.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-md bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
               title="Refresh"
             >
               <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />

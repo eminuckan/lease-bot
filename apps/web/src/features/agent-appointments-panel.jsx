@@ -137,7 +137,7 @@ export function AgentAppointmentsPanel() {
                 value={appointmentFilters.status}
                 onValueChange={(v) => updateFilter("status", v)}
               >
-                <SelectTrigger className="mt-1.5 h-9 text-sm">
+                <SelectTrigger className="mt-1.5">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -153,7 +153,7 @@ export function AgentAppointmentsPanel() {
                 value={appointmentFilters.unitId}
                 onValueChange={(v) => updateFilter("unitId", v)}
               >
-                <SelectTrigger className="mt-1.5 h-9 text-sm">
+                <SelectTrigger className="mt-1.5">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -172,7 +172,7 @@ export function AgentAppointmentsPanel() {
                 type="date"
                 value={appointmentFilters.fromDate || ""}
                 onChange={(e) => updateFilter("fromDate", e.target.value)}
-                className="mt-1.5 h-9 w-full rounded-md bg-muted px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1.5 h-11 w-full rounded-md bg-muted px-4 text-[15px] text-foreground focus:outline-none focus:ring-2 focus:ring-ring sm:text-sm"
               />
             </div>
             <div>
@@ -181,7 +181,7 @@ export function AgentAppointmentsPanel() {
                 type="date"
                 value={appointmentFilters.toDate || ""}
                 onChange={(e) => updateFilter("toDate", e.target.value)}
-                className="mt-1.5 h-9 w-full rounded-md bg-muted px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                className="mt-1.5 h-11 w-full rounded-md bg-muted px-4 text-[15px] text-foreground focus:outline-none focus:ring-2 focus:ring-ring sm:text-sm"
               />
             </div>
           </div>
@@ -210,25 +210,28 @@ export function AgentAppointmentsPanel() {
               </div>
               <span className="text-xs text-muted-foreground">{unitContext}</span>
             </div>
-            <div className="rounded-lg bg-card p-4 shadow-card">
-              <Calendar
-                mode="single"
-                month={calendarMonth}
-                onMonthChange={setCalendarMonth}
-                selected={selectedCalendarDay}
-                onSelect={setSelectedCalendarDay}
-                fixedWeeks
-                modifiers={{ available: availableDays, empty: emptyDays }}
-                modifiersClassNames={{
-                  available: "rdp-day_available",
-                  empty: "rdp-day_empty",
-                }}
-                footer={
-                  <span className="text-xs text-muted-foreground">
-                    {selectedDayStatus || "Select a day"} &middot; {availableDays.length} available &middot; {emptyDays.length} empty
-                  </span>
-                }
-              />
+            <div className="rounded-lg bg-card p-4 shadow-card sm:p-5">
+              <div className="flex justify-center">
+                <Calendar
+                  className="mx-auto"
+                  mode="single"
+                  month={calendarMonth}
+                  onMonthChange={setCalendarMonth}
+                  selected={selectedCalendarDay}
+                  onSelect={setSelectedCalendarDay}
+                  fixedWeeks
+                  modifiers={{ available: availableDays, empty: emptyDays }}
+                  modifiersClassNames={{
+                    available: "rdp-day_available",
+                    empty: "rdp-day_empty",
+                  }}
+                  footer={
+                    <span className="text-xs text-muted-foreground">
+                      {selectedDayStatus || "Select a day"} &middot; {availableDays.length} available &middot; {emptyDays.length} empty
+                    </span>
+                  }
+                />
+              </div>
               <div className="mt-3 flex gap-4 text-[11px] text-muted-foreground">
                 <span className="flex items-center gap-1.5">
                   <span className="h-2.5 w-2.5 rounded-full bg-status-confirmed" />
