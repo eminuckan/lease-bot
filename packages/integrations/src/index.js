@@ -1609,7 +1609,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
 
       let ingested = 0;
       let scanned = 0;
-      const threadSyncEnabled = process.env.WORKER_THREAD_SYNC_ON_NEW_INBOUND !== "0";
+      const threadSyncEnabled = process.env.WORKER_THREAD_SYNC_ON_NEW_INBOUND === "1";
       const threadSyncPlatforms = process.env.WORKER_THREAD_SYNC_PLATFORMS
         ? process.env.WORKER_THREAD_SYNC_PLATFORMS.split(",").map((value) => value.trim()).filter(Boolean)
         : ["spareroom"];

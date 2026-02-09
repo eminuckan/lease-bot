@@ -370,7 +370,7 @@ export function LeaseBotProvider({ children }) {
     if (!force && cached?.detail && isFresh(cached.fetchedAt, conversationCacheTtlMs)) {
       setConversationLoading(false);
       setConversationRefreshing(false);
-      if (shouldAutoSyncConversationThread(conversationId, cached.detail)) {
+      if (!background && shouldAutoSyncConversationThread(conversationId, cached.detail)) {
         void runConversationThreadSync(conversationId, requestId);
       }
       return;
@@ -391,7 +391,7 @@ export function LeaseBotProvider({ children }) {
       const fetchedAt = Date.now();
       setConversationDetail(result);
       conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
-      if (shouldAutoSyncConversationThread(conversationId, result)) {
+      if (!background && shouldAutoSyncConversationThread(conversationId, result)) {
         void runConversationThreadSync(conversationId, requestId);
       }
     } catch (error) {
