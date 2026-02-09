@@ -220,13 +220,12 @@ export function LeaseBotProvider({ children }) {
       const syncedMessages = Array.isArray(synced?.messages) ? synced.messages : [];
       const syncedThreadMessages = syncedMessages.filter((item) => item?.metadata?.sentAtSource === "platform_thread");
 
-      if (requestId === null || requestId === conversationRequestSeq.current) {
-        setConversationDetail((current) => {
-          if (!current || current?.conversation?.id !== conversationId) {
-            return current;
-          }
-          return synced;
-        });
+      if (requestId === null) {
+        setConversationDetail((current) => (
+          current?.conversation?.id === conversationId ? synced : current
+        ));
+      } else if (requestId === conversationRequestSeq.current) {
+        setConversationDetail(synced);
       }
 
       setSyncedConversations((current) => ({
