@@ -1422,6 +1422,15 @@ export function createPostgresQueueAdapter(client, options = {}) {
           }
         }
 
+        // SpareRoom inbox preview rows are useful for fast list ingest, but once a thread sync succeeds
+        // we prefer canonical thread rows in detail views to avoid truncated/partial duplicates.
+        await client.query(
+          `DELETE FROM "Messages"
+            WHERE conversation_id = $1::uuid
+              AND COALESCE(metadata->>'sentAtSource', '') = 'platform_inbox'`,
+          [conversationId]
+        );
+
         await client.query(
           `UPDATE "Conversations" c
               SET last_message_at = latest.max_sent_at,

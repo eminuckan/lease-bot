@@ -174,6 +174,7 @@ export function LeaseBotProvider({ children }) {
     const messages = Array.isArray(detail?.messages) ? detail.messages : [];
     const threadMessageCount = Number(detail?.conversation?.threadMessageCount);
     const threadMessages = messages.filter((item) => item?.metadata?.sentAtSource === "platform_thread");
+    const hasInboxPreviewMessages = messages.some((item) => item?.metadata?.sentAtSource === "platform_inbox");
     const syncState = syncedConversations[conversationId];
     const nowMs = Date.now();
     const hasKnownThreadGap = Number.isFinite(threadMessageCount) && threadMessageCount > threadMessages.length;
@@ -181,6 +182,10 @@ export function LeaseBotProvider({ children }) {
     const canRetrySync = !syncState?.nextRetryAt || nowMs >= syncState.nextRetryAt;
     const syncedRecently = Number.isFinite(syncState?.lastSyncedAt)
       && nowMs - syncState.lastSyncedAt < conversationThreadSyncSuccessCooldownMs;
+
+    if (hasInboxPreviewMessages) {
+      return !syncState?.inFlight && canRetrySync;
+    }
 
     return !syncedRecently && !syncState?.inFlight && canRetrySync && (hasNoThreadHistory || hasKnownThreadGap);
   }
