@@ -29,6 +29,7 @@ const decisionSchema = z.object({
   confidence: z.number().min(0).max(1).nullable(),
   riskLevel: z.enum(["low", "medium", "high", "critical"]).nullable(),
   ambiguity: z.boolean(),
+  selectedSlotIndex: z.number().int().min(1).nullable(),
   suggestedReply: z.string().nullable(),
   reasonCode: z.string().nullable()
 });
@@ -199,6 +200,7 @@ async function classifyWithGemini({
       "If you are uncertain, set ambiguity=true and workflowOutcome=human_required.",
       "Allowed intents: tour_request, pricing_question, availability_question, unsubscribe, unknown.",
       "Choose workflowOutcome from: not_interested, wants_reschedule, no_reply, showing_confirmed, general_question, human_required.",
+      "If user confirms one of the provided slot options, set selectedSlotIndex (1-based index from slot list). Otherwise set selectedSlotIndex=null.",
       "Provide confidence between 0 and 1 and riskLevel from low, medium, high, critical.",
       "For tour_request or availability_question, provide suggestedReply as a natural human message.",
       "Do not copy examples verbatim. Keep tone concise, friendly, and conversational.",
@@ -254,6 +256,20 @@ function normalizeRiskLevel(value) {
     return null;
   }
   return normalized;
+}
+
+function normalizeSelectedSlotIndex(value, slotCount) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) {
+    return null;
+  }
+  if (parsed < 1) {
+    return null;
+  }
+  if (!Number.isFinite(slotCount) || slotCount < 1) {
+    return null;
+  }
+  return parsed > slotCount ? null : parsed;
 }
 
 function classifyWorkflowOutcomeFromHeuristics(inboundBody) {
@@ -390,6 +406,7 @@ export function runReplyPipeline(input) {
     confidence: workflow.confidence,
     riskLevel: workflow.riskLevel,
     escalationReasonCode: eligibility.outcome === "escalate" ? eligibility.reason : null,
+    selectedSlotIndex: null,
     replyBody: renderedReply
   };
 }
@@ -445,6 +462,7 @@ export async function runReplyPipelineWithAI(input) {
     isAmbiguous,
     guardrails
   });
+  const selectedSlotIndex = normalizeSelectedSlotIndex(aiDecision?.selectedSlotIndex, slotCount);
   const eligibility = decideReplyEligibility({
     intent: policyIntent,
     effectiveIntent,
@@ -471,6 +489,7 @@ export async function runReplyPipelineWithAI(input) {
     riskLevel: workflow.riskLevel,
     escalationReasonCode: eligibility.outcome === "escalate" ? eligibility.reason : null,
     provider: aiDecision ? "gemini" : "heuristic",
+    selectedSlotIndex,
     replyBody
   };
 }

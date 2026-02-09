@@ -83,6 +83,30 @@ function formatSlotWindow(slot) {
   return agentName ? `${base} (${agentName})` : base;
 }
 
+function normalizeSlotCandidate(slot) {
+  const startsAt = slot?.starts_at || slot?.startsAt || null;
+  const endsAt = slot?.ends_at || slot?.endsAt || null;
+  const timezone = slot?.timezone || "UTC";
+  if (!startsAt || !endsAt) {
+    return null;
+  }
+
+  const normalized = {
+    startsAt,
+    endsAt,
+    timezone,
+    agentId: slot?.agent_id || slot?.agentId || null,
+    agentName: typeof slot?.agent_name === "string"
+      ? slot.agent_name.trim()
+      : typeof slot?.agentName === "string"
+      ? slot.agentName.trim()
+      : null
+  };
+
+  normalized.label = formatSlotWindow(normalized);
+  return normalized;
+}
+
 function buildTemplateContext(message, slotOptions) {
   const unit = message.propertyName && message.unitNumber ? `${message.propertyName} ${message.unitNumber}` : "";
   const firstSlot = slotOptions.length > 0 ? slotOptions[0] : "";
@@ -432,13 +456,11 @@ export async function processPendingMessagesWithAi({
 
       const slotRows = await fetchSlotRowsForMessage(adapter, msg);
       const maxSlotOptions = Math.max(1, Number(process.env.WORKER_AUTOREPLY_SLOT_OPTION_LIMIT || 4));
-      const slotOptions = Array.from(
-        new Set(
-          (Array.isArray(slotRows) ? slotRows : [])
-            .map((slot) => formatSlotWindow(slot))
-            .filter(Boolean)
-        )
-      ).slice(0, maxSlotOptions);
+      const normalizedSlotCandidates = (Array.isArray(slotRows) ? slotRows : [])
+        .map((slot) => normalizeSlotCandidate(slot))
+        .filter(Boolean)
+        .slice(0, maxSlotOptions);
+      const slotOptions = Array.from(new Set(normalizedSlotCandidates.map((slot) => slot.label))).slice(0, maxSlotOptions);
       const followUpRuleFallbackIntent = message.metadata?.intent || "tour_request";
       const messageIntent = classifyIntent(msg.body);
       const followUp = detectFollowUp(msg.body, msg.hasRecentOutbound);
@@ -539,6 +561,9 @@ export async function processPendingMessagesWithAi({
         await adapter.syncShowingFromWorkflowOutcome({
           conversationId: message.conversationId,
           workflowOutcome: pipeline.workflowOutcome,
+          selectedSlotIndex: pipeline.selectedSlotIndex || null,
+          slotCandidates: normalizedSlotCandidates,
+          inboundBody: msg.body,
           actorType: "worker",
           actorId: msg.assignedAgentId || null,
           source: "ai_outcome_decision",
@@ -560,6 +585,7 @@ export async function processPendingMessagesWithAi({
           workflowOutcome: pipeline.workflowOutcome,
           confidence: pipeline.confidence,
           riskLevel: pipeline.riskLevel,
+          selectedSlotIndex: pipeline.selectedSlotIndex,
           decision: pipeline.eligibility,
           escalationReasonCode: pipeline.escalationReasonCode,
           platformPolicy,
@@ -700,6 +726,7 @@ export async function processPendingMessagesWithAi({
               reviewStatus: status,
               platformPolicy,
               dispatchKey,
+              selectedSlotIndex: pipeline.selectedSlotIndex,
               delivery: deliveryReceipt
             }
           });
@@ -717,6 +744,8 @@ export async function processPendingMessagesWithAi({
             guardrails: pipeline.guardrails.reasons,
             escalationReasonCode: pipeline.escalationReasonCode,
             platformPolicy,
+            selectedSlotIndex: pipeline.selectedSlotIndex,
+            slotCandidates: normalizedSlotCandidates,
             dispatchKey,
             delivery: deliveryReceipt
           };
@@ -750,6 +779,7 @@ export async function processPendingMessagesWithAi({
         workflowOutcome: pipeline.workflowOutcome,
         confidence: pipeline.confidence,
         riskLevel: pipeline.riskLevel,
+        selectedSlotIndex: pipeline.selectedSlotIndex,
         replyEligible: pipeline.eligibility.eligible,
         replyDecisionReason: pipeline.eligibility.reason,
         outcome: pipeline.outcome,
@@ -780,6 +810,7 @@ export async function processPendingMessagesWithAi({
           workflowOutcome: pipeline.workflowOutcome,
           confidence: pipeline.confidence,
           riskLevel: pipeline.riskLevel,
+          selectedSlotIndex: pipeline.selectedSlotIndex,
           decision: pipeline.eligibility,
           escalationReasonCode: pipeline.escalationReasonCode,
           platformPolicy,

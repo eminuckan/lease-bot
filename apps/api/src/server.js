@@ -1858,6 +1858,7 @@ async function fetchUnitAgentSlotCandidates(client, unitId, { fromDate, toDate, 
              SELECT 1
                FROM "ShowingAppointments" appt
               WHERE appt.agent_id = ua.agent_id
+                AND appt.unit_id <> ua.unit_id
                 AND appt.status IN ('pending', 'confirmed', 'reschedule_requested')
                 AND tstzrange(appt.starts_at, appt.ends_at, '[)')
                     && tstzrange(
@@ -2457,9 +2458,11 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
   }
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
-  const orderByClause = `ORDER BY effective_last_message_at DESC NULLS LAST,
-                                c.updated_at DESC NULLS LAST,
+  const orderByClause = `ORDER BY
+                                CASE WHEN c.external_inbox_sort_rank IS NULL THEN 1 ELSE 0 END ASC,
                                 c.external_inbox_sort_rank ASC NULLS LAST,
+                                effective_last_message_at DESC NULLS LAST,
+                                c.updated_at DESC NULLS LAST,
                                 c.id ASC`;
   const result = await client.query(
     `SELECT c.id,

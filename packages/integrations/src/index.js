@@ -540,6 +540,211 @@ export function createPostgresQueueAdapter(client, options = {}) {
     return `#${listingExternalId}`;
   }
 
+  function normalizeSlotCandidate(slot) {
+    if (!slot || typeof slot !== "object") {
+      return null;
+    }
+
+    const startsAt = normalizeTimestampValue(slot.starts_at || slot.startsAt);
+    const endsAt = normalizeTimestampValue(slot.ends_at || slot.endsAt);
+    if (!startsAt || !endsAt) {
+      return null;
+    }
+
+    return {
+      startsAt,
+      endsAt,
+      timezone: typeof slot.timezone === "string" && slot.timezone.trim() ? slot.timezone.trim() : "UTC",
+      agentId: normalizeUuid(slot.agent_id || slot.agentId),
+      agentName: typeof slot.agent_name === "string"
+        ? slot.agent_name.trim()
+        : typeof slot.agentName === "string"
+        ? slot.agentName.trim()
+        : null
+    };
+  }
+
+  function buildWorkflowAppointmentIdempotencyKey(conversationId, slotCandidate) {
+    const startsAt = slotCandidate?.startsAt || "na";
+    const endsAt = slotCandidate?.endsAt || "na";
+    return `wf:${conversationId}:${startsAt}:${endsAt}`;
+  }
+
+  async function createWorkflowShowingAppointment({
+    conversationId,
+    conversation,
+    slotCandidate,
+    workflowOutcome,
+    source,
+    messageId,
+    selectedSlotIndex
+  }) {
+    const startsAt = slotCandidate.startsAt;
+    const endsAt = slotCandidate.endsAt;
+    const timezone = slotCandidate.timezone || "UTC";
+    const agentId = slotCandidate.agentId || normalizeUuid(conversation.assigned_agent_id);
+    const unitId = normalizeUuid(conversation.unit_id);
+    const listingId = normalizeUuid(conversation.listing_id);
+    const platformAccountId = normalizeUuid(conversation.platform_account_id);
+
+    if (!agentId || !unitId || !platformAccountId) {
+      return { applied: false, reason: "missing_slot_context" };
+    }
+
+    const idempotencyKey = buildWorkflowAppointmentIdempotencyKey(conversationId, slotCandidate);
+    const metadata = {
+      workflowOutcome,
+      workflowSyncedAt: new Date().toISOString(),
+      workflowSource: source,
+      workflowMessageId: messageId || null,
+      selectedSlotIndex: Number.isFinite(Number(selectedSlotIndex)) ? Number(selectedSlotIndex) : null,
+      slotCandidate
+    };
+
+    try {
+      const upsertResult = await client.query(
+        `INSERT INTO "ShowingAppointments" (
+           idempotency_key,
+           platform_account_id,
+           conversation_id,
+           unit_id,
+           listing_id,
+           agent_id,
+           starts_at,
+           ends_at,
+           timezone,
+           status,
+           source,
+           metadata
+         ) VALUES (
+           $1,
+           $2::uuid,
+           $3::uuid,
+           $4::uuid,
+           $5::uuid,
+           $6::uuid,
+           $7::timestamptz,
+           $8::timestamptz,
+           $9,
+           'confirmed',
+           'ai_outcome',
+           $10::jsonb
+         )
+         ON CONFLICT (idempotency_key)
+         DO UPDATE SET
+           status = 'confirmed',
+           metadata = COALESCE("ShowingAppointments".metadata, '{}'::jsonb) || EXCLUDED.metadata,
+           updated_at = NOW()
+         RETURNING id, status, (xmax = 0) AS inserted`,
+        [
+          idempotencyKey,
+          platformAccountId,
+          conversationId,
+          unitId,
+          listingId,
+          agentId,
+          startsAt,
+          endsAt,
+          timezone,
+          JSON.stringify(metadata)
+        ]
+      );
+
+      return {
+        applied: true,
+        created: Boolean(upsertResult.rows[0]?.inserted),
+        appointmentId: upsertResult.rows[0]?.id || null,
+        status: upsertResult.rows[0]?.status || "confirmed"
+      };
+    } catch (error) {
+      if (error?.code === "23P01") {
+        return {
+          applied: false,
+          reason: "slot_conflict",
+          error: "agent_slot_conflict"
+        };
+      }
+      throw error;
+    }
+  }
+
+  async function fetchAssignedAgentSlotOptionsInternal({
+    unitId,
+    assignedAgentId,
+    limit = 3,
+    includeAllAssignedAgents = false
+  }) {
+    if (!unitId) {
+      return [];
+    }
+
+    const resolvedLimit = Math.max(1, Number(limit || 3));
+    const normalizedAssignedAgentId = normalizeUuid(assignedAgentId);
+    const preferAssignedAgent = includeAllAssignedAgents && normalizedAssignedAgentId ? 0 : 1;
+
+    const result = await client.query(
+      `SELECT ua.agent_id,
+              ag.full_name AS agent_name,
+              GREATEST(unit_slot.starts_at, agent_slot.starts_at) AS starts_at,
+              LEAST(unit_slot.ends_at, agent_slot.ends_at) AS ends_at,
+              COALESCE(unit_slot.timezone, agent_slot.timezone, 'UTC') AS timezone,
+              ua.priority
+         FROM "UnitAgentAssignments" ua
+         JOIN "Agents" ag
+           ON ag.id = ua.agent_id
+         JOIN "AvailabilitySlots" unit_slot
+           ON unit_slot.unit_id = ua.unit_id
+          AND unit_slot.status = 'open'
+         JOIN "AgentAvailabilitySlots" agent_slot
+           ON agent_slot.agent_id = ua.agent_id
+          AND agent_slot.status = 'available'
+        WHERE ua.unit_id = $1::uuid
+          AND ua.assignment_mode = 'active'
+          AND (
+            $2::boolean = TRUE
+            OR ($3::uuid IS NOT NULL AND ua.agent_id = $3::uuid)
+          )
+          AND tstzrange(unit_slot.starts_at, unit_slot.ends_at, '[)')
+              && tstzrange(agent_slot.starts_at, agent_slot.ends_at, '[)')
+          AND NOT EXISTS (
+            SELECT 1
+              FROM "AgentAvailabilitySlots" blocked_slot
+             WHERE blocked_slot.agent_id = ua.agent_id
+               AND blocked_slot.status = 'unavailable'
+               AND tstzrange(blocked_slot.starts_at, blocked_slot.ends_at, '[)')
+                   && tstzrange(
+                     GREATEST(unit_slot.starts_at, agent_slot.starts_at),
+                     LEAST(unit_slot.ends_at, agent_slot.ends_at),
+                     '[)'
+                   )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+              FROM "ShowingAppointments" appt
+             WHERE appt.agent_id = ua.agent_id
+               AND appt.unit_id <> ua.unit_id
+               AND appt.status IN ('pending', 'confirmed', 'reschedule_requested')
+               AND tstzrange(appt.starts_at, appt.ends_at, '[)')
+                   && tstzrange(
+                     GREATEST(unit_slot.starts_at, agent_slot.starts_at),
+                     LEAST(unit_slot.ends_at, agent_slot.ends_at),
+                     '[)'
+                   )
+          )
+          AND GREATEST(unit_slot.starts_at, agent_slot.starts_at) < LEAST(unit_slot.ends_at, agent_slot.ends_at)
+          AND GREATEST(unit_slot.starts_at, agent_slot.starts_at) >= NOW()
+        ORDER BY
+          CASE WHEN $4::int = 0 AND ua.agent_id = $3::uuid THEN 0 ELSE 1 END ASC,
+          GREATEST(unit_slot.starts_at, agent_slot.starts_at) ASC,
+          ua.priority ASC,
+          ua.created_at ASC
+        LIMIT $5`,
+      [unitId, includeAllAssignedAgents, normalizedAssignedAgentId, preferAssignedAgent, resolvedLimit]
+    );
+
+    return result.rows;
+  }
+
   return {
     async fetchPendingMessages(request = {}) {
       const normalizedRequest = typeof request === "number" ? { limit: request } : request;
@@ -744,74 +949,12 @@ export function createPostgresQueueAdapter(client, options = {}) {
     },
 
     async fetchAssignedAgentSlotOptions({ unitId, assignedAgentId, limit = 3, includeAllAssignedAgents = false }) {
-      if (!unitId) {
-        return [];
-      }
-
-      const resolvedLimit = Math.max(1, Number(limit || 3));
-      const normalizedAssignedAgentId = normalizeUuid(assignedAgentId);
-      const preferAssignedAgent = includeAllAssignedAgents && normalizedAssignedAgentId ? 0 : 1;
-
-      const result = await client.query(
-        `SELECT ua.agent_id,
-                ag.full_name AS agent_name,
-                GREATEST(unit_slot.starts_at, agent_slot.starts_at) AS starts_at,
-                LEAST(unit_slot.ends_at, agent_slot.ends_at) AS ends_at,
-                COALESCE(unit_slot.timezone, agent_slot.timezone, 'UTC') AS timezone,
-                ua.priority
-           FROM "UnitAgentAssignments" ua
-           JOIN "Agents" ag
-             ON ag.id = ua.agent_id
-           JOIN "AvailabilitySlots" unit_slot
-             ON unit_slot.unit_id = ua.unit_id
-            AND unit_slot.status = 'open'
-           JOIN "AgentAvailabilitySlots" agent_slot
-             ON agent_slot.agent_id = ua.agent_id
-            AND agent_slot.status = 'available'
-          WHERE ua.unit_id = $1::uuid
-            AND ua.assignment_mode = 'active'
-            AND (
-              $2::boolean = TRUE
-              OR ($3::uuid IS NOT NULL AND ua.agent_id = $3::uuid)
-            )
-            AND tstzrange(unit_slot.starts_at, unit_slot.ends_at, '[)')
-                && tstzrange(agent_slot.starts_at, agent_slot.ends_at, '[)')
-            AND NOT EXISTS (
-              SELECT 1
-                FROM "AgentAvailabilitySlots" blocked_slot
-               WHERE blocked_slot.agent_id = ua.agent_id
-                 AND blocked_slot.status = 'unavailable'
-                 AND tstzrange(blocked_slot.starts_at, blocked_slot.ends_at, '[)')
-                     && tstzrange(
-                       GREATEST(unit_slot.starts_at, agent_slot.starts_at),
-                       LEAST(unit_slot.ends_at, agent_slot.ends_at),
-                       '[)'
-                     )
-            )
-            AND NOT EXISTS (
-              SELECT 1
-                FROM "ShowingAppointments" appt
-               WHERE appt.agent_id = ua.agent_id
-                 AND appt.status IN ('pending', 'confirmed', 'reschedule_requested')
-                 AND tstzrange(appt.starts_at, appt.ends_at, '[)')
-                     && tstzrange(
-                       GREATEST(unit_slot.starts_at, agent_slot.starts_at),
-                       LEAST(unit_slot.ends_at, agent_slot.ends_at),
-                       '[)'
-                     )
-            )
-            AND GREATEST(unit_slot.starts_at, agent_slot.starts_at) < LEAST(unit_slot.ends_at, agent_slot.ends_at)
-            AND GREATEST(unit_slot.starts_at, agent_slot.starts_at) >= NOW()
-          ORDER BY
-            CASE WHEN $4::int = 0 AND ua.agent_id = $3::uuid THEN 0 ELSE 1 END ASC,
-            GREATEST(unit_slot.starts_at, agent_slot.starts_at) ASC,
-            ua.priority ASC,
-            ua.created_at ASC
-          LIMIT $5`,
-        [unitId, includeAllAssignedAgents, normalizedAssignedAgentId, preferAssignedAgent, resolvedLimit]
-      );
-
-      return result.rows;
+      return fetchAssignedAgentSlotOptionsInternal({
+        unitId,
+        assignedAgentId,
+        limit,
+        includeAllAssignedAgents
+      });
     },
 
     // Dev helper: ensure a test conversation has a listing + assigned agent so we can compute slot options.
@@ -1235,6 +1378,9 @@ export function createPostgresQueueAdapter(client, options = {}) {
     async syncShowingFromWorkflowOutcome({
       conversationId,
       workflowOutcome,
+      selectedSlotIndex = null,
+      slotCandidates = [],
+      inboundBody = null,
       actorType = "worker",
       actorId = null,
       source = "worker",
@@ -1256,6 +1402,25 @@ export function createPostgresQueueAdapter(client, options = {}) {
         return { applied: false, reason: "unsupported_outcome" };
       }
 
+      const conversationResult = await client.query(
+        `SELECT c.id,
+                c.platform_account_id,
+                c.listing_id,
+                c.assigned_agent_id,
+                l.unit_id
+           FROM "Conversations" c
+           LEFT JOIN "Listings" l ON l.id = c.listing_id
+          WHERE c.id = $1::uuid
+          LIMIT 1`,
+        [conversationId]
+      );
+
+      if (conversationResult.rowCount === 0) {
+        return { applied: false, reason: "conversation_not_found" };
+      }
+
+      const conversation = conversationResult.rows[0];
+
       const activeResult = await client.query(
         `SELECT id, status
            FROM "ShowingAppointments"
@@ -1264,6 +1429,83 @@ export function createPostgresQueueAdapter(client, options = {}) {
           LIMIT 1`,
         [conversationId]
       );
+
+      const existingAppointment = activeResult.rows[0] || null;
+
+      if (nextStatus === "confirmed" && !existingAppointment) {
+        const normalizedCandidates = (Array.isArray(slotCandidates) ? slotCandidates : [])
+          .map((slot) => normalizeSlotCandidate(slot))
+          .filter(Boolean);
+
+        let resolvedCandidates = normalizedCandidates;
+        if (resolvedCandidates.length === 0) {
+          const unitId = normalizeUuid(conversation.unit_id);
+          if (!unitId) {
+            return { applied: false, reason: "slot_candidates_unavailable" };
+          }
+
+          resolvedCandidates = (await fetchAssignedAgentSlotOptionsInternal({
+            unitId,
+            assignedAgentId: conversation.assigned_agent_id,
+            limit: 6,
+            includeAllAssignedAgents: true
+          }))
+            .map((slot) => normalizeSlotCandidate(slot))
+            .filter(Boolean);
+        }
+
+        if (resolvedCandidates.length === 0) {
+          return { applied: false, reason: "slot_candidates_unavailable" };
+        }
+
+        const requestedIndex = Number(selectedSlotIndex);
+        const selectedIndex = Number.isInteger(requestedIndex) && requestedIndex >= 1
+          ? requestedIndex - 1
+          : 0;
+        const selectedCandidate = resolvedCandidates[selectedIndex] || resolvedCandidates[0];
+
+        const createResult = await createWorkflowShowingAppointment({
+          conversationId,
+          conversation,
+          slotCandidate: selectedCandidate,
+          workflowOutcome,
+          source,
+          messageId,
+          selectedSlotIndex: selectedIndex + 1
+        });
+
+        if (!createResult.applied) {
+          return createResult;
+        }
+
+        await client.query(
+          `INSERT INTO "AuditLogs" (actor_type, actor_id, entity_type, entity_id, action, details)
+           VALUES ($1, $2, 'showing_appointment', $3, 'showing_workflow_outcome_synced', $4::jsonb)`,
+          [
+            actorType,
+            actorId,
+            String(createResult.appointmentId),
+            JSON.stringify({
+              conversationId,
+              workflowOutcome,
+              previousStatus: null,
+              nextStatus: "confirmed",
+              source,
+              messageId,
+              selectedSlotIndex: selectedIndex + 1,
+              inboundBody: typeof inboundBody === "string" ? inboundBody : null,
+              autoCreated: true
+            })
+          ]
+        );
+
+        return {
+          applied: true,
+          appointmentId: createResult.appointmentId,
+          status: createResult.status || "confirmed",
+          autoCreated: true
+        };
+      }
 
       if (activeResult.rowCount === 0) {
         return { applied: false, reason: "appointment_not_found" };
@@ -1305,7 +1547,10 @@ export function createPostgresQueueAdapter(client, options = {}) {
             previousStatus: appointment.status,
             nextStatus,
             source,
-            messageId
+            messageId,
+            selectedSlotIndex: Number.isFinite(Number(selectedSlotIndex)) ? Number(selectedSlotIndex) : null,
+            inboundBody: typeof inboundBody === "string" ? inboundBody : null,
+            autoCreated: false
           })
         ]
       );
