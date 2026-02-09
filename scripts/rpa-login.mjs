@@ -198,6 +198,9 @@ async function main() {
         console.warn("[rpa-login] warning: inbox still looks logged out; worker will report SESSION_EXPIRED");
       } else {
         console.log("[rpa-login] inbox looks logged in; profile should work for worker ingest");
+        if (platform === "spareroom") {
+          console.log("[rpa-login] note: keep LEASE_BOT_RPA_HEADLESS_SPAREROOM=0 to avoid SpareRoom headless auth gate");
+        }
       }
     }
   } finally {

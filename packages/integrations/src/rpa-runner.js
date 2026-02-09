@@ -1007,9 +1007,27 @@ export function createPlaywrightRpaRunner(options = {}) {
   const debugArtifactsEnabled = options.debugArtifactsEnabled ?? process.env.LEASE_BOT_RPA_DEBUG === "1";
   const debugArtifactsDir = options.debugArtifactsDir || process.env.LEASE_BOT_RPA_DEBUG_DIR || ".playwright/rpa-debug";
   const envHeadless = parseBooleanEnv(process.env.LEASE_BOT_RPA_HEADLESS);
-  const headless = typeof options.headless === "boolean" ? options.headless : envHeadless === null ? true : envHeadless;
+  const defaultHeadless = typeof options.headless === "boolean" ? options.headless : envHeadless === null ? true : envHeadless;
   const clock = options.clock || (() => new Date());
   const playwrightFactory = options.playwrightFactory || createDefaultPlaywrightFactory(logger);
+
+  function resolveHeadlessForPlatform(platform) {
+    const normalizedPlatform = String(platform || "").trim().toLowerCase();
+    const platformEnvKey = `LEASE_BOT_RPA_HEADLESS_${normalizedPlatform.toUpperCase()}`;
+    const envOverride = parseBooleanEnv(process.env[platformEnvKey]);
+    if (envOverride !== null) {
+      return envOverride;
+    }
+
+    // SpareRoom currently returns an unauthenticated inbox gate in fully headless mode
+    // even when the same persisted profile is logged in. Use headed by default unless
+    // explicitly overridden via LEASE_BOT_RPA_HEADLESS_SPAREROOM=1.
+    if (normalizedPlatform === "spareroom") {
+      return false;
+    }
+
+    return defaultHeadless;
+  }
 
   async function captureDebugArtifacts(page, meta) {
     if (!debugArtifactsEnabled || !page) {
@@ -1095,6 +1113,7 @@ export function createPlaywrightRpaRunner(options = {}) {
       let context;
       let page;
       try {
+        const runHeadless = resolveHeadlessForPlatform(platform);
         if (session?.userDataDir) {
           if (typeof playwrightFactory.launchPersistentContext !== "function") {
             throw createRunnerError("RPA_PROFILE_UNSUPPORTED", "Persistent profile is not supported by the current runner", {
@@ -1105,12 +1124,12 @@ export function createPlaywrightRpaRunner(options = {}) {
             platform,
             action,
             account,
-            headless,
+            headless: runHeadless,
             userDataDir: session.userDataDir
           });
           browser = typeof context?.browser === "function" ? context.browser() : null;
         } else {
-          browser = await playwrightFactory.launch({ platform, action, account, headless });
+          browser = await playwrightFactory.launch({ platform, action, account, headless: runHeadless });
           context = await browser.newContext({
             storageState: session?.storageState || undefined
           });
