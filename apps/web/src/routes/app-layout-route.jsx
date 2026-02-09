@@ -170,7 +170,7 @@ function AppLayout() {
             {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeft className="h-4 w-4" />}
           </Button>
           {sidebarOpen ? (
-            <span className="truncate text-sm font-semibold tracking-tight">Lease Bot</span>
+            <span className="truncate text-sm font-semibold tracking-tight text-foreground">Lease Bot</span>
           ) : null}
         </div>
 
@@ -212,7 +212,7 @@ function AppLayout() {
         )}
       >
         <div className="flex h-14 items-center justify-between px-4">
-          <span className="text-sm font-semibold tracking-tight">Lease Bot</span>
+          <span className="text-sm font-semibold tracking-tight text-foreground">Lease Bot</span>
           <button
             type="button"
             onClick={() => setMobileMenuOpen(false)}
