@@ -35,9 +35,17 @@ const agentNav = [
 function AppLayout() {
   const router = useRouter();
   const matches = useMatches();
-  const { user, health, signOut, isAdmin } = useLeaseBot();
+  const { user, sessionLoading, health, signOut, isAdmin } = useLeaseBot();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  if (sessionLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-4">
+        <p className="text-sm text-muted-foreground">Restoring session...</p>
+      </div>
+    );
+  }
 
   if (!user) {
     return <Navigate to="/login" />;

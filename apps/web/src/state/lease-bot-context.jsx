@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
@@ -74,6 +74,7 @@ export function LeaseBotProvider({ children }) {
   const [platformHealthGeneratedAt, setPlatformHealthGeneratedAt] = useState(null);
   const [adminUsers, setAdminUsers] = useState([]);
   const [userInvitations, setUserInvitations] = useState([]);
+  const sessionRequestSeq = useRef(0);
 
   const isAdmin = user?.role === "admin";
   const canAccessAgent = user?.role === "agent" || isAdmin;
@@ -93,22 +94,35 @@ export function LeaseBotProvider({ children }) {
   }
 
   async function refreshSession() {
+    const requestId = sessionRequestSeq.current + 1;
+    sessionRequestSeq.current = requestId;
     setSessionLoading(true);
     try {
       const response = await fetch(`${apiBaseUrl}/api/me`, { credentials: "include" });
+      if (requestId !== sessionRequestSeq.current) {
+        return null;
+      }
       if (!response.ok) {
         setUser(null);
         return null;
       }
 
       const data = await response.json();
+      if (requestId !== sessionRequestSeq.current) {
+        return null;
+      }
       setUser(data.user || null);
       return data.user || null;
     } catch {
+      if (requestId !== sessionRequestSeq.current) {
+        return null;
+      }
       setUser(null);
       return null;
     } finally {
-      setSessionLoading(false);
+      if (requestId === sessionRequestSeq.current) {
+        setSessionLoading(false);
+      }
     }
   }
 

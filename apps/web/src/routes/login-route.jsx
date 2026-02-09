@@ -15,7 +15,7 @@ function LoginPage() {
   const [password, setPassword] = useState("password1234");
 
   if (user) {
-    return <Navigate to={user.role === "admin" ? "/admin" : "/agent"} />;
+    return <Navigate to={user.role === "admin" ? "/admin/inbox" : "/agent/inbox"} />;
   }
 
   async function submitAuth(event) {
@@ -24,7 +24,7 @@ function LoginPage() {
     const currentUser = await signInEmail({ email, password });
 
     if (currentUser) {
-      router.navigate({ to: currentUser.role === "admin" ? "/admin" : "/agent" });
+      router.navigate({ to: currentUser.role === "admin" ? "/admin/inbox" : "/agent/inbox" });
     }
   }
 
