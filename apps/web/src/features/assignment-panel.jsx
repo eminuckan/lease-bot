@@ -1,5 +1,23 @@
-import { Save, Building2, List, Users, Search, Pencil, UserMinus, Rows3, Users2 } from "lucide-react";
+import {
+  Save,
+  Building2,
+  List,
+  Users,
+  Search,
+  Pencil,
+  UserMinus,
+  Rows3,
+  Users2,
+  ArrowUpDown
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import {
+  flexRender,
+  getCoreRowModel,
+  getFilteredRowModel,
+  getSortedRowModel,
+  useReactTable
+} from "@tanstack/react-table";
 import { Button } from "../components/ui/button";
 import { Label } from "../components/ui/label";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
@@ -30,7 +48,7 @@ function sortListingsForAssignment(a, b) {
   return parseDateValue(b.updatedAt) - parseDateValue(a.updatedAt);
 }
 
-function formatListingLabel(item, unitLabel) {
+function formatListingLabel(item) {
   const metadata = item?.metadata && typeof item.metadata === "object" ? item.metadata : {};
   const title = typeof metadata.title === "string" ? metadata.title.trim() : "";
   const location = typeof metadata.location === "string" ? metadata.location.trim() : "";
@@ -41,9 +59,6 @@ function formatListingLabel(item, unitLabel) {
     || (listingExternalId ? `Listing #${listingExternalId}` : `Listing ${String(item.id || "").slice(0, 8)}`);
 
   const details = [];
-  if (unitLabel) {
-    details.push(unitLabel);
-  }
   if (location) {
     details.push(location);
   }
@@ -89,6 +104,19 @@ function buildAssignmentTargets(units, listings) {
     .filter(Boolean);
 }
 
+function SortableHead({ column, label, className = "" }) {
+  return (
+    <button
+      type="button"
+      className={`inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground ${className}`}
+      onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+    >
+      {label}
+      <ArrowUpDown className="h-3.5 w-3.5" />
+    </button>
+  );
+}
+
 export function AssignmentPanel() {
   const {
     units,
@@ -100,31 +128,18 @@ export function AssignmentPanel() {
     updateUnitAssignment,
     bulkUpdateUnitAssignments
   } = useLeaseBot();
-  const [searchTerm, setSearchTerm] = useState("");
-  const [selectedUnitIds, setSelectedUnitIds] = useState([]);
   const [bulkAgentId, setBulkAgentId] = useState("__none__");
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [sorting, setSorting] = useState([]);
+  const [columnFilters, setColumnFilters] = useState([]);
+  const [rowSelection, setRowSelection] = useState({});
 
   async function handleSubmit(event) {
     await saveAssignment(event);
   }
 
-  const unitLabelById = useMemo(
-    () =>
-      new Map(
-        units.map((item) => [
-          item.id,
-          [item.propertyName, item.unitNumber].filter(Boolean).join(" ").trim() || "Unknown unit"
-        ])
-      ),
-    [units]
-  );
-
   const agentById = useMemo(
-    () =>
-      new Map(
-        agents.map((item) => [item.id, item.fullName])
-      ),
+    () => new Map(agents.map((item) => [item.id, item.fullName])),
     [agents]
   );
 
@@ -134,10 +149,7 @@ export function AssignmentPanel() {
   );
 
   const targetByListingId = useMemo(
-    () =>
-      new Map(
-        assignmentTargets.map((item) => [item.listing.id, item])
-      ),
+    () => new Map(assignmentTargets.map((item) => [item.listing.id, item])),
     [assignmentTargets]
   );
 
@@ -165,64 +177,25 @@ export function AssignmentPanel() {
     }
   }, [assignmentTargets, targetByListingId, assignmentForm.listingId, assignmentForm.unitId, setAssignmentForm]);
 
-  const selectedListing = useMemo(
-    () => targetByListingId.get(assignmentForm.listingId)?.listing || null,
-    [targetByListingId, assignmentForm.listingId]
+  const tableRows = useMemo(
+    () => assignmentTargets.map((target) => {
+      const assignedAgentId = target.unit.assignedAgentId || "";
+      const assignedAgentName = assignedAgentId ? (agentById.get(assignedAgentId) || "Unknown agent") : "Unassigned";
+      const status = target.listing.status === "active" ? "active" : "inactive";
+      return {
+        id: target.listing.id,
+        unitId: target.unit.id,
+        listing: formatListingLabel(target.listing),
+        sourceCount: target.sourceCount,
+        status,
+        assignedState: assignedAgentId ? "assigned" : "unassigned",
+        agentName: assignedAgentName,
+        updatedAt: target.listing.updatedAt,
+        target
+      };
+    }),
+    [assignmentTargets, agentById]
   );
-
-  const selectedUnitLabel = selectedListing?.unitId
-    ? unitLabelById.get(selectedListing.unitId) || ""
-    : "";
-
-  const filteredTargets = useMemo(() => {
-    const normalizedSearch = searchTerm.trim().toLowerCase();
-    if (!normalizedSearch) {
-      return assignmentTargets;
-    }
-
-    return assignmentTargets.filter((item) => {
-      const unitLabel = unitLabelById.get(item.unit.id) || "";
-      const listingLabel = formatListingLabel(item.listing, unitLabel);
-      const assignedAgent = item.unit.assignedAgentId ? (agentById.get(item.unit.assignedAgentId) || "") : "";
-      const haystack = `${listingLabel} ${unitLabel} ${assignedAgent}`.toLowerCase();
-      return haystack.includes(normalizedSearch);
-    });
-  }, [searchTerm, assignmentTargets, unitLabelById, agentById]);
-
-  const selectedUnitSet = useMemo(
-    () => new Set(selectedUnitIds),
-    [selectedUnitIds]
-  );
-
-  const allVisibleSelected = filteredTargets.length > 0
-    && filteredTargets.every((item) => selectedUnitSet.has(item.unit.id));
-
-  const selectedCount = selectedUnitIds.length;
-
-  function toggleVisibleSelection(checked) {
-    if (!checked) {
-      const visibleUnitIds = new Set(filteredTargets.map((item) => item.unit.id));
-      setSelectedUnitIds((current) => current.filter((unitId) => !visibleUnitIds.has(unitId)));
-      return;
-    }
-
-    setSelectedUnitIds((current) => {
-      const merged = new Set(current);
-      for (const row of filteredTargets) {
-        merged.add(row.unit.id);
-      }
-      return Array.from(merged);
-    });
-  }
-
-  function toggleRowSelection(unitId, checked) {
-    setSelectedUnitIds((current) => {
-      if (checked) {
-        return Array.from(new Set([...current, unitId]));
-      }
-      return current.filter((id) => id !== unitId);
-    });
-  }
 
   function editAssignment(target) {
     setAssignmentForm((current) => ({
@@ -235,9 +208,141 @@ export function AssignmentPanel() {
 
   async function unassignRow(target) {
     await updateUnitAssignment(target.unit.id, null, {
-      successLabel: `Unassigned ${unitLabelById.get(target.unit.id) || "listing"}`
+      successLabel: "Listing unassigned"
     });
   }
+
+  const columns = useMemo(
+    () => [
+      {
+        id: "select",
+        enableSorting: false,
+        enableColumnFilter: false,
+        header: ({ table }) => (
+          <input
+            type="checkbox"
+            checked={table.getIsAllRowsSelected()}
+            onChange={table.getToggleAllRowsSelectedHandler()}
+            aria-label="Select all rows"
+          />
+        ),
+        cell: ({ row }) => (
+          <input
+            type="checkbox"
+            checked={row.getIsSelected()}
+            onChange={row.getToggleSelectedHandler()}
+            aria-label={`Select ${row.original.listing}`}
+          />
+        )
+      },
+      {
+        accessorKey: "listing",
+        header: ({ column }) => <SortableHead column={column} label="Listing" />,
+        cell: ({ row }) => <div className="max-w-[520px] truncate text-sm font-medium">{row.original.listing}</div>
+      },
+      {
+        accessorKey: "sourceCount",
+        header: ({ column }) => <SortableHead column={column} label="Sources" />,
+        cell: ({ row }) => <Badge>{row.original.sourceCount}</Badge>
+      },
+      {
+        accessorKey: "status",
+        filterFn: "equalsString",
+        header: ({ column }) => <SortableHead column={column} label="Status" />,
+        cell: ({ row }) => (
+          <Badge
+            className={
+              row.original.status === "active"
+                ? "bg-emerald-500/15 text-emerald-300"
+                : "bg-muted text-muted-foreground"
+            }
+          >
+            {row.original.status}
+          </Badge>
+        )
+      },
+      {
+        accessorKey: "assignedState",
+        filterFn: "equalsString",
+        header: ({ column }) => <SortableHead column={column} label="Assignment" />,
+        cell: ({ row }) => (
+          <Badge
+            className={
+              row.original.assignedState === "assigned"
+                ? "bg-sky-500/15 text-sky-300"
+                : "bg-muted text-muted-foreground"
+            }
+          >
+            {row.original.assignedState}
+          </Badge>
+        )
+      },
+      {
+        accessorKey: "agentName",
+        header: ({ column }) => <SortableHead column={column} label="Agent" />,
+        cell: ({ row }) => <span className="text-sm">{row.original.agentName}</span>
+      },
+      {
+        accessorKey: "updatedAt",
+        sortingFn: (a, b) => parseDateValue(a.original.updatedAt) - parseDateValue(b.original.updatedAt),
+        header: ({ column }) => <SortableHead column={column} label="Updated" />,
+        cell: ({ row }) => <span className="text-xs text-muted-foreground">{formatTimestamp(row.original.updatedAt)}</span>
+      },
+      {
+        id: "actions",
+        enableSorting: false,
+        enableColumnFilter: false,
+        header: () => <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Actions</span>,
+        cell: ({ row }) => (
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => editAssignment(row.original.target)}
+            >
+              <Pencil className="mr-1.5 h-3.5 w-3.5" />
+              Edit
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => unassignRow(row.original.target)}
+            >
+              <UserMinus className="mr-1.5 h-3.5 w-3.5" />
+              Unassign
+            </Button>
+          </div>
+        )
+      }
+    ],
+    []
+  );
+
+  const table = useReactTable({
+    data: tableRows,
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    onSortingChange: setSorting,
+    onColumnFiltersChange: setColumnFilters,
+    onRowSelectionChange: setRowSelection,
+    getRowId: (row) => row.unitId,
+    state: {
+      sorting,
+      columnFilters,
+      rowSelection
+    }
+  });
+
+  const searchFilter = (table.getColumn("listing")?.getFilterValue() ?? "")?.toString();
+  const statusFilter = (table.getColumn("status")?.getFilterValue() ?? "__all__")?.toString();
+  const assignedFilter = (table.getColumn("assignedState")?.getFilterValue() ?? "__all__")?.toString();
+
+  const selectedUnitIds = table.getSelectedRowModel().rows.map((row) => row.original.unitId);
+  const selectedCount = selectedUnitIds.length;
 
   async function runBulkAssign(agentId) {
     if (selectedUnitIds.length === 0 || bulkBusy) {
@@ -248,7 +353,7 @@ export function AssignmentPanel() {
       await bulkUpdateUnitAssignments(selectedUnitIds, agentId || null, {
         successLabel: agentId ? "Bulk assign completed" : "Bulk unassign completed"
       });
-      setSelectedUnitIds([]);
+      setRowSelection({});
     } finally {
       setBulkBusy(false);
     }
@@ -257,15 +362,14 @@ export function AssignmentPanel() {
   return (
     <div className="p-6">
       <div className="mx-auto w-full max-w-[1500px] space-y-8">
-        {/* Stats */}
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="flex items-center gap-4 rounded-lg bg-card px-5 py-5 shadow-card">
             <div className="flex h-11 w-11 items-center justify-center rounded-md bg-muted">
               <Building2 className="h-5 w-5 text-muted-foreground" />
             </div>
             <div>
-              <p className="text-2xl font-semibold tabular-nums">{units.length}</p>
-              <p className="text-xs text-muted-foreground">Units</p>
+              <p className="text-2xl font-semibold tabular-nums">{assignmentTargets.length}</p>
+              <p className="text-xs text-muted-foreground">Rows</p>
             </div>
           </div>
           <div className="flex items-center gap-4 rounded-lg bg-card px-5 py-5 shadow-card">
@@ -288,7 +392,6 @@ export function AssignmentPanel() {
           </div>
         </div>
 
-        {/* Assignment form */}
         <div>
           <h2 className="text-sm font-semibold">Assign listing</h2>
           <p className="mt-1 text-xs text-muted-foreground">Select listing and assign responsible agent.</p>
@@ -324,16 +427,11 @@ export function AssignmentPanel() {
                         ) : null}
                         {assignmentTargets.map((item) => (
                           <SelectItem key={item.listing.id} value={item.listing.id}>
-                            {formatListingLabel(item.listing, unitLabelById.get(item.unit.id))}
+                            {formatListingLabel(item.listing)}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    {selectedUnitLabel ? (
-                      <p className="mt-2 text-xs text-muted-foreground">
-                        Unit: {selectedUnitLabel}
-                      </p>
-                    ) : null}
                   </div>
                   <div className="rounded-lg bg-card p-4 shadow-card">
                     <Label className="text-xs text-muted-foreground">Agent</Label>
@@ -366,23 +464,50 @@ export function AssignmentPanel() {
           </div>
         </div>
 
-        {/* Assignment table */}
         <div className="space-y-3">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
             <div>
               <h3 className="text-sm font-semibold">Assignment table</h3>
               <p className="text-xs text-muted-foreground">
-                Manage current listing assignments, edit rows, or run bulk actions.
+                Manage listing assignments, sort columns, and apply bulk actions.
               </p>
             </div>
-            <div className="relative w-full md:w-80">
-              <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                value={searchTerm}
-                onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Search listing / unit / agent"
-                className="pl-9"
-              />
+            <div className="grid w-full gap-2 sm:grid-cols-2 xl:w-auto xl:grid-cols-3">
+              <div className="relative sm:col-span-2 xl:col-span-1 xl:w-80">
+                <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  value={searchFilter}
+                  onChange={(event) => table.getColumn("listing")?.setFilterValue(event.target.value)}
+                  placeholder="Search listing"
+                  className="pl-9"
+                />
+              </div>
+              <Select
+                value={statusFilter}
+                onValueChange={(value) => table.getColumn("status")?.setFilterValue(value === "__all__" ? undefined : value)}
+              >
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="All statuses" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">All statuses</SelectItem>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="inactive">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select
+                value={assignedFilter}
+                onValueChange={(value) => table.getColumn("assignedState")?.setFilterValue(value === "__all__" ? undefined : value)}
+              >
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="All assignments" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">All assignments</SelectItem>
+                  <SelectItem value="assigned">Assigned</SelectItem>
+                  <SelectItem value="unassigned">Unassigned</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
 
@@ -419,7 +544,7 @@ export function AssignmentPanel() {
                 size="sm"
                 variant="outline"
                 disabled={selectedCount === 0 || bulkBusy}
-                onClick={() => setSelectedUnitIds([])}
+                onClick={() => setRowSelection({})}
               >
                 Clear
               </Button>
@@ -429,98 +554,33 @@ export function AssignmentPanel() {
           <div className="rounded-md border border-dashed border-border">
             <Table>
               <TableHeader>
-                <TableRow>
-                  <TableHead className="w-10">
-                    <input
-                      type="checkbox"
-                      checked={allVisibleSelected}
-                      onChange={(event) => toggleVisibleSelection(event.target.checked)}
-                      aria-label="Select all visible rows"
-                    />
-                  </TableHead>
-                  <TableHead>Listing</TableHead>
-                  <TableHead>Unit</TableHead>
-                  <TableHead>Sources</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Agent</TableHead>
-                  <TableHead>Updated</TableHead>
-                  <TableHead className="w-44">Actions</TableHead>
-                </TableRow>
+                {table.getHeaderGroups().map((headerGroup) => (
+                  <TableRow key={headerGroup.id}>
+                    {headerGroup.headers.map((header) => (
+                      <TableHead key={header.id}>
+                        {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                      </TableHead>
+                    ))}
+                  </TableRow>
+                ))}
               </TableHeader>
               <TableBody>
-                {filteredTargets.length === 0 ? (
+                {table.getRowModel().rows.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
                       No rows found.
                     </TableCell>
                   </TableRow>
                 ) : null}
-                {filteredTargets.map((target) => {
-                  const unitId = target.unit.id;
-                  const unitLabel = unitLabelById.get(unitId) || "Unknown unit";
-                  const assignedAgentName = target.unit.assignedAgentId
-                    ? (agentById.get(target.unit.assignedAgentId) || "Unknown agent")
-                    : "Unassigned";
-                  const isSelected = selectedUnitSet.has(unitId);
-                  return (
-                    <TableRow key={unitId}>
-                      <TableCell>
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={(event) => toggleRowSelection(unitId, event.target.checked)}
-                          aria-label={`Select ${unitLabel}`}
-                        />
+                {table.getRowModel().rows.map((row) => (
+                  <TableRow key={row.id} data-state={row.getIsSelected() && "selected"}>
+                    {row.getVisibleCells().map((cell) => (
+                      <TableCell key={cell.id}>
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </TableCell>
-                      <TableCell>
-                        <div className="max-w-[360px] truncate text-sm font-medium">
-                          {formatListingLabel(target.listing, "")}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-sm">{unitLabel}</TableCell>
-                      <TableCell>
-                        <Badge>{target.sourceCount}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          className={
-                            target.listing.status === "active"
-                              ? "bg-emerald-500/15 text-emerald-300"
-                              : "bg-muted text-muted-foreground"
-                          }
-                        >
-                          {target.listing.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-sm">{assignedAgentName}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {formatTimestamp(target.listing.updatedAt)}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => editAssignment(target)}
-                          >
-                            <Pencil className="mr-1.5 h-3.5 w-3.5" />
-                            Edit
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => unassignRow(target)}
-                          >
-                            <UserMinus className="mr-1.5 h-3.5 w-3.5" />
-                            Unassign
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
+                    ))}
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
           </div>
