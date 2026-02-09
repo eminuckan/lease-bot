@@ -51,6 +51,21 @@ function normalizeUuid(value) {
   return normalized;
 }
 
+function normalizeTimestampValue(value) {
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+  }
+
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    if (Number.isFinite(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+
+  return null;
+}
+
 function isAllowedTransition(map, fromState, toState) {
   if (toState === undefined || toState === null) {
     return true;
@@ -1237,6 +1252,8 @@ export function createPostgresQueueAdapter(client, options = {}) {
         `SELECT c.id,
                 c.platform_account_id,
                 c.external_thread_id,
+                c.last_message_at,
+                c.created_at,
                 pa.platform,
                 pa.credentials
            FROM "Conversations" c
@@ -1295,7 +1312,13 @@ export function createPostgresQueueAdapter(client, options = {}) {
           const channel = message.channel || "in_app";
           const body = message.body || "";
           const metadata = message.metadata || {};
-          const sentAt = message.sentAt || new Date().toISOString();
+          const sentAt = normalizeTimestampValue(message.sentAt)
+            || normalizeTimestampValue(conversation.last_message_at)
+            || normalizeTimestampValue(conversation.created_at);
+          if (!sentAt) {
+            skipped += 1;
+            continue;
+          }
 
           const upsertResult = await client.query(
             `INSERT INTO "Messages" (
@@ -1388,7 +1411,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
              ) latest
             WHERE c.id = $1::uuid
               AND latest.max_sent_at IS NOT NULL
-              AND (c.last_message_at IS NULL OR c.last_message_at IS DISTINCT FROM latest.max_sent_at)`,
+              AND (c.last_message_at IS NULL OR latest.max_sent_at > c.last_message_at)`,
           [conversationId]
         );
 
@@ -1810,7 +1833,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
                  ) latest
                 WHERE c.id = $1::uuid
                   AND latest.max_sent_at IS NOT NULL
-                  AND (c.last_message_at IS NULL OR c.last_message_at IS DISTINCT FROM latest.max_sent_at)`,
+                  AND (c.last_message_at IS NULL OR latest.max_sent_at > c.last_message_at)`,
               [conversationId]
             );
           }

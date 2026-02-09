@@ -240,11 +240,6 @@ export function LeaseBotProvider({ children }) {
             : syncedThreadMessages.length
         }
       }));
-
-      await refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, {
-        force: true,
-        background: true
-      });
     } catch {
       // Best-effort; keep previous detail/cache and retry later.
       setSyncedConversations((current) => ({
