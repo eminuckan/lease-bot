@@ -6,6 +6,7 @@ const defaultPlatformAccountId = "11111111-1111-1111-1111-111111111111";
 const inboxPollIntervalMs = Number(import.meta.env.VITE_INBOX_POLL_INTERVAL_MS || 15000);
 const inboxCacheTtlMs = Number(import.meta.env.VITE_INBOX_CACHE_TTL_MS || 10000);
 const conversationCacheTtlMs = Number(import.meta.env.VITE_CONVERSATION_CACHE_TTL_MS || 12000);
+const conversationThreadSyncRetryMs = Number(import.meta.env.VITE_CONVERSATION_THREAD_SYNC_RETRY_MS || 60000);
 const listingsCacheTtlMs = Number(import.meta.env.VITE_LISTINGS_CACHE_TTL_MS || 180000);
 const listingsPollIntervalMs = Number(import.meta.env.VITE_LISTINGS_POLL_INTERVAL_MS || 180000);
 
@@ -237,14 +238,24 @@ export function LeaseBotProvider({ children }) {
       const platform = result?.conversation?.platform;
       const messages = Array.isArray(result?.messages) ? result.messages : [];
       const threadMessageCount = Number(result?.conversation?.threadMessageCount);
+      const threadMessages = messages.filter((item) => item?.metadata?.sentAtSource === "platform_thread");
+      const syncState = syncedConversations[conversationId];
+      const nowMs = Date.now();
+      const hasKnownThreadGap = Number.isFinite(threadMessageCount) && threadMessageCount > threadMessages.length;
+      const hasNoThreadHistory = threadMessages.length === 0;
+      const canRetrySync = !syncState?.nextRetryAt || nowMs >= syncState.nextRetryAt;
       const shouldAutoSync = platform === "spareroom"
-        && !syncedConversations[conversationId]
-        && (
-          messages.length <= 1
-          || (Number.isFinite(threadMessageCount) && threadMessageCount > messages.length)
-        );
+        && !syncState?.inFlight
+        && canRetrySync
+        && (hasNoThreadHistory || hasKnownThreadGap);
       if (shouldAutoSync) {
-        setSyncedConversations((current) => ({ ...current, [conversationId]: true }));
+        setSyncedConversations((current) => ({
+          ...current,
+          [conversationId]: {
+            ...(current[conversationId] || {}),
+            inFlight: true
+          }
+        }));
         try {
           const synced = await request(`/api/inbox/${conversationId}/sync`, { method: "POST" });
           if (requestId !== conversationRequestSeq.current) {
@@ -253,12 +264,34 @@ export function LeaseBotProvider({ children }) {
           const syncedAt = Date.now();
           setConversationDetail(synced);
           conversationCacheRef.current.set(conversationId, { detail: synced, fetchedAt: syncedAt });
+          const syncedThreadMessageCount = Number(synced?.conversation?.threadMessageCount);
+          const syncedMessages = Array.isArray(synced?.messages) ? synced.messages : [];
+          const syncedThreadMessages = syncedMessages.filter((item) => item?.metadata?.sentAtSource === "platform_thread");
+          setSyncedConversations((current) => ({
+            ...current,
+            [conversationId]: {
+              inFlight: false,
+              nextRetryAt: null,
+              lastSyncedAt: syncedAt,
+              threadMessageCount: Number.isFinite(syncedThreadMessageCount)
+                ? syncedThreadMessageCount
+                : syncedThreadMessages.length
+            }
+          }));
           await refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, {
             force: true,
             background: true
           });
         } catch {
-          // Best-effort; keep the previously fetched detail if sync fails.
+          // Best-effort; keep the previously fetched detail if sync fails and retry later.
+          setSyncedConversations((current) => ({
+            ...current,
+            [conversationId]: {
+              ...(current[conversationId] || {}),
+              inFlight: false,
+              nextRetryAt: Date.now() + conversationThreadSyncRetryMs
+            }
+          }));
         }
       }
     } catch (error) {
