@@ -5,11 +5,16 @@ import userEvent from "@testing-library/user-event";
 
 const mockLeaseBot = vi.hoisted(() => ({
   inboxItems: [],
+  inboxLoading: false,
   selectedInboxStatus: "all",
   setSelectedInboxStatus: vi.fn(),
+  selectedInboxPlatform: "all",
+  setSelectedInboxPlatform: vi.fn(),
   selectedConversationId: "",
   setSelectedConversationId: vi.fn(),
   conversationDetail: null,
+  conversationLoading: false,
+  conversationRefreshing: false,
   draftForm: { body: "" },
   setDraftForm: vi.fn(),
   createDraft: vi.fn((event) => event?.preventDefault?.()),

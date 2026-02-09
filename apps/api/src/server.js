@@ -5762,6 +5762,34 @@ const server = http.createServer(async (req, res) => {
 
 if (process.env.NODE_ENV !== "test") {
   const bootstrapTasks = [];
+  const listingSyncEnabled = process.env.LEASE_BOT_SYNC_LISTINGS_ON_START === "1";
+  const listingSyncPlatforms = process.env.LEASE_BOT_SYNC_LISTINGS_PLATFORMS
+    ? process.env.LEASE_BOT_SYNC_LISTINGS_PLATFORMS.split(",").map((value) => value.trim()).filter(Boolean)
+    : ["spareroom"];
+  const listingSyncIntervalMs = Number(process.env.LEASE_BOT_SYNC_LISTINGS_INTERVAL_MS || 180000);
+  let listingSyncInFlight = false;
+
+  const runListingSync = async (trigger) => {
+    try {
+      const result = await withClient(async (client) => {
+        const adapter = createPostgresQueueAdapter(client, { connectorRegistry });
+        return adapter.syncPlatformListings({ platforms: listingSyncPlatforms });
+      });
+      console.log("[bootstrap] platform listings synced", {
+        trigger,
+        platforms: listingSyncPlatforms,
+        scanned: result?.scanned ?? null,
+        upsertedUnits: result?.upsertedUnits ?? null,
+        upsertedListings: result?.upsertedListings ?? null
+      });
+    } catch (error) {
+      console.warn("[bootstrap] failed syncing platform listings", {
+        trigger,
+        platforms: listingSyncPlatforms,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
 
   const platformBootstrapEnabled = process.env.LEASE_BOT_BOOTSTRAP_PLATFORM_ACCOUNTS !== "0";
   if (platformBootstrapEnabled) {
@@ -5790,28 +5818,37 @@ if (process.env.NODE_ENV !== "test") {
     })
   );
 
-  if (process.env.LEASE_BOT_SYNC_LISTINGS_ON_START === "1") {
-    const platforms = process.env.LEASE_BOT_SYNC_LISTINGS_PLATFORMS
-      ? process.env.LEASE_BOT_SYNC_LISTINGS_PLATFORMS.split(",").map((value) => value.trim()).filter(Boolean)
-      : ["spareroom"];
-
-    bootstrapTasks.push(
-      withClient(async (client) => {
-        const adapter = createPostgresQueueAdapter(client, { connectorRegistry });
-        await adapter.syncPlatformListings({ platforms });
-      }).catch((error) => {
-        console.warn("[bootstrap] failed syncing platform listings", {
-          platforms,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      })
-    );
+  if (listingSyncEnabled) {
+    bootstrapTasks.push(runListingSync("startup"));
   }
 
   Promise.allSettled(bootstrapTasks).finally(() => {
     server.listen(port, host, () => {
       console.log(`api listening on http://${host}:${port}`);
     });
+
+    if (listingSyncEnabled && Number.isFinite(listingSyncIntervalMs) && listingSyncIntervalMs > 0) {
+      const timer = setInterval(async () => {
+        if (listingSyncInFlight) {
+          return;
+        }
+        listingSyncInFlight = true;
+        try {
+          await runListingSync("interval");
+        } finally {
+          listingSyncInFlight = false;
+        }
+      }, listingSyncIntervalMs);
+
+      if (typeof timer.unref === "function") {
+        timer.unref();
+      }
+
+      console.log("[bootstrap] listing sync interval enabled", {
+        platforms: listingSyncPlatforms,
+        intervalMs: listingSyncIntervalMs
+      });
+    }
   });
 }
 

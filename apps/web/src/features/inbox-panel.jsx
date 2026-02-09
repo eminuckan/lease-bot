@@ -29,6 +29,7 @@ const PLATFORM_OPTIONS = [
 export function InboxPanel() {
   const {
     inboxItems,
+    inboxLoading,
     selectedInboxStatus,
     setSelectedInboxStatus,
     selectedInboxPlatform,
@@ -36,6 +37,8 @@ export function InboxPanel() {
     selectedConversationId,
     setSelectedConversationId,
     conversationDetail,
+    conversationLoading,
+    conversationRefreshing,
     draftForm,
     setDraftForm,
     createDraft,
@@ -48,6 +51,7 @@ export function InboxPanel() {
   const [inboxPage, setInboxPage] = useState(1);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
+  const listBusy = isRefreshing || inboxLoading;
   const inboxPageCount = Math.max(1, Math.ceil(inboxItems.length / INBOX_PAGE_SIZE));
   const pagedInboxItems = useMemo(() => {
     const start = (inboxPage - 1) * INBOX_PAGE_SIZE;
@@ -87,7 +91,7 @@ export function InboxPanel() {
   async function handleRefreshInbox() {
     setIsRefreshing(true);
     try {
-      await refreshInbox(selectedInboxStatus, false);
+      await refreshInbox(selectedInboxStatus, false, selectedInboxPlatform, { force: true });
     } finally {
       setIsRefreshing(false);
     }
@@ -149,11 +153,11 @@ export function InboxPanel() {
             <button
               type="button"
               onClick={handleRefreshInbox}
-              disabled={isRefreshing}
+              disabled={listBusy}
               className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
               title="Refresh"
             >
-              <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
+              <RefreshCw className={cn("h-4 w-4", listBusy && "animate-spin")} />
             </button>
           </div>
 
@@ -183,13 +187,16 @@ export function InboxPanel() {
 
           {/* Thread list */}
           <div className="flex-1 overflow-y-auto px-2" data-testid="inbox-card-list">
-            {pagedInboxItems.map((item) => (
+            {inboxLoading && inboxItems.length === 0 ? (
+              <InboxListSkeleton />
+            ) : null}
+            {!inboxLoading ? pagedInboxItems.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 data-testid="inbox-row"
                 className={cn(
-                  "flex w-full cursor-pointer flex-col rounded-md px-3 py-3 text-left transition-all mb-0.5",
+                  "mb-0.5 flex w-full cursor-pointer flex-col rounded-md px-3 py-3 text-left transition-all",
                   selectedConversationId === item.id
                     ? "bg-primary text-primary-foreground"
                     : "hover:bg-muted"
@@ -240,8 +247,8 @@ export function InboxPanel() {
                     : "No messages yet"}
                 </span>
               </button>
-            ))}
-            {inboxItems.length === 0 ? (
+            )) : null}
+            {!inboxLoading && inboxItems.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
                 <MessageSquare className="mb-2 h-8 w-8 opacity-30" />
                 <p className="text-sm">No conversations</p>
@@ -284,7 +291,9 @@ export function InboxPanel() {
           "flex min-w-0 flex-1 flex-col bg-background",
           !mobileShowDetail && "hidden md:flex"
         )}>
-          {conversationDetail ? (
+          {conversationLoading && !conversationDetail ? (
+            <ConversationLoadingSkeleton />
+          ) : conversationDetail ? (
             <>
               {/* Conversation header */}
               <div className="flex items-center gap-3 border-b border-dashed border-border bg-card px-4 py-3 md:gap-4 md:px-6 md:py-4">
@@ -319,6 +328,9 @@ export function InboxPanel() {
                     ) : null}
                   </div>
                 </div>
+                {conversationRefreshing ? (
+                  <span className="hidden shrink-0 text-[11px] text-muted-foreground md:inline">Updating...</span>
+                ) : null}
                 <div className="hidden items-center gap-1 md:flex">
                   <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("not_interested")}>Not interested</Button>
                   <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("wants_reschedule")}>Reschedule</Button>
@@ -457,6 +469,45 @@ function QueuePreview({ title, items, onSelect }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function InboxListSkeleton() {
+  return (
+    <div className="space-y-2 py-1">
+      {Array.from({ length: 8 }).map((_, index) => (
+        <div key={`inbox-skeleton-${index}`} className="rounded-md border border-border/40 p-3">
+          <div className="mb-2 h-3.5 w-2/3 animate-pulse rounded bg-muted" />
+          <div className="mb-2 h-3 w-1/2 animate-pulse rounded bg-muted" />
+          <div className="h-3 w-5/6 animate-pulse rounded bg-muted" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ConversationLoadingSkeleton() {
+  return (
+    <div className="flex flex-1 flex-col">
+      <div className="border-b border-dashed border-border bg-card px-6 py-4">
+        <div className="mb-2 h-4 w-40 animate-pulse rounded bg-muted" />
+        <div className="h-3 w-56 animate-pulse rounded bg-muted" />
+      </div>
+      <div className="flex-1 space-y-4 px-6 py-6">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <div
+            key={`thread-skeleton-${index}`}
+            className={cn("flex", index % 2 === 0 ? "justify-start" : "justify-end")}
+          >
+            <div className="w-full max-w-[72%] rounded-lg bg-card p-4 shadow-card">
+              <div className="mb-2 h-3.5 w-11/12 animate-pulse rounded bg-muted" />
+              <div className="mb-2 h-3.5 w-9/12 animate-pulse rounded bg-muted" />
+              <div className="h-3 w-24 animate-pulse rounded bg-muted" />
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

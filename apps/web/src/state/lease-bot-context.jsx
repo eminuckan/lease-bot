@@ -3,6 +3,11 @@ import { toast } from "sonner";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
 const defaultPlatformAccountId = "11111111-1111-1111-1111-111111111111";
+const inboxPollIntervalMs = Number(import.meta.env.VITE_INBOX_POLL_INTERVAL_MS || 15000);
+const inboxCacheTtlMs = Number(import.meta.env.VITE_INBOX_CACHE_TTL_MS || 10000);
+const conversationCacheTtlMs = Number(import.meta.env.VITE_CONVERSATION_CACHE_TTL_MS || 12000);
+const listingsCacheTtlMs = Number(import.meta.env.VITE_LISTINGS_CACHE_TTL_MS || 180000);
+const listingsPollIntervalMs = Number(import.meta.env.VITE_LISTINGS_POLL_INTERVAL_MS || 180000);
 
 function parseApiError(payload, fallback) {
   if (!payload || typeof payload !== "object") {
@@ -18,6 +23,13 @@ function parseApiError(payload, fallback) {
     return payload.error;
   }
   return fallback;
+}
+
+function isFresh(cacheTimestamp, ttlMs) {
+  return Number.isFinite(cacheTimestamp)
+    && Number.isFinite(ttlMs)
+    && ttlMs > 0
+    && Date.now() - cacheTimestamp <= ttlMs;
 }
 
 async function request(pathname, options = {}) {
@@ -55,13 +67,19 @@ export function LeaseBotProvider({ children }) {
   const [weeklyRules, setWeeklyRules] = useState([]);
   const [assignmentForm, setAssignmentForm] = useState({ unitId: "", listingId: "", agentId: "" });
   const [inboxItems, setInboxItems] = useState([]);
+  const [inboxLoading, setInboxLoading] = useState(false);
+  const [inboxLastFetchedAt, setInboxLastFetchedAt] = useState(null);
   const [selectedInboxStatus, setSelectedInboxStatus] = useState("all");
   const [selectedInboxPlatform, setSelectedInboxPlatform] = useState("all");
   const [selectedConversationId, setSelectedConversationId] = useState("");
   const [conversationDetail, setConversationDetail] = useState(null);
+  const [conversationLoading, setConversationLoading] = useState(false);
+  const [conversationRefreshing, setConversationRefreshing] = useState(false);
   const [draftForm, setDraftForm] = useState({ body: "" });
   const [syncedConversations, setSyncedConversations] = useState({});
   const [appointments, setAppointments] = useState([]);
+  const [listingsLoading, setListingsLoading] = useState(false);
+  const [listingsLastFetchedAt, setListingsLastFetchedAt] = useState(null);
   const [appointmentFilters, setAppointmentFilters] = useState({
     status: "all",
     unitId: "all",
@@ -75,6 +93,11 @@ export function LeaseBotProvider({ children }) {
   const [adminUsers, setAdminUsers] = useState([]);
   const [userInvitations, setUserInvitations] = useState([]);
   const sessionRequestSeq = useRef(0);
+  const inboxRequestSeq = useRef(0);
+  const conversationRequestSeq = useRef(0);
+  const inboxCacheRef = useRef(new Map());
+  const conversationCacheRef = useRef(new Map());
+  const listingsCacheRef = useRef({ items: [], fetchedAt: 0 });
 
   const isAdmin = user?.role === "admin";
   const canAccessAgent = user?.role === "agent" || isAdmin;
@@ -126,15 +149,90 @@ export function LeaseBotProvider({ children }) {
     }
   }
 
-  async function refreshConversationDetail(conversationId) {
+  function applyInboxItems(items, preserveSelection) {
+    setInboxItems(items);
+    setSelectedConversationId((current) => {
+      if (preserveSelection && current && items.some((item) => item.id === current)) {
+        return current;
+      }
+      return items[0]?.id || "";
+    });
+  }
+
+  async function refreshListingsSnapshot(options = {}) {
+    const { force = false, background = false } = options;
+    const cached = listingsCacheRef.current;
+    const canUseCache = !force && Array.isArray(cached.items) && cached.items.length > 0 && isFresh(cached.fetchedAt, listingsCacheTtlMs);
+    if (canUseCache) {
+      setListings(cached.items);
+      setListingsLastFetchedAt(new Date(cached.fetchedAt).toISOString());
+      return cached.items;
+    }
+
+    if (!background) {
+      setListingsLoading(true);
+    }
+    try {
+      const listingsResponse = await request("/api/listings");
+      const items = listingsResponse.items || [];
+      const fetchedAt = Date.now();
+      listingsCacheRef.current = { items, fetchedAt };
+      setListings(items);
+      setListingsLastFetchedAt(new Date(fetchedAt).toISOString());
+      return items;
+    } catch (error) {
+      if (Array.isArray(cached.items) && cached.items.length > 0) {
+        return cached.items;
+      }
+      throw error;
+    } finally {
+      if (!background) {
+        setListingsLoading(false);
+      }
+    }
+  }
+
+  async function refreshConversationDetail(conversationId, options = {}) {
+    const { force = false, background = false } = options;
+
     if (!conversationId) {
       setConversationDetail(null);
+      setConversationLoading(false);
+      setConversationRefreshing(false);
       return;
+    }
+
+    const requestId = conversationRequestSeq.current + 1;
+    conversationRequestSeq.current = requestId;
+
+    const cached = conversationCacheRef.current.get(conversationId);
+    if (cached?.detail) {
+      setConversationDetail(cached.detail);
+    } else {
+      setConversationDetail(null);
+    }
+
+    if (!force && cached?.detail && isFresh(cached.fetchedAt, conversationCacheTtlMs)) {
+      setConversationLoading(false);
+      setConversationRefreshing(false);
+      return;
+    }
+
+    if (!background && !cached?.detail) {
+      setConversationLoading(true);
+    } else {
+      setConversationRefreshing(true);
     }
 
     try {
       const result = await request(`/api/inbox/${conversationId}`);
+      if (requestId !== conversationRequestSeq.current) {
+        return;
+      }
+
+      const fetchedAt = Date.now();
       setConversationDetail(result);
+      conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
 
       const platform = result?.conversation?.platform;
       const messages = Array.isArray(result?.messages) ? result.messages : [];
@@ -149,43 +247,86 @@ export function LeaseBotProvider({ children }) {
         setSyncedConversations((current) => ({ ...current, [conversationId]: true }));
         try {
           const synced = await request(`/api/inbox/${conversationId}/sync`, { method: "POST" });
+          if (requestId !== conversationRequestSeq.current) {
+            return;
+          }
+          const syncedAt = Date.now();
           setConversationDetail(synced);
-          await refreshInbox(selectedInboxStatus, true, selectedInboxPlatform);
+          conversationCacheRef.current.set(conversationId, { detail: synced, fetchedAt: syncedAt });
+          await refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, {
+            force: true,
+            background: true
+          });
         } catch {
           // Best-effort; keep the previously fetched detail if sync fails.
         }
       }
     } catch (error) {
-      setApiError(error.message);
+      if (requestId === conversationRequestSeq.current) {
+        setApiError(error.message);
+      }
+    } finally {
+      if (requestId === conversationRequestSeq.current) {
+        setConversationLoading(false);
+        setConversationRefreshing(false);
+      }
     }
   }
 
-  async function refreshInbox(status = selectedInboxStatus, preserveSelection = true, platform = selectedInboxPlatform) {
+  async function refreshInbox(
+    status = selectedInboxStatus,
+    preserveSelection = true,
+    platform = selectedInboxPlatform,
+    options = {}
+  ) {
     if (!user) {
       return;
     }
 
+    const { force = false, background = false } = options;
+    const statusValue = status || "all";
+    const platformValue = platform || "all";
+    const cacheKey = `${statusValue}::${platformValue}`;
+    const cached = inboxCacheRef.current.get(cacheKey);
+    if (!force && cached?.items && isFresh(cached.fetchedAt, inboxCacheTtlMs)) {
+      applyInboxItems(cached.items, preserveSelection);
+      setInboxLastFetchedAt(new Date(cached.fetchedAt).toISOString());
+      return;
+    }
+
+    const requestId = inboxRequestSeq.current + 1;
+    inboxRequestSeq.current = requestId;
+    if (!background) {
+      setInboxLoading(true);
+    }
+
     try {
       const params = new URLSearchParams();
-      if (status && status !== "all") {
-        params.set("status", status);
+      if (statusValue !== "all") {
+        params.set("status", statusValue);
       }
-      if (platform && platform !== "all") {
-        params.set("platform", platform);
+      if (platformValue !== "all") {
+        params.set("platform", platformValue);
       }
       const query = params.toString() ? `?${params.toString()}` : "";
       const result = await request(`/api/inbox${query}`);
-      const items = result.items || [];
-      setInboxItems(items);
+      if (requestId !== inboxRequestSeq.current) {
+        return;
+      }
 
-      setSelectedConversationId((current) => {
-        if (preserveSelection && current && items.some((item) => item.id === current)) {
-          return current;
-        }
-        return items[0]?.id || "";
-      });
+      const items = result.items || [];
+      const fetchedAt = Date.now();
+      inboxCacheRef.current.set(cacheKey, { items, fetchedAt });
+      setInboxLastFetchedAt(new Date(fetchedAt).toISOString());
+      applyInboxItems(items, preserveSelection);
     } catch (error) {
-      setApiError(error.message);
+      if (requestId === inboxRequestSeq.current) {
+        setApiError(error.message);
+      }
+    } finally {
+      if (!background && requestId === inboxRequestSeq.current) {
+        setInboxLoading(false);
+      }
     }
   }
 
@@ -358,38 +499,39 @@ export function LeaseBotProvider({ children }) {
     }
   }
 
-  async function refreshData() {
+  async function refreshData(options = {}) {
     if (!user) {
       return;
     }
 
+    const { forceListings = false } = options;
     setApiError("");
     try {
-      const [agentsResponse, unitsResponse, listingsResponse] = await Promise.all([
+      const [agentsResponse, unitsResponse, listingItems] = await Promise.all([
         request("/api/agents"),
         request("/api/units"),
-        request("/api/listings")
+        refreshListingsSnapshot({ force: forceListings })
       ]);
 
       setAgents(agentsResponse.items || []);
       setUnits(unitsResponse.items || []);
-      setListings(listingsResponse.items || []);
+      setListings(listingItems);
 
       const fallbackUnitId = selectedUnitId || unitsResponse.items?.[0]?.id || "";
-      const fallbackListingId = listingsResponse.items?.[0]?.id || "";
+      const fallbackListingId = listingItems?.[0]?.id || "";
       setSelectedUnitId((current) => current || fallbackUnitId);
       setAssignmentForm((current) => ({
         ...current,
         listingId: current.listingId || fallbackListingId,
         unitId:
           current.unitId
-          || listingsResponse.items?.find((item) => item.id === current.listingId)?.unitId
-          || listingsResponse.items?.find((item) => item.id === fallbackListingId)?.unitId
+          || listingItems?.find((item) => item.id === current.listingId)?.unitId
+          || listingItems?.find((item) => item.id === fallbackListingId)?.unitId
           || fallbackUnitId
       }));
 
       await Promise.all([
-        refreshInbox(selectedInboxStatus, false, selectedInboxPlatform),
+        refreshInbox(selectedInboxStatus, false, selectedInboxPlatform, { force: true }),
         refreshAvailability(fallbackUnitId),
         refreshAppointments(),
         ...(isAdmin ? [refreshAdminPlatformData(), refreshAdminUsers()] : [])
@@ -434,6 +576,14 @@ export function LeaseBotProvider({ children }) {
         method: "POST",
         credentials: "include"
       });
+      inboxCacheRef.current.clear();
+      conversationCacheRef.current.clear();
+      listingsCacheRef.current = { items: [], fetchedAt: 0 };
+      setInboxItems([]);
+      setSelectedConversationId("");
+      setConversationDetail(null);
+      setConversationLoading(false);
+      setConversationRefreshing(false);
       setUser(null);
       toast.success("Signed out");
     } catch {
@@ -566,7 +716,10 @@ export function LeaseBotProvider({ children }) {
       setMessage(outcomeLabel);
       toast.success(result.dispatched ? "Reply sent" : "Draft processed", { description: outcomeLabel });
       setDraftForm((current) => ({ ...current, body: "" }));
-      await Promise.all([refreshInbox(selectedInboxStatus), refreshConversationDetail(selectedConversationId)]);
+      await Promise.all([
+        refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, { force: true }),
+        refreshConversationDetail(selectedConversationId, { force: true })
+      ]);
     } catch (error) {
       setApiError(error.message);
       toast.error("Draft action failed", { description: error.message });
@@ -588,8 +741,8 @@ export function LeaseBotProvider({ children }) {
       setMessage(successLabel);
       toast.success(successLabel);
       await Promise.all([
-        refreshInbox(selectedInboxStatus),
-        refreshConversationDetail(conversationId),
+        refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, { force: true }),
+        refreshConversationDetail(conversationId, { force: true }),
         refreshAppointments(appointmentFilters)
       ]);
       return result;
@@ -607,7 +760,10 @@ export function LeaseBotProvider({ children }) {
       await request(`/api/inbox/messages/${messageId}/approve`, { method: "POST" });
       setMessage("Message approved and sent");
       toast.success("Message approved and sent");
-      await Promise.all([refreshInbox(selectedInboxStatus), refreshConversationDetail(selectedConversationId)]);
+      await Promise.all([
+        refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, { force: true }),
+        refreshConversationDetail(selectedConversationId, { force: true })
+      ]);
     } catch (error) {
       setApiError(error.message);
       toast.error("Approve action failed", { description: error.message });
@@ -621,7 +777,10 @@ export function LeaseBotProvider({ children }) {
       await request(`/api/inbox/messages/${messageId}/reject`, { method: "POST" });
       setMessage("Message moved to hold");
       toast.success("Message moved to hold");
-      await Promise.all([refreshInbox(selectedInboxStatus), refreshConversationDetail(selectedConversationId)]);
+      await Promise.all([
+        refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, { force: true }),
+        refreshConversationDetail(selectedConversationId, { force: true })
+      ]);
     } catch (error) {
       setApiError(error.message);
       toast.error("Reject action failed", { description: error.message });
@@ -635,16 +794,24 @@ export function LeaseBotProvider({ children }) {
 
   useEffect(() => {
     if (!user) {
+      inboxCacheRef.current.clear();
+      conversationCacheRef.current.clear();
+      listingsCacheRef.current = { items: [], fetchedAt: 0 };
+      setInboxItems([]);
+      setSelectedConversationId("");
+      setConversationDetail(null);
+      setConversationLoading(false);
+      setConversationRefreshing(false);
       return;
     }
-    refreshData();
+    refreshData({ forceListings: true });
   }, [user]);
 
   useEffect(() => {
     if (!user) {
       return;
     }
-    refreshInbox(selectedInboxStatus, true, selectedInboxPlatform);
+    refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, { force: true });
   }, [user, selectedInboxStatus, selectedInboxPlatform]);
 
   useEffect(() => {
@@ -655,8 +822,7 @@ export function LeaseBotProvider({ children }) {
     if (!user) {
       return;
     }
-    const intervalMs = Number(import.meta.env.VITE_INBOX_POLL_INTERVAL_MS || 15000);
-    if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    if (!Number.isFinite(inboxPollIntervalMs) || inboxPollIntervalMs <= 0) {
       return;
     }
 
@@ -667,17 +833,50 @@ export function LeaseBotProvider({ children }) {
       }
       inFlight = true;
       try {
-        await refreshInbox(selectedInboxStatus, true, selectedInboxPlatform);
+        await refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, {
+          force: true,
+          background: true
+        });
         if (selectedConversationId) {
-          await refreshConversationDetail(selectedConversationId);
+          await refreshConversationDetail(selectedConversationId, {
+            force: true,
+            background: true
+          });
         }
       } finally {
         inFlight = false;
       }
-    }, intervalMs);
+    }, inboxPollIntervalMs);
 
     return () => clearInterval(timer);
   }, [user, selectedInboxStatus, selectedInboxPlatform, selectedConversationId]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+    if (!Number.isFinite(listingsPollIntervalMs) || listingsPollIntervalMs <= 0) {
+      return;
+    }
+
+    let inFlight = false;
+    const timer = setInterval(async () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        await refreshListingsSnapshot({
+          force: true,
+          background: true
+        });
+      } finally {
+        inFlight = false;
+      }
+    }, listingsPollIntervalMs);
+
+    return () => clearInterval(timer);
+  }, [user]);
 
   const value = {
     apiBaseUrl,
@@ -695,6 +894,8 @@ export function LeaseBotProvider({ children }) {
     agents,
     units,
     listings,
+    listingsLoading,
+    listingsLastFetchedAt,
     selectedUnitId,
     setSelectedUnitId,
     availability,
@@ -703,6 +904,8 @@ export function LeaseBotProvider({ children }) {
     setAssignmentForm,
     selectedUnitListings,
     inboxItems,
+    inboxLoading,
+    inboxLastFetchedAt,
     selectedInboxStatus,
     setSelectedInboxStatus,
     selectedInboxPlatform,
@@ -710,6 +913,8 @@ export function LeaseBotProvider({ children }) {
     selectedConversationId,
     setSelectedConversationId,
     conversationDetail,
+    conversationLoading,
+    conversationRefreshing,
     draftForm,
     setDraftForm,
     appointments,
@@ -722,6 +927,7 @@ export function LeaseBotProvider({ children }) {
     adminUsers,
     userInvitations,
     refreshData,
+    refreshListings: refreshListingsSnapshot,
     refreshInbox,
     refreshAvailability,
     refreshAppointments,

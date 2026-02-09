@@ -12,6 +12,7 @@ dist/
 # Playwright local artifacts
 .playwright/
 .playwright-cli/
+.logs/
 
 # Local workflow spreadsheets (may contain PII)
 calendar-aleyna.xlsx

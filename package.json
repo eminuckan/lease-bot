@@ -12,6 +12,7 @@
     "dev:web": "npm run dev -w @lease-bot/web",
     "dev:api": "npm run dev -w @lease-bot/api",
     "dev:worker": "npm run dev -w @lease-bot/worker",
+    "dev:stack": "node scripts/run-stack.mjs dev",
     "db:setup": "npm run db:setup -w @lease-bot/db",
     "db:reset": "npm run db:reset -w @lease-bot/db",
     "build": "npm run build --workspaces --if-present",
@@ -19,6 +20,7 @@
     "rpa:login": "node --env-file=.env scripts/rpa-login.mjs",
     "rpa:unlock": "node scripts/rpa-unlock.mjs",
     "start:api": "npm run start -w @lease-bot/api",
-    "start:worker": "npm run start -w @lease-bot/worker"
+    "start:worker": "npm run start -w @lease-bot/worker",
+    "start:stack": "node scripts/run-stack.mjs start"
   }
 }

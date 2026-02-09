@@ -70,11 +70,20 @@ npm run dev:api
 npm run dev:worker
 ```
 
+Or run API + worker together with prefixed and file-backed logs:
+
+```bash
+npm run dev:stack
+```
+
 ## Core scripts
 
 ```bash
 # all workspaces
 npm run build
+
+# run api + worker together (production mode)
+npm run start:stack
 
 # workspace tests
 npm run test -w @lease-bot/api
@@ -117,6 +126,13 @@ Common variables:
 - `BETTER_AUTH_SECRET`
 - `VITE_API_BASE_URL`
 - `WORKER_POLL_INTERVAL_MS`
+- `VITE_INBOX_POLL_INTERVAL_MS`
+- `VITE_INBOX_CACHE_TTL_MS`
+- `VITE_CONVERSATION_CACHE_TTL_MS`
+- `VITE_LISTINGS_CACHE_TTL_MS`
+- `VITE_LISTINGS_POLL_INTERVAL_MS`
+- `LEASE_BOT_SYNC_LISTINGS_INTERVAL_MS`
+- `LEASE_BOT_LOG_DIR`
 
 Docker Compose variables:
 
