@@ -7,6 +7,7 @@ const inboxPollIntervalMs = Number(import.meta.env.VITE_INBOX_POLL_INTERVAL_MS |
 const inboxCacheTtlMs = Number(import.meta.env.VITE_INBOX_CACHE_TTL_MS || 10000);
 const conversationCacheTtlMs = Number(import.meta.env.VITE_CONVERSATION_CACHE_TTL_MS || 12000);
 const conversationThreadSyncRetryMs = Number(import.meta.env.VITE_CONVERSATION_THREAD_SYNC_RETRY_MS || 60000);
+const conversationThreadSyncSuccessCooldownMs = Number(import.meta.env.VITE_CONVERSATION_THREAD_SYNC_SUCCESS_COOLDOWN_MS || 300000);
 const conversationPrefetchCount = Number(import.meta.env.VITE_CONVERSATION_PREFETCH_COUNT || 6);
 const conversationPrefetchTtlMs = Number(import.meta.env.VITE_CONVERSATION_PREFETCH_TTL_MS || 45000);
 const listingsCacheTtlMs = Number(import.meta.env.VITE_LISTINGS_CACHE_TTL_MS || 180000);
@@ -178,8 +179,10 @@ export function LeaseBotProvider({ children }) {
     const hasKnownThreadGap = Number.isFinite(threadMessageCount) && threadMessageCount > threadMessages.length;
     const hasNoThreadHistory = threadMessages.length === 0;
     const canRetrySync = !syncState?.nextRetryAt || nowMs >= syncState.nextRetryAt;
+    const syncedRecently = Number.isFinite(syncState?.lastSyncedAt)
+      && nowMs - syncState.lastSyncedAt < conversationThreadSyncSuccessCooldownMs;
 
-    return !syncState?.inFlight && canRetrySync && (hasNoThreadHistory || hasKnownThreadGap);
+    return !syncedRecently && !syncState?.inFlight && canRetrySync && (hasNoThreadHistory || hasKnownThreadGap);
   }
 
   async function runConversationThreadSync(conversationId, requestId = null) {
@@ -268,9 +271,6 @@ export function LeaseBotProvider({ children }) {
 
     const cached = conversationCacheRef.current.get(conversationId);
     if (cached?.detail && isFresh(cached.fetchedAt, conversationPrefetchTtlMs)) {
-      if (shouldAutoSyncConversationThread(conversationId, cached.detail)) {
-        void runConversationThreadSync(conversationId);
-      }
       return;
     }
 
@@ -287,9 +287,6 @@ export function LeaseBotProvider({ children }) {
         return result;
       });
 
-      if (shouldAutoSyncConversationThread(conversationId, result)) {
-        void runConversationThreadSync(conversationId);
-      }
     } catch {
       // Best-effort prefetch.
     } finally {
@@ -427,7 +424,9 @@ export function LeaseBotProvider({ children }) {
     if (!force && cached?.items && isFresh(cached.fetchedAt, inboxCacheTtlMs)) {
       applyInboxItems(cached.items, preserveSelection);
       setInboxLastFetchedAt(new Date(cached.fetchedAt).toISOString());
-      prefetchInboxConversations(cached.items, preserveSelection);
+      if (!background) {
+        prefetchInboxConversations(cached.items, preserveSelection);
+      }
       return;
     }
 
@@ -456,7 +455,9 @@ export function LeaseBotProvider({ children }) {
       inboxCacheRef.current.set(cacheKey, { items, fetchedAt });
       setInboxLastFetchedAt(new Date(fetchedAt).toISOString());
       applyInboxItems(items, preserveSelection);
-      prefetchInboxConversations(items, preserveSelection);
+      if (!background) {
+        prefetchInboxConversations(items, preserveSelection);
+      }
     } catch (error) {
       if (requestId === inboxRequestSeq.current) {
         setApiError(error.message);
