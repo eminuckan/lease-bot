@@ -73,8 +73,9 @@ npm run rpa:unlock -- spareroom
 export LEASE_BOT_RPA_RUNTIME=playwright
 # Optional: many platforms block fully headless browsing
 # export LEASE_BOT_RPA_HEADLESS=0
-# Optional per-platform override (recommended for SpareRoom profile auth)
-# export LEASE_BOT_RPA_HEADLESS_SPAREROOM=0
+# Optional per-platform overrides for headless profile auth (SpareRoom):
+# export LEASE_BOT_RPA_HEADLESS_SPAREROOM=1
+# export LEASE_BOT_RPA_USER_AGENT_SPAREROOM='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36'
 npm run start:worker
 ```
 

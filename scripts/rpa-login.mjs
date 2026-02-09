@@ -199,7 +199,7 @@ async function main() {
       } else {
         console.log("[rpa-login] inbox looks logged in; profile should work for worker ingest");
         if (platform === "spareroom") {
-          console.log("[rpa-login] note: keep LEASE_BOT_RPA_HEADLESS_SPAREROOM=0 to avoid SpareRoom headless auth gate");
+          console.log("[rpa-login] note: for headless runs, set LEASE_BOT_RPA_USER_AGENT_SPAREROOM to avoid SpareRoom auth gate");
         }
       }
     }

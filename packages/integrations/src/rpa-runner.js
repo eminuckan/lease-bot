@@ -463,7 +463,7 @@ function createDefaultPlaywrightFactory(logger = console) {
       return withChannelFallback(({ omitChannel }) => chromium.launch(buildLaunchOptions(headless, { omitChannel })));
     }
     ,
-    async launchPersistentContext({ headless, userDataDir }) {
+    async launchPersistentContext({ headless, userDataDir, contextOptions = {} }) {
       if (typeof userDataDir !== "string" || userDataDir.trim().length === 0) {
         throw createRunnerError("RPA_PROFILE_INVALID", "Invalid userDataDir for persistent context", {
           retryable: false
@@ -478,7 +478,11 @@ function createDefaultPlaywrightFactory(logger = console) {
       }
 
       return withChannelFallback(
-        ({ omitChannel }) => chromium.launchPersistentContext(userDataDir, buildLaunchOptions(headless, { omitChannel })),
+        ({ omitChannel }) =>
+          chromium.launchPersistentContext(userDataDir, {
+            ...buildLaunchOptions(headless, { omitChannel }),
+            ...(contextOptions && typeof contextOptions === "object" ? contextOptions : {})
+          }),
         { userDataDir }
       );
     }
@@ -1010,6 +1014,8 @@ export function createPlaywrightRpaRunner(options = {}) {
   const defaultHeadless = typeof options.headless === "boolean" ? options.headless : envHeadless === null ? true : envHeadless;
   const clock = options.clock || (() => new Date());
   const playwrightFactory = options.playwrightFactory || createDefaultPlaywrightFactory(logger);
+  const spareroomHeadlessFallbackUserAgent =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
 
   function resolveHeadlessForPlatform(platform) {
     const normalizedPlatform = String(platform || "").trim().toLowerCase();
@@ -1018,15 +1024,39 @@ export function createPlaywrightRpaRunner(options = {}) {
     if (envOverride !== null) {
       return envOverride;
     }
+    return defaultHeadless;
+  }
 
-    // SpareRoom currently returns an unauthenticated inbox gate in fully headless mode
-    // even when the same persisted profile is logged in. Use headed by default unless
-    // explicitly overridden via LEASE_BOT_RPA_HEADLESS_SPAREROOM=1.
-    if (normalizedPlatform === "spareroom") {
-      return false;
+  function resolveContextOptionsForPlatform(platform, runHeadless) {
+    const normalizedPlatform = String(platform || "").trim().toLowerCase();
+    const platformKey = normalizedPlatform.toUpperCase();
+    const contextOptions = {};
+
+    const userAgentEnvKey = `LEASE_BOT_RPA_USER_AGENT_${platformKey}`;
+    const localeEnvKey = `LEASE_BOT_RPA_LOCALE_${platformKey}`;
+    const timezoneEnvKey = `LEASE_BOT_RPA_CONTEXT_TIMEZONE_${platformKey}`;
+
+    const envUserAgent = typeof process.env[userAgentEnvKey] === "string" ? process.env[userAgentEnvKey].trim() : "";
+    const envLocale = typeof process.env[localeEnvKey] === "string" ? process.env[localeEnvKey].trim() : "";
+    const envTimezone = typeof process.env[timezoneEnvKey] === "string" ? process.env[timezoneEnvKey].trim() : "";
+
+    if (envUserAgent) {
+      contextOptions.userAgent = envUserAgent;
+    }
+    if (envLocale) {
+      contextOptions.locale = envLocale;
+    }
+    if (envTimezone) {
+      contextOptions.timezoneId = envTimezone;
     }
 
-    return defaultHeadless;
+    // SpareRoom can return an auth gate in headless mode when UA includes HeadlessChrome.
+    // Use a non-headless Chrome UA by default for headless runs unless explicitly overridden.
+    if (normalizedPlatform === "spareroom" && runHeadless && !contextOptions.userAgent) {
+      contextOptions.userAgent = spareroomHeadlessFallbackUserAgent;
+    }
+
+    return contextOptions;
   }
 
   async function captureDebugArtifacts(page, meta) {
@@ -1114,6 +1144,7 @@ export function createPlaywrightRpaRunner(options = {}) {
       let page;
       try {
         const runHeadless = resolveHeadlessForPlatform(platform);
+        const contextOptions = resolveContextOptionsForPlatform(platform, runHeadless);
         if (session?.userDataDir) {
           if (typeof playwrightFactory.launchPersistentContext !== "function") {
             throw createRunnerError("RPA_PROFILE_UNSUPPORTED", "Persistent profile is not supported by the current runner", {
@@ -1125,13 +1156,15 @@ export function createPlaywrightRpaRunner(options = {}) {
             action,
             account,
             headless: runHeadless,
-            userDataDir: session.userDataDir
+            userDataDir: session.userDataDir,
+            contextOptions
           });
           browser = typeof context?.browser === "function" ? context.browser() : null;
         } else {
           browser = await playwrightFactory.launch({ platform, action, account, headless: runHeadless });
           context = await browser.newContext({
-            storageState: session?.storageState || undefined
+            storageState: session?.storageState || undefined,
+            ...contextOptions
           });
         }
         page = await context.newPage();
