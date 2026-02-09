@@ -109,6 +109,7 @@ export function LeaseBotProvider({ children }) {
   const listingsCacheRef = useRef({ items: [], fetchedAt: 0 });
 
   const isAdmin = user?.role === "admin";
+  const canAccessInbox = isAdmin;
   const canAccessAgent = user?.role === "agent" || isAdmin;
   const selectedUnitListings = useMemo(
     () => listings.filter((item) => item.unitId === selectedUnitId),
@@ -355,6 +356,13 @@ export function LeaseBotProvider({ children }) {
   async function refreshConversationDetail(conversationId, options = {}) {
     const { force = false, background = false } = options;
 
+    if (!canAccessInbox) {
+      setConversationDetail(null);
+      setConversationLoading(false);
+      setConversationRefreshing(false);
+      return;
+    }
+
     if (!conversationId) {
       setConversationDetail(null);
       setConversationLoading(false);
@@ -445,8 +453,15 @@ export function LeaseBotProvider({ children }) {
     platform = selectedInboxPlatform,
     options = {}
   ) {
-    if (!user) {
-      return;
+    if (!user || !canAccessInbox) {
+      inboxCacheRef.current.clear();
+      setInboxItems([]);
+      setSelectedConversationId("");
+      setConversationDetail(null);
+      setConversationLoading(false);
+      setConversationRefreshing(false);
+      setInboxLoading(false);
+      return [];
     }
 
     const { force = false, background = false } = options;
@@ -822,7 +837,7 @@ export function LeaseBotProvider({ children }) {
       }));
 
       await Promise.all([
-        refreshInbox(selectedInboxStatus, false, selectedInboxPlatform, { force: true }),
+        ...(canAccessInbox ? [refreshInbox(selectedInboxStatus, false, selectedInboxPlatform, { force: true })] : []),
         refreshAvailability(fallbackUnitId),
         refreshAppointments(),
         ...(isAdmin ? [refreshAdminPlatformData(), refreshAdminUsers()] : [])
@@ -1107,18 +1122,21 @@ export function LeaseBotProvider({ children }) {
   }, [user]);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || !canAccessInbox) {
       return;
     }
     refreshInbox(selectedInboxStatus, true, selectedInboxPlatform, { force: true });
-  }, [user, selectedInboxStatus, selectedInboxPlatform]);
+  }, [user, canAccessInbox, selectedInboxStatus, selectedInboxPlatform]);
 
   useEffect(() => {
+    if (!canAccessInbox) {
+      return;
+    }
     refreshConversationDetail(selectedConversationId);
-  }, [selectedConversationId]);
+  }, [canAccessInbox, selectedConversationId]);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || !canAccessInbox) {
       return;
     }
     if (!Number.isFinite(inboxPollIntervalMs) || inboxPollIntervalMs <= 0) {
@@ -1148,7 +1166,7 @@ export function LeaseBotProvider({ children }) {
     }, inboxPollIntervalMs);
 
     return () => clearInterval(timer);
-  }, [user, selectedInboxStatus, selectedInboxPlatform, selectedConversationId]);
+  }, [user, canAccessInbox, selectedInboxStatus, selectedInboxPlatform, selectedConversationId]);
 
   useEffect(() => {
     if (!user) {

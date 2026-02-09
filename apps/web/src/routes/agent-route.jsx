@@ -18,7 +18,7 @@ function AgentLayout() {
 }
 
 function AgentIndex() {
-  return <Navigate to="/agent/inbox" />;
+  return <Navigate to="/agent/appointments" />;
 }
 
 export const agentRoute = createRoute({

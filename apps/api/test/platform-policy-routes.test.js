@@ -323,7 +323,7 @@ test("collectGuardrailReviewReasons identifies auto-send review blockers", () =>
   );
 });
 
-test("R15: GET /api/inbox?status=hold surfaces human_required agent-action work", async () => {
+test("R15: GET /api/inbox?status=hold surfaces human_required admin-action work", async () => {
   const req = createRequest("GET", "/api/inbox?status=hold");
   const res = createResponseCapture();
 
@@ -400,7 +400,7 @@ test("R15: GET /api/inbox?status=hold surfaces human_required agent-action work"
 
   resetRouteTestOverrides();
   setRouteTestOverrides({
-    getSession: async () => ({ user: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", role: "agent" } }),
+    getSession: async () => ({ user: { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", role: "admin" } }),
     withClient: async (task) => task(fakeClient)
   });
 
@@ -503,7 +503,7 @@ test("R17: inbox draft guardrail path forces draft and records audit policy deta
 
   resetRouteTestOverrides();
   setRouteTestOverrides({
-    getSession: async () => ({ user: { id: "99999999-9999-4999-8999-999999999999", role: "agent" } }),
+    getSession: async () => ({ user: { id: "99999999-9999-4999-8999-999999999999", role: "admin" } }),
     withClient: async (task) => task(fakeClient)
   });
 
@@ -524,53 +524,13 @@ test("R17: inbox draft guardrail path forces draft and records audit policy deta
   assert.deepEqual(auditDetails.guardrailReviewReasons, ["explicit_admin_review", "guardrails_blocked", "risk_critical"]);
 });
 
-test("R23: agent inbox list is server-scoped to assigned/follow-up ownership", async () => {
+test("R23: agent cannot access inbox list", async () => {
   const req = createRequest("GET", "/api/inbox");
   const res = createResponseCapture();
   const sessionAgentId = "99999999-9999-4999-8999-999999999999";
-  let scopedParams = null;
 
   const fakeClient = {
-    query: async (sql, params = []) => {
-      if (sql.includes("FROM \"Conversations\" c") && sql.includes("c.assigned_agent_id") && sql.includes("c.follow_up_owner_agent_id")) {
-        scopedParams = params;
-        return {
-          rowCount: 1,
-          rows: [
-            {
-              id: "11111111-1111-4111-8111-111111111111",
-              platform_account_id: "22222222-2222-4222-8222-222222222222",
-              listing_id: null,
-              assigned_agent_id: sessionAgentId,
-              external_thread_id: "thread-1",
-              lead_name: "Scoped Lead",
-              lead_contact: { email: "scoped@example.com" },
-              conversation_status: "open",
-              workflow_state: "lead",
-              workflow_outcome: "human_required",
-              showing_state: null,
-              follow_up_stage: null,
-              follow_up_due_at: null,
-              follow_up_owner_agent_id: sessionAgentId,
-              follow_up_status: null,
-              workflow_updated_at: "2026-02-06T00:00:00.000Z",
-              last_message_at: "2026-02-06T00:00:00.000Z",
-              updated_at: "2026-02-06T00:00:00.000Z",
-              property_name: "Atlas Apartments",
-              unit_number: "4B",
-              latest_body: "Need help",
-              latest_direction: "inbound",
-              latest_metadata: { reviewStatus: "hold" },
-              new_count: 0,
-              draft_count: 0,
-              hold_count: 1,
-              sent_count: 0
-            }
-          ]
-        };
-      }
-      return { rowCount: 0, rows: [] };
-    }
+    query: async () => ({ rowCount: 0, rows: [] })
   };
 
   resetRouteTestOverrides();
@@ -581,13 +541,13 @@ test("R23: agent inbox list is server-scoped to assigned/follow-up ownership", a
 
   await routeApi(req, res, new URL(req.url, "http://localhost"));
 
-  assert.equal(res.statusCode, 200);
+  assert.equal(res.statusCode, 403);
   const payload = parseJsonBody(res);
-  assert.equal(payload.items.length, 1);
-  assert.equal(scopedParams[0], sessionAgentId);
+  assert.equal(payload.error, "forbidden");
+  assert.equal(payload.currentRole, "agent");
 });
 
-test("R23: agent cannot fetch out-of-scope inbox conversation detail", async () => {
+test("R23: agent cannot access inbox conversation detail", async () => {
   const req = createRequest("GET", "/api/inbox/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
   const res = createResponseCapture();
   const sessionAgentId = "99999999-9999-4999-8999-999999999999";
@@ -604,9 +564,10 @@ test("R23: agent cannot fetch out-of-scope inbox conversation detail", async () 
 
   await routeApi(req, res, new URL(req.url, "http://localhost"));
 
-  assert.equal(res.statusCode, 404);
+  assert.equal(res.statusCode, 403);
   const payload = parseJsonBody(res);
-  assert.equal(payload.error, "not_found");
+  assert.equal(payload.error, "forbidden");
+  assert.equal(payload.currentRole, "agent");
 });
 
 test("R24: admin can view inbox detail outside agent scope", async () => {
@@ -905,7 +866,7 @@ test("R16: manual inbox reply dispatches to platform thread and logs audit", asy
 
   resetRouteTestOverrides();
   setRouteTestOverrides({
-    getSession: async () => ({ user: { id: "99999999-9999-4999-8999-999999999999", role: "agent" } }),
+    getSession: async () => ({ user: { id: "99999999-9999-4999-8999-999999999999", role: "admin" } }),
     withClient: async (task) => task(fakeClient),
     dispatchOutboundMessage: async (payload) => {
       dispatchPayload = payload;

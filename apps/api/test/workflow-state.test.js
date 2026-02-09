@@ -580,8 +580,8 @@ test("R5: inbound identity context persists and links across DB + inbox detail A
 
   try {
     const response = await callRoute("GET", `/api/inbox/${ids.conversationId}`, {
-      role: "agent",
-      sessionUserId: ids.agentId
+      role: "admin",
+      sessionUserId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     });
 
     assert.equal(response.res.statusCode, 200);

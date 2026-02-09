@@ -16,7 +16,7 @@ function IndexPage() {
   if (!user) {
     return <Navigate to="/login" />;
   }
-  return <Navigate to={user.role === "admin" ? "/admin/inbox" : "/agent/inbox"} />;
+  return <Navigate to={user.role === "admin" ? "/admin/inbox" : "/agent/appointments"} />;
 }
 
 export const indexRoute = createRoute({

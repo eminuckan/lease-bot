@@ -1,15 +1,8 @@
-import { createRoute } from "@tanstack/react-router";
-import { Suspense, lazy } from "react";
+import { Navigate, createRoute } from "@tanstack/react-router";
 import { agentRoute } from "./agent-route";
 
-const InboxPanel = lazy(() => import("../features/inbox-panel").then((module) => ({ default: module.InboxPanel })));
-
 function AgentInboxPage() {
-  return (
-    <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading inbox...</div>}>
-      <InboxPanel />
-    </Suspense>
-  );
+  return <Navigate to="/agent/appointments" />;
 }
 
 export const agentInboxRoute = createRoute({

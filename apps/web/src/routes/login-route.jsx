@@ -25,7 +25,7 @@ function getRequestedRedirect() {
 }
 
 function resolvePostLoginTarget(currentUser) {
-  const fallback = currentUser.role === "admin" ? "/admin/inbox" : "/agent/inbox";
+  const fallback = currentUser.role === "admin" ? "/admin/inbox" : "/agent/appointments";
   const requested = getRequestedRedirect();
   if (!requested) {
     return fallback;
@@ -39,6 +39,9 @@ function resolvePostLoginTarget(currentUser) {
     return fallback;
   }
   if (currentUser.role !== "admin" && isAdminPath) {
+    return fallback;
+  }
+  if (currentUser.role !== "admin" && normalized.startsWith("/agent/inbox")) {
     return fallback;
   }
 

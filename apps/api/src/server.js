@@ -3739,7 +3739,7 @@ export async function routeApi(req, res, url) {
   }
 
   if (url.pathname === "/api/inbox" && req.method === "GET") {
-    const access = await requireRole(req, res, [roles.agent, roles.admin]);
+    const access = await requireRole(req, res, [roles.admin]);
     if (!access) {
       return;
     }
@@ -3764,7 +3764,7 @@ export async function routeApi(req, res, url) {
 
   const inboxSyncMatch = url.pathname.match(/^\/api\/inbox\/([0-9a-f\-]+)\/sync$/i);
   if (inboxSyncMatch && req.method === "POST") {
-    const access = await requireRole(req, res, [roles.agent, roles.admin]);
+    const access = await requireRole(req, res, [roles.admin]);
     if (!access) {
       return;
     }
@@ -3794,7 +3794,7 @@ export async function routeApi(req, res, url) {
 
   const inboxConversationMatch = url.pathname.match(/^\/api\/inbox\/([0-9a-f\-]+)$/i);
   if (inboxConversationMatch && req.method === "GET") {
-    const access = await requireRole(req, res, [roles.agent, roles.admin]);
+    const access = await requireRole(req, res, [roles.admin]);
     if (!access) {
       return;
     }
@@ -3818,7 +3818,7 @@ export async function routeApi(req, res, url) {
 
   const inboxDraftMatch = url.pathname.match(/^\/api\/inbox\/([0-9a-f\-]+)\/draft$/i);
   if (inboxDraftMatch && req.method === "POST") {
-    const access = await requireRole(req, res, [roles.agent, roles.admin]);
+    const access = await requireRole(req, res, [roles.admin]);
     if (!access) {
       return;
     }
