@@ -148,6 +148,34 @@ const platformHealth = [
     disableReason: "disabled_by_admin_policy"
   }
 ];
+const adminUsers = [
+  {
+    id: "admin-1",
+    email: "admin@example.com",
+    firstName: "Admin",
+    lastName: "User",
+    fullName: "Admin User",
+    role: "admin",
+    createdAt: "2026-02-06T00:00:00.000Z",
+    updatedAt: "2026-02-06T00:00:00.000Z"
+  }
+];
+const userInvitations = [
+  {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    email: "agent.pending@example.com",
+    firstName: "Pending",
+    lastName: "Agent",
+    role: "agent",
+    invitedBy: "admin-1",
+    expiresAt: "2026-02-20T00:00:00.000Z",
+    acceptedAt: null,
+    revokedAt: null,
+    createdAt: "2026-02-07T00:00:00.000Z",
+    updatedAt: "2026-02-07T00:00:00.000Z",
+    status: "pending"
+  }
+];
 const conversationDetails = new Map(
   inboxItems.map((item, index) => [
     item.id,
@@ -391,6 +419,14 @@ function createMockApiServer() {
       return;
     }
 
+    if (req.method === "GET" && requestUrl.pathname === "/api/admin/users") {
+      sendJson(req, res, 200, {
+        users: adminUsers,
+        invitations: userInvitations
+      });
+      return;
+    }
+
     const policyMatch = requestUrl.pathname.match(/^\/api\/admin\/platform-policies\/([0-9a-f\-]+)$/i);
     if (req.method === "PUT" && policyMatch) {
       const policyId = policyMatch[1];
@@ -553,7 +589,7 @@ async function runSmoke() {
       }
 
       await navigateNav(page, viewport, "Assignments", "/admin/assignments");
-      await page.getByRole("heading", { name: "Assign unit" }).waitFor();
+      await page.getByRole("heading", { name: "Assign listing" }).waitFor();
       await navigateNav(page, viewport, "Showings", "/admin/showings");
       await page.getByRole("heading", { name: "Weekly rules" }).waitFor();
       await page.getByRole("heading", { name: "Availability" }).waitFor();

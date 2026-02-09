@@ -367,8 +367,8 @@ export function AssignmentPanel() {
   }
 
   return (
-    <div className="p-6">
-      <div className="mx-auto w-full max-w-[1500px] space-y-8">
+    <div className="px-4 py-6 sm:px-6 lg:px-8">
+      <div className="w-full space-y-8">
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="flex items-center gap-4 rounded-lg bg-card px-5 py-5 shadow-card">
             <div className="flex h-11 w-11 items-center justify-center rounded-md bg-muted">
@@ -561,7 +561,7 @@ export function AssignmentPanel() {
             </div>
           </div>
 
-          <div className="rounded-md border border-dashed border-border">
+          <div className="overflow-x-auto border border-border">
             <Table>
               <TableHeader>
                 {table.getHeaderGroups().map((headerGroup) => (

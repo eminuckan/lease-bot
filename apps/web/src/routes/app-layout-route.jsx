@@ -4,6 +4,7 @@ import {
   ArrowLeftRight,
   CalendarDays,
   Settings2,
+  UserRoundPlus,
   CalendarClock,
   LogOut,
   PanelLeftClose,
@@ -21,6 +22,7 @@ import { rootRoute } from "./root-route";
 const adminNav = [
   { to: "/admin/inbox", label: "Inbox", icon: Inbox },
   { to: "/admin/assignments", label: "Assignments", icon: ArrowLeftRight },
+  { to: "/admin/users", label: "Users", icon: UserRoundPlus },
   { to: "/admin/showings", label: "Showings", icon: CalendarDays },
   { to: "/admin/platform", label: "Platform", icon: Settings2 },
 ];

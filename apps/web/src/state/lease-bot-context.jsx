@@ -72,6 +72,8 @@ export function LeaseBotProvider({ children }) {
   const [platformHealth, setPlatformHealth] = useState([]);
   const [globalPlatformSendMode, setGlobalPlatformSendMode] = useState("draft_only");
   const [platformHealthGeneratedAt, setPlatformHealthGeneratedAt] = useState(null);
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [userInvitations, setUserInvitations] = useState([]);
 
   const isAdmin = user?.role === "admin";
   const canAccessAgent = user?.role === "agent" || isAdmin;
@@ -242,6 +244,83 @@ export function LeaseBotProvider({ children }) {
     }
   }
 
+  async function refreshAdminUsers() {
+    if (!isAdmin) {
+      return;
+    }
+
+    try {
+      const response = await request("/api/admin/users");
+      setAdminUsers(response.users || []);
+      setUserInvitations(response.invitations || []);
+    } catch (error) {
+      setApiError(error.message);
+    }
+  }
+
+  async function createUserInvitation(payload) {
+    if (!isAdmin) {
+      return null;
+    }
+
+    setApiError("");
+    setMessage("");
+    try {
+      const response = await request("/api/admin/users/invitations", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+
+      const delivery = response?.invitation?.delivery === "email" ? "Invitation email sent" : "Invitation created";
+      setMessage(delivery);
+      toast.success(delivery, {
+        description: response?.invitation?.previewUrl
+          ? "SMTP disabled in dev; invite link returned in UI."
+          : undefined
+      });
+      await refreshAdminUsers();
+      return response.invitation || null;
+    } catch (error) {
+      setApiError(error.message);
+      toast.error("Invite creation failed", { description: error.message });
+      return null;
+    }
+  }
+
+  async function revokeUserInvitation(invitationId) {
+    if (!isAdmin || !invitationId) {
+      return false;
+    }
+
+    setApiError("");
+    setMessage("");
+    try {
+      await request(`/api/admin/users/invitations/${invitationId}/revoke`, {
+        method: "POST"
+      });
+      setMessage("Invitation revoked");
+      toast.success("Invitation revoked");
+      await refreshAdminUsers();
+      return true;
+    } catch (error) {
+      setApiError(error.message);
+      toast.error("Invitation revoke failed", { description: error.message });
+      return false;
+    }
+  }
+
+  async function verifyInvitationToken(token) {
+    const query = new URLSearchParams({ token }).toString();
+    return request(`/api/invitations/verify?${query}`);
+  }
+
+  async function acceptInvitationToken({ token, password }) {
+    return request("/api/invitations/accept", {
+      method: "POST",
+      body: JSON.stringify({ token, password })
+    });
+  }
+
   async function updatePlatformPolicy(platformAccountId, updates) {
     if (!isAdmin || !platformAccountId) {
       return null;
@@ -299,7 +378,7 @@ export function LeaseBotProvider({ children }) {
         refreshInbox(selectedInboxStatus, false, selectedInboxPlatform),
         refreshAvailability(fallbackUnitId),
         refreshAppointments(),
-        ...(isAdmin ? [refreshAdminPlatformData()] : [])
+        ...(isAdmin ? [refreshAdminPlatformData(), refreshAdminUsers()] : [])
       ]);
     } catch (error) {
       setApiError(error.message);
@@ -331,35 +410,6 @@ export function LeaseBotProvider({ children }) {
     } catch {
       setAuthError("Authentication request failed");
       toast.error("Sign in failed", { description: "Authentication request failed" });
-      return null;
-    }
-  }
-
-  async function signUpEmail({ email, password, name }) {
-    setAuthError("");
-    try {
-      const response = await fetch(`${apiBaseUrl}/api/auth/sign-up/email`, {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({ email, password, name })
-      });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        const errorMessage = parseApiError(data, "Registration failed");
-        setAuthError(errorMessage);
-        toast.error("Registration failed", { description: errorMessage });
-        return null;
-      }
-
-      toast.success("Account created");
-      return refreshSession();
-    } catch {
-      setAuthError("Registration request failed");
-      toast.error("Registration failed", { description: "Registration request failed" });
       return null;
     }
   }
@@ -655,14 +705,20 @@ export function LeaseBotProvider({ children }) {
     platformHealth,
     globalPlatformSendMode,
     platformHealthGeneratedAt,
+    adminUsers,
+    userInvitations,
     refreshData,
     refreshInbox,
     refreshAvailability,
     refreshAppointments,
     refreshAdminPlatformData,
+    refreshAdminUsers,
     signInEmail,
-    signUpEmail,
     signOut,
+    createUserInvitation,
+    revokeUserInvitation,
+    verifyInvitationToken,
+    acceptInvitationToken,
     saveAssignment,
     updateUnitAssignment,
     bulkUpdateUnitAssignments,

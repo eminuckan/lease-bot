@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@lease-bot/auth": "0.1.0",
-    "better-auth": "^1.3.4"
+    "better-auth": "^1.3.4",
+    "nodemailer": "^6.10.1"
   }
 }

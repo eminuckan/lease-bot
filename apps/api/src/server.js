@@ -1,7 +1,8 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { toNodeHandler } from "better-auth/node";
 import { Pool } from "pg";
+import nodemailer from "nodemailer";
 
 import { getAuth, hasAnyRole, normalizeRole, roles } from "@lease-bot/auth";
 import { createConnectorRegistry, createPostgresQueueAdapter } from "../../../packages/integrations/src/index.js";
@@ -42,6 +43,10 @@ const requiredPlatforms = ["spareroom", "roomies", "leasebreak", "renthop", "fur
 const requiredPlatformSet = new Set(requiredPlatforms);
 const allowedSendModes = new Set(["auto_send", "draft_only"]);
 const allowedIntegrationModes = new Set(["rpa"]);
+const inviteRoles = new Set([roles.admin, roles.agent]);
+const allowPublicSignup = process.env.LEASE_BOT_ALLOW_PUBLIC_SIGNUP === "1";
+const inviteEmailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+let inviteMailer = null;
 // Platform account credentials must be env:/secret: references (never plaintext).
 // Authentication can be provided either via loginId+password (username/email) or a captured storageState / persistent profile.
 const platformCredentialAllowedKeys = new Set([
@@ -308,6 +313,238 @@ function parsePlatformPolicyPayload(payload, { partial = false } = {}) {
   return {
     errors,
     updates
+  };
+}
+
+function normalizeInviteEmail(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim().toLowerCase();
+}
+
+function normalizeInviteNamePart(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function buildDisplayName(firstName, lastName) {
+  return `${firstName} ${lastName}`.trim();
+}
+
+function splitDisplayName(name) {
+  if (typeof name !== "string") {
+    return {
+      firstName: "",
+      lastName: ""
+    };
+  }
+
+  const normalized = name.trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return {
+      firstName: "",
+      lastName: ""
+    };
+  }
+
+  const parts = normalized.split(" ");
+  if (parts.length === 1) {
+    return {
+      firstName: parts[0],
+      lastName: ""
+    };
+  }
+
+  return {
+    firstName: parts.slice(0, -1).join(" "),
+    lastName: parts[parts.length - 1]
+  };
+}
+
+function resolveInviteTtlHours(env = process.env) {
+  const parsed = Number(env.INVITE_TOKEN_TTL_HOURS || 72);
+  if (!Number.isFinite(parsed)) {
+    return 72;
+  }
+  return Math.max(1, Math.min(240, Math.floor(parsed)));
+}
+
+function createInviteToken() {
+  return randomBytes(32).toString("base64url");
+}
+
+function hashInviteToken(token) {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function resolveInviteBaseUrl(env = process.env) {
+  return env.INVITE_BASE_URL || env.WEB_BASE_URL || "http://localhost:5173";
+}
+
+function buildInviteUrl(token, env = process.env) {
+  const invitePath = env.INVITE_ACCEPT_PATH || "/invite";
+  const inviteUrl = new URL(invitePath, resolveInviteBaseUrl(env));
+  inviteUrl.searchParams.set("token", token);
+  return inviteUrl.toString();
+}
+
+function buildInviteEmailContent({ firstName, inviterName, inviteUrl, expiresAt }) {
+  const safeFirstName = firstName || "there";
+  const displayExpiresAt = new Date(expiresAt).toUTCString();
+  const subject = "You are invited to Lease Bot";
+  const text = [
+    `Hi ${safeFirstName},`,
+    "",
+    `${inviterName || "An admin"} invited you to Lease Bot.`,
+    "Use the secure link below to set your password and activate your account:",
+    inviteUrl,
+    "",
+    `This link expires on ${displayExpiresAt}.`,
+    "If you did not expect this invite, you can ignore this email."
+  ].join("\n");
+
+  return { subject, text };
+}
+
+async function sendInvitationEmail({ to, firstName, inviterName, inviteUrl, expiresAt }) {
+  if (typeof routeTestOverrides?.sendInvitationEmail === "function") {
+    return routeTestOverrides.sendInvitationEmail({ to, firstName, inviterName, inviteUrl, expiresAt });
+  }
+
+  const smtpUrl = process.env.INVITE_SMTP_URL || process.env.SMTP_URL || "";
+  const smtpHost = process.env.INVITE_SMTP_HOST || process.env.SMTP_HOST || "";
+  const smtpPort = Number(process.env.INVITE_SMTP_PORT || process.env.SMTP_PORT || 587);
+  const smtpUser = process.env.INVITE_SMTP_USER || process.env.SMTP_USER || "";
+  const smtpPassword = process.env.INVITE_SMTP_PASSWORD || process.env.SMTP_PASSWORD || "";
+  const from = process.env.INVITE_FROM_EMAIL || process.env.SMTP_FROM || "Lease Bot <no-reply@leasebot.local>";
+
+  if (!smtpUrl && !smtpHost) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("Invitation email delivery is not configured (SMTP)");
+    }
+
+    console.warn("[invite] smtp_not_configured", { to, inviteUrl });
+    return {
+      delivery: "logged",
+      messageId: null,
+      previewUrl: inviteUrl
+    };
+  }
+
+  if (!inviteMailer) {
+    if (smtpUrl) {
+      inviteMailer = nodemailer.createTransport(smtpUrl);
+    } else {
+      inviteMailer = nodemailer.createTransport({
+        host: smtpHost,
+        port: Number.isFinite(smtpPort) ? smtpPort : 587,
+        secure: Number(smtpPort) === 465,
+        auth: smtpUser || smtpPassword
+          ? {
+              user: smtpUser,
+              pass: smtpPassword
+            }
+          : undefined
+      });
+    }
+  }
+
+  const { subject, text } = buildInviteEmailContent({ firstName, inviterName, inviteUrl, expiresAt });
+  const info = await inviteMailer.sendMail({
+    from,
+    to,
+    subject,
+    text
+  });
+
+  return {
+    delivery: "email",
+    messageId: info?.messageId || null,
+    previewUrl: null
+  };
+}
+
+function toInvitationDto(row) {
+  const expiresAtMs = Date.parse(row.expires_at);
+  const isExpired = Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now();
+  let status = "pending";
+  if (row.revoked_at) {
+    status = "revoked";
+  } else if (row.accepted_at) {
+    status = "accepted";
+  } else if (isExpired) {
+    status = "expired";
+  }
+
+  return {
+    id: row.id,
+    email: row.email,
+    firstName: row.first_name,
+    lastName: row.last_name,
+    role: normalizeRole(row.role),
+    invitedBy: row.invited_by,
+    expiresAt: row.expires_at,
+    acceptedAt: row.accepted_at,
+    revokedAt: row.revoked_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    status
+  };
+}
+
+function validateInvitationCreatePayload(payload) {
+  const email = normalizeInviteEmail(payload?.email);
+  const firstName = normalizeInviteNamePart(payload?.firstName);
+  const lastName = normalizeInviteNamePart(payload?.lastName);
+  const role = normalizeRole(payload?.role);
+  const errors = [];
+
+  if (!email || !inviteEmailPattern.test(email)) {
+    errors.push("email must be a valid email address");
+  }
+  if (!firstName || firstName.length > 80) {
+    errors.push("firstName is required and must be 80 characters or fewer");
+  }
+  if (!lastName || lastName.length > 80) {
+    errors.push("lastName is required and must be 80 characters or fewer");
+  }
+  if (!inviteRoles.has(role)) {
+    errors.push("role must be admin or agent");
+  }
+
+  return {
+    errors,
+    value: {
+      email,
+      firstName,
+      lastName,
+      role
+    }
+  };
+}
+
+function validateInvitationAcceptPayload(payload) {
+  const token = typeof payload?.token === "string" ? payload.token.trim() : "";
+  const password = typeof payload?.password === "string" ? payload.password : "";
+  const errors = [];
+
+  if (!token || token.length < 30) {
+    errors.push("token is invalid");
+  }
+
+  if (password.length < 8) {
+    errors.push("password must be at least 8 characters");
+  }
+
+  return {
+    errors,
+    value: {
+      token,
+      password
+    }
   };
 }
 
@@ -2671,6 +2908,460 @@ export async function routeApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/api/admin/users" && req.method === "GET") {
+    const access = await requireRole(req, res, [roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const payload = await withClientRunner(async (client) => {
+      const usersResult = await client.query(
+        `SELECT id,
+                email,
+                name,
+                role,
+                "createdAt" AS created_at,
+                "updatedAt" AS updated_at
+           FROM "user"
+          ORDER BY "createdAt" DESC, email ASC`
+      );
+
+      const invitationsResult = await client.query(
+        `SELECT id,
+                email,
+                first_name,
+                last_name,
+                role,
+                invited_by,
+                expires_at,
+                accepted_at,
+                revoked_at,
+                created_at,
+                updated_at
+           FROM "UserInvitations"
+          ORDER BY created_at DESC`
+      );
+
+      return {
+        users: usersResult.rows.map((row) => {
+          const splitName = splitDisplayName(row.name);
+          return {
+            id: row.id,
+            email: row.email,
+            firstName: splitName.firstName,
+            lastName: splitName.lastName,
+            fullName: row.name,
+            role: normalizeRole(row.role),
+            createdAt: row.created_at,
+            updatedAt: row.updated_at
+          };
+        }),
+        invitations: invitationsResult.rows.map((row) => toInvitationDto(row))
+      };
+    });
+
+    json(res, 200, payload);
+    return;
+  }
+
+  if (url.pathname === "/api/admin/users/invitations" && req.method === "POST") {
+    const access = await requireRole(req, res, [roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    let payload;
+    try {
+      payload = await readJsonBody(req);
+    } catch {
+      badRequest(res, "Request body must be valid JSON");
+      return;
+    }
+
+    const { errors, value } = validateInvitationCreatePayload(payload);
+    if (errors.length > 0) {
+      badRequest(res, "Invalid invitation payload", errors);
+      return;
+    }
+
+    const inviteToken = createInviteToken();
+    const inviteTokenHash = hashInviteToken(inviteToken);
+    const expiresAt = new Date(Date.now() + resolveInviteTtlHours() * 60 * 60 * 1000).toISOString();
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+
+    const created = await withClientRunner(async (client) => {
+      const existingUser = await client.query(
+        `SELECT id
+           FROM "user"
+          WHERE LOWER(email) = LOWER($1)
+          LIMIT 1`,
+        [value.email]
+      );
+
+      if (existingUser.rowCount > 0) {
+        return { error: "user_exists" };
+      }
+
+      await client.query(
+        `UPDATE "UserInvitations"
+            SET revoked_at = NOW(),
+                updated_at = NOW()
+          WHERE LOWER(email) = LOWER($1)
+            AND accepted_at IS NULL
+            AND revoked_at IS NULL`,
+        [value.email]
+      );
+
+      const inserted = await client.query(
+        `INSERT INTO "UserInvitations" (
+           id,
+           email,
+           first_name,
+           last_name,
+           role,
+           token_hash,
+           invited_by,
+           expires_at
+         ) VALUES (
+           $1::uuid,
+           $2,
+           $3,
+           $4,
+           $5,
+           $6,
+           $7,
+           $8::timestamptz
+         )
+         RETURNING id,
+                   email,
+                   first_name,
+                   last_name,
+                   role,
+                   invited_by,
+                   expires_at,
+                   accepted_at,
+                   revoked_at,
+                   created_at,
+                   updated_at`,
+        [
+          randomUUID(),
+          value.email,
+          value.firstName,
+          value.lastName,
+          value.role,
+          inviteTokenHash,
+          String(access.session.user.id),
+          expiresAt
+        ]
+      );
+
+      const row = inserted.rows[0];
+      await recordAuditLog(client, {
+        actorType: "user",
+        actorId: access.session.user.id,
+        entityType: "user_invitation",
+        entityId: row.id,
+        action: "user_invited",
+        details: {
+          email: row.email,
+          role: row.role
+        }
+      });
+
+      return {
+        row,
+        token: inviteToken
+      };
+    });
+
+    if (created?.error === "user_exists") {
+      json(res, 409, {
+        error: "user_exists",
+        message: "A user with this email already exists"
+      });
+      return;
+    }
+
+    const inviteUrl = buildInviteUrl(created.token);
+    const inviterName = access.session?.user?.name || access.session?.user?.email || "Lease Bot Admin";
+    let delivery;
+    try {
+      delivery = await sendInvitationEmail({
+        to: value.email,
+        firstName: value.firstName,
+        inviterName,
+        inviteUrl,
+        expiresAt
+      });
+    } catch (error) {
+      await withClientRunner((client) =>
+        client.query(
+          `UPDATE "UserInvitations"
+              SET revoked_at = NOW(),
+                  updated_at = NOW()
+            WHERE id = $1::uuid
+              AND accepted_at IS NULL`,
+          [created.row.id]
+        )
+      );
+
+      json(res, 500, {
+        error: "invite_delivery_failed",
+        message: error instanceof Error ? error.message : String(error)
+      });
+      return;
+    }
+
+    json(res, 201, {
+      invitation: {
+        ...toInvitationDto(created.row),
+        delivery: delivery.delivery,
+        messageId: delivery.messageId || null,
+        previewUrl: delivery.previewUrl || null
+      }
+    });
+    return;
+  }
+
+  const revokeInviteMatch = url.pathname.match(/^\/api\/admin\/users\/invitations\/([0-9a-f\-]+)\/revoke$/i);
+  if (revokeInviteMatch && req.method === "POST") {
+    const access = await requireRole(req, res, [roles.admin]);
+    if (!access) {
+      return;
+    }
+
+    const invitationId = revokeInviteMatch[1];
+    if (!isUuid(invitationId)) {
+      badRequest(res, "invitationId must be a UUID");
+      return;
+    }
+
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const revoked = await withClientRunner(async (client) => {
+      const result = await client.query(
+        `UPDATE "UserInvitations"
+            SET revoked_at = NOW(),
+                updated_at = NOW()
+          WHERE id = $1::uuid
+            AND accepted_at IS NULL
+            AND revoked_at IS NULL
+         RETURNING id`,
+        [invitationId]
+      );
+
+      if (result.rowCount === 0) {
+        return null;
+      }
+
+      await recordAuditLog(client, {
+        actorType: "user",
+        actorId: access.session.user.id,
+        entityType: "user_invitation",
+        entityId: invitationId,
+        action: "user_invitation_revoked"
+      });
+
+      return { revoked: true };
+    });
+
+    if (!revoked) {
+      notFound(res);
+      return;
+    }
+
+    json(res, 200, revoked);
+    return;
+  }
+
+  if (url.pathname === "/api/invitations/verify" && req.method === "GET") {
+    const rawToken = url.searchParams.get("token");
+    const token = typeof rawToken === "string" ? rawToken.trim() : "";
+
+    if (!token || token.length < 30) {
+      badRequest(res, "token is required");
+      return;
+    }
+
+    const tokenHash = hashInviteToken(token);
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const invitation = await withClientRunner(async (client) => {
+      const result = await client.query(
+        `SELECT id,
+                email,
+                first_name,
+                last_name,
+                role,
+                invited_by,
+                expires_at,
+                accepted_at,
+                revoked_at,
+                created_at,
+                updated_at
+           FROM "UserInvitations"
+          WHERE token_hash = $1
+          LIMIT 1`,
+        [tokenHash]
+      );
+      return result.rows[0] || null;
+    });
+
+    if (!invitation) {
+      json(res, 404, {
+        valid: false,
+        error: "invalid_token"
+      });
+      return;
+    }
+
+    const dto = toInvitationDto(invitation);
+    if (dto.status !== "pending") {
+      json(res, 409, {
+        valid: false,
+        error: "invite_unavailable",
+        status: dto.status
+      });
+      return;
+    }
+
+    json(res, 200, {
+      valid: true,
+      invitation: {
+        email: dto.email,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+        role: dto.role,
+        expiresAt: dto.expiresAt
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/invitations/accept" && req.method === "POST") {
+    let payload;
+    try {
+      payload = await readJsonBody(req);
+    } catch {
+      badRequest(res, "Request body must be valid JSON");
+      return;
+    }
+
+    const { errors, value } = validateInvitationAcceptPayload(payload);
+    if (errors.length > 0) {
+      badRequest(res, "Invalid invitation payload", errors);
+      return;
+    }
+
+    const tokenHash = hashInviteToken(value.token);
+    const withClientRunner = routeTestOverrides?.withClient || withClient;
+
+    const invitation = await withClientRunner(async (client) => {
+      const result = await client.query(
+        `SELECT id,
+                email,
+                first_name,
+                last_name,
+                role,
+                invited_by,
+                expires_at,
+                accepted_at,
+                revoked_at,
+                created_at,
+                updated_at
+           FROM "UserInvitations"
+          WHERE token_hash = $1
+          LIMIT 1`,
+        [tokenHash]
+      );
+      return result.rows[0] || null;
+    });
+
+    if (!invitation) {
+      json(res, 404, {
+        error: "invalid_token"
+      });
+      return;
+    }
+
+    const invitationDto = toInvitationDto(invitation);
+    if (invitationDto.status !== "pending") {
+      json(res, 409, {
+        error: "invite_unavailable",
+        status: invitationDto.status
+      });
+      return;
+    }
+
+    const displayName = buildDisplayName(invitationDto.firstName, invitationDto.lastName);
+    const signUpRunner = routeTestOverrides?.signUpEmail || ((args) => auth.api.signUpEmail(args));
+    try {
+      await signUpRunner({
+        // better-auth expects body wrapper for direct API usage
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        body: {
+          email: invitationDto.email,
+          password: value.password,
+          name: displayName
+        }
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/user already exists/i.test(message)) {
+        json(res, 409, {
+          error: "user_exists",
+          message: "A user with this email already exists"
+        });
+        return;
+      }
+
+      json(res, 500, {
+        error: "invite_accept_failed",
+        message
+      });
+      return;
+    }
+
+    await withClientRunner(async (client) => {
+      await client.query(
+        `UPDATE "user"
+            SET role = $2,
+                name = $3,
+                "emailVerified" = TRUE,
+                "updatedAt" = NOW()
+          WHERE LOWER(email) = LOWER($1)`,
+        [invitationDto.email, invitationDto.role, displayName]
+      );
+
+      await client.query(
+        `UPDATE "UserInvitations"
+            SET accepted_at = NOW(),
+                updated_at = NOW()
+          WHERE id = $1::uuid
+            AND accepted_at IS NULL
+            AND revoked_at IS NULL`,
+        [invitationDto.id]
+      );
+
+      await recordAuditLog(client, {
+        actorType: "system",
+        entityType: "user_invitation",
+        entityId: invitationDto.id,
+        action: "user_invitation_accepted",
+        details: {
+          email: invitationDto.email,
+          role: invitationDto.role
+        }
+      });
+    });
+
+    json(res, 200, {
+      accepted: true,
+      email: invitationDto.email
+    });
+    return;
+  }
+
   const adminPlatformPolicyMatch = url.pathname.match(/^\/api\/admin\/platform-policies\/([0-9a-f\-]+)$/i);
   if (adminPlatformPolicyMatch && req.method === "PUT") {
     const access = await requireRole(req, res, [roles.admin]);
@@ -5017,6 +5708,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+
+  if (!allowPublicSignup && url.pathname.startsWith("/api/auth/sign-up")) {
+    json(res, 403, {
+      error: "registration_disabled",
+      message: "Self-registration is disabled. Ask an admin for an invite."
+    });
+    return;
+  }
 
   if (url.pathname.startsWith("/api/auth")) {
     authHandler(req, res);
