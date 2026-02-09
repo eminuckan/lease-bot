@@ -120,7 +120,7 @@ export function InboxPanel() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] flex-col overflow-hidden">
+    <div className="flex h-[calc(100dvh-3.5rem)] min-h-[calc(100dvh-3.5rem)] flex-col overflow-hidden">
       <div className="flex min-h-0 flex-1">
         {/* Thread list sidebar */}
         <div className={cn(
@@ -129,9 +129,9 @@ export function InboxPanel() {
           mobileShowDetail && "hidden md:flex"
         )}>
           {/* Thread list header */}
-          <div className="flex items-center gap-2 px-2 py-3">
+          <div className="space-y-2 px-2 py-3">
             <Select value={selectedInboxStatus} onValueChange={setSelectedInboxStatus}>
-              <SelectTrigger className="h-9 flex-1 text-sm">
+              <SelectTrigger className="h-9 w-full text-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -140,25 +140,27 @@ export function InboxPanel() {
                 ))}
               </SelectContent>
             </Select>
-            <Select value={selectedInboxPlatform} onValueChange={setSelectedInboxPlatform}>
-              <SelectTrigger className="h-9 w-36 text-sm">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PLATFORM_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <button
-              type="button"
-              onClick={handleRefreshInbox}
-              disabled={listBusy}
-              className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-              title="Refresh"
-            >
-              <RefreshCw className={cn("h-4 w-4", listBusy && "animate-spin")} />
-            </button>
+            <div className="flex items-center gap-2">
+              <Select value={selectedInboxPlatform} onValueChange={setSelectedInboxPlatform}>
+                <SelectTrigger className="h-9 flex-1 text-sm sm:w-36 sm:flex-none">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PLATFORM_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <button
+                type="button"
+                onClick={handleRefreshInbox}
+                disabled={listBusy}
+                className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                title="Refresh"
+              >
+                <RefreshCw className={cn("h-4 w-4", listBusy && "animate-spin")} />
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2 px-2 pb-2">

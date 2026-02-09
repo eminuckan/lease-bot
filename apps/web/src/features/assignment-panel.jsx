@@ -350,6 +350,7 @@ export function AssignmentPanel() {
 
   const selectedUnitIds = table.getSelectedRowModel().rows.map((row) => row.original.unitId);
   const selectedCount = selectedUnitIds.length;
+  const visibleRows = table.getRowModel().rows;
 
   async function runBulkAssign(agentId) {
     if (selectedUnitIds.length === 0 || bulkBusy) {
@@ -561,7 +562,68 @@ export function AssignmentPanel() {
             </div>
           </div>
 
-          <div className="overflow-x-auto border border-border">
+          <div className="space-y-2 md:hidden">
+            {visibleRows.length === 0 ? (
+              <div className="rounded-md border border-border px-4 py-8 text-center text-sm text-muted-foreground">
+                No rows found.
+              </div>
+            ) : null}
+            {visibleRows.map((row) => (
+              <div key={`${row.id}-mobile`} className="rounded-md border border-border p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <label className="flex min-w-0 flex-1 items-start gap-2">
+                    <input
+                      type="checkbox"
+                      checked={row.getIsSelected()}
+                      onChange={row.getToggleSelectedHandler()}
+                      aria-label={`Select ${row.original.listing}`}
+                      className="mt-1"
+                    />
+                    <span className="min-w-0">
+                      <span className="line-clamp-2 text-sm font-medium">{row.original.listing}</span>
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        Updated: {formatTimestamp(row.original.updatedAt)}
+                      </span>
+                    </span>
+                  </label>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Badge>{row.original.sourceCount}</Badge>
+                  <Badge className={row.original.status === "active" ? "bg-emerald-500/15 text-emerald-300" : "bg-muted text-muted-foreground"}>
+                    {row.original.status}
+                  </Badge>
+                  <Badge className={row.original.assignedState === "assigned" ? "bg-sky-500/15 text-sky-300" : "bg-muted text-muted-foreground"}>
+                    {row.original.assignedState}
+                  </Badge>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Agent: {row.original.agentName}
+                </p>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => editAssignment(row.original.target)}
+                  >
+                    <Pencil className="mr-1.5 h-3.5 w-3.5" />
+                    Edit
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => unassignRow(row.original.target)}
+                  >
+                    <UserMinus className="mr-1.5 h-3.5 w-3.5" />
+                    Unassign
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden overflow-x-auto border border-border md:block">
             <Table>
               <TableHeader>
                 {table.getHeaderGroups().map((headerGroup) => (

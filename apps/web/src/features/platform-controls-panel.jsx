@@ -48,11 +48,11 @@ export function PlatformControlsPanel() {
   }
 
   return (
-    <div className="p-6">
+    <div className="px-4 py-4 sm:px-6">
       <div className="mx-auto max-w-4xl space-y-6">
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <div className="rounded-full bg-muted px-3 py-1 font-medium">{globalPlatformSendMode}</div>
             <span>Last snapshot: {formatHealthTimestamp(platformHealthGeneratedAt)}</span>
           </div>
@@ -87,8 +87,8 @@ export function PlatformControlsPanel() {
                 className="rounded-lg bg-card shadow-card"
               >
                 {/* Account header */}
-                <div className="flex items-center justify-between p-5">
-                  <div className="flex items-center gap-3">
+                <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 items-center gap-3">
                     <div className={cn(
                       "flex h-10 w-10 items-center justify-center rounded-md",
                       item.isActive ? "bg-primary/10" : "bg-muted"
@@ -99,8 +99,8 @@ export function PlatformControlsPanel() {
                       )} />
                     </div>
                     <div>
-                      <p className="text-sm font-semibold">{item.platform}</p>
-                      <p className="text-xs text-muted-foreground">
+                      <p className="truncate text-sm font-semibold">{item.platform}</p>
+                      <p className="truncate text-xs text-muted-foreground">
                         {item.accountName}{item.accountExternalId ? ` (${item.accountExternalId})` : ""}
                       </p>
                     </div>
@@ -132,7 +132,7 @@ export function PlatformControlsPanel() {
                         }
                       />
                     </div>
-                    <div className="flex items-center gap-3 rounded-md bg-muted px-4 py-3">
+                    <div className="flex flex-col items-start gap-2 rounded-md bg-muted px-4 py-3 sm:flex-row sm:items-center">
                       <Label className="shrink-0 text-sm">Send mode</Label>
                       <Select
                         value={item.sendModeOverride || "inherit"}
@@ -156,7 +156,7 @@ export function PlatformControlsPanel() {
                   </div>
 
                   {/* Health stats */}
-                  <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
+                  <div className="grid grid-cols-1 gap-1 sm:grid-cols-2 xl:grid-cols-4">
                     <div className="rounded-md bg-muted px-4 py-2.5">
                       <p className="text-[11px] text-muted-foreground">Effective mode</p>
                       <p className="text-xs font-medium">{health?.sendMode || item.sendMode}</p>

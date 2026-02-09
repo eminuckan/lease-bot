@@ -126,7 +126,7 @@ export function AgentAppointmentsPanel() {
       : "All units";
 
   return (
-    <div className="p-6">
+    <div className="px-4 py-4 sm:px-6">
       <div className="mx-auto max-w-6xl space-y-6">
         {/* Filters bar */}
         <div className="rounded-lg bg-card shadow-card">
@@ -191,6 +191,7 @@ export function AgentAppointmentsPanel() {
               size="sm"
               onClick={applyFilters}
               disabled={isApplyingFilters}
+              className="w-full sm:w-auto"
             >
               <Filter className="mr-2 h-3.5 w-3.5" />
               {isApplyingFilters ? "Applying..." : "Apply filters"}
@@ -256,7 +257,7 @@ export function AgentAppointmentsPanel() {
                 <div className="space-y-1 p-2">
                   {appointments.map((item) => (
                     <div key={item.id} className="rounded-md bg-muted px-4 py-3.5" data-testid="agent-appointment-row">
-                      <div className="flex items-start justify-between gap-3">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <MapPin className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -279,7 +280,9 @@ export function AgentAppointmentsPanel() {
                             <span>{formatTimestamp(item.updatedAt)}</span>
                           </div>
                         </div>
-                        <StatusPill status={item.status} />
+                        <div className="self-start sm:self-auto">
+                          <StatusPill status={item.status} />
+                        </div>
                       </div>
                     </div>
                   ))}

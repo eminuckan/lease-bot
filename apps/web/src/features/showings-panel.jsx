@@ -76,10 +76,10 @@ export function ShowingsPanel() {
   }
 
   return (
-    <div className="p-6">
+    <div className="px-4 py-4 sm:px-6">
       <div className="mx-auto max-w-5xl space-y-6">
         {/* Unit selector + refresh */}
-        <div className="flex items-end gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <div className="flex-1">
             <Label className="text-xs text-muted-foreground">Unit</Label>
             <Select
@@ -99,15 +99,17 @@ export function ShowingsPanel() {
               </SelectContent>
             </Select>
           </div>
-          <button
-            type="button"
-            onClick={handleRefreshShowings}
-            disabled={isRefreshing}
-            className="mb-px rounded-md bg-muted p-2.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-            title="Refresh"
-          >
-            <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
-          </button>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleRefreshShowings}
+              disabled={isRefreshing}
+              className="mb-px rounded-md bg-muted p-2.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              title="Refresh"
+            >
+              <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
+            </button>
+          </div>
         </div>
 
         {/* Two-column layout */}
@@ -134,7 +136,7 @@ export function ShowingsPanel() {
                       data-testid="weekly-rule-row"
                       className="rounded-md bg-muted px-4 py-3"
                     >
-                      <div className="flex items-center justify-between">
+                      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                         <span className="font-mono text-xs text-muted-foreground">{item.ruleId.slice(0, 8)}</span>
                         <span className="text-xs text-muted-foreground">{item.timezone}</span>
                       </div>
@@ -176,7 +178,7 @@ export function ShowingsPanel() {
                       data-testid="availability-row"
                       className="rounded-md bg-muted px-4 py-3"
                     >
-                      <div className="flex items-center justify-between">
+                      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                         <span className="text-sm font-medium">{item.source}</span>
                         <span className="text-xs text-muted-foreground">
                           {item.displayTimezone || item.timezone}

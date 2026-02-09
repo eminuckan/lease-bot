@@ -26,6 +26,16 @@ function normalizeSearch(value) {
   return (value || "").toLowerCase().trim();
 }
 
+function statusBadgeClass(status) {
+  if (status === "pending") {
+    return "bg-amber-500/15 text-amber-200";
+  }
+  if (status === "active") {
+    return "bg-emerald-500/15 text-emerald-300";
+  }
+  return "bg-muted text-muted-foreground";
+}
+
 export function AdminUsersPanel() {
   const {
     adminUsers,
@@ -199,8 +209,8 @@ export function AdminUsersPanel() {
         <section className="space-y-3">
           <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
             <h3 className="text-sm font-semibold">Users and invitations</h3>
-            <div className="grid gap-2 sm:grid-cols-2 lg:flex lg:items-center">
-              <div className="relative min-w-[230px]">
+            <div className="grid w-full gap-2 sm:grid-cols-2 lg:flex lg:items-center">
+              <div className="relative w-full lg:min-w-[260px]">
                 <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
                 <Input
                   value={search}
@@ -211,7 +221,7 @@ export function AdminUsersPanel() {
               </div>
 
               <Select value={typeFilter} onValueChange={setTypeFilter}>
-                <SelectTrigger className="h-9 min-w-[150px]">
+                <SelectTrigger className="h-9 w-full lg:min-w-[150px]">
                   <SelectValue placeholder="Type" />
                 </SelectTrigger>
                 <SelectContent>
@@ -222,7 +232,7 @@ export function AdminUsersPanel() {
               </Select>
 
               <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="h-9 min-w-[150px]">
+                <SelectTrigger className="h-9 w-full lg:min-w-[150px]">
                   <SelectValue placeholder="Status" />
                 </SelectTrigger>
                 <SelectContent>
@@ -236,7 +246,7 @@ export function AdminUsersPanel() {
               </Select>
 
               <Select value={roleFilter} onValueChange={setRoleFilter}>
-                <SelectTrigger className="h-9 min-w-[130px]">
+                <SelectTrigger className="h-9 w-full lg:min-w-[130px]">
                   <SelectValue placeholder="Role" />
                 </SelectTrigger>
                 <SelectContent>
@@ -248,7 +258,45 @@ export function AdminUsersPanel() {
             </div>
           </div>
 
-          <div className="overflow-x-auto rounded-md border border-border">
+          <div className="space-y-2 md:hidden">
+            {filteredRows.length === 0 ? (
+              <div className="rounded-md border border-border px-4 py-8 text-center text-sm text-muted-foreground">
+                No rows found.
+              </div>
+            ) : null}
+            {filteredRows.map((row) => (
+              <div key={`${row.id}-mobile`} className="rounded-md border border-border p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{row.name || "n/a"}</p>
+                    <p className="truncate text-xs text-muted-foreground">{row.email}</p>
+                  </div>
+                  <Badge>{row.role}</Badge>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <Badge className={statusBadgeClass(row.status)}>{row.status}</Badge>
+                  <Badge variant="outline">{row.type}</Badge>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Updated: {formatTimestamp(row.updatedAt || row.createdAt)}
+                </p>
+                {row.canRevoke ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="mt-3 w-full"
+                    onClick={() => revokeUserInvitation(row.rawId)}
+                  >
+                    <UserMinus className="mr-1.5 h-3.5 w-3.5" />
+                    Revoke
+                  </Button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden overflow-x-auto rounded-md border border-border md:block">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -280,13 +328,7 @@ export function AdminUsersPanel() {
                     </TableCell>
                     <TableCell>
                       <Badge
-                        className={
-                          row.status === "pending"
-                            ? "bg-amber-500/15 text-amber-200"
-                            : row.status === "active"
-                            ? "bg-emerald-500/15 text-emerald-300"
-                            : "bg-muted text-muted-foreground"
-                        }
+                        className={statusBadgeClass(row.status)}
                       >
                         {row.status}
                       </Badge>

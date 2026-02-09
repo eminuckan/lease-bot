@@ -244,7 +244,7 @@ function AppLayout() {
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top header bar */}
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-dashed border-border bg-card px-4">
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-center gap-3">
             {/* Mobile hamburger */}
             <button
               type="button"
@@ -254,8 +254,8 @@ function AppLayout() {
             >
               <Menu className="h-5 w-5" />
             </button>
-            <div>
-              <p className="text-sm font-medium">{user.email}</p>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium">{user.email}</p>
               <p className="text-xs text-muted-foreground capitalize">{user.role}</p>
             </div>
           </div>
