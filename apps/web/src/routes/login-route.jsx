@@ -1,7 +1,6 @@
 import { Navigate, createRoute, useRouter } from "@tanstack/react-router";
 import { useState } from "react";
 import { Button } from "../components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { ThemeToggle } from "../components/theme-toggle";
@@ -29,25 +28,27 @@ function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background px-4 py-8 sm:px-6">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <div className="mb-2 flex justify-end">
-            <ThemeToggle />
+    <main className="relative flex min-h-screen bg-background">
+      <header className="absolute inset-x-0 top-0 z-10 flex items-center justify-between px-4 py-4 sm:px-6">
+        <div className="text-sm font-semibold tracking-tight">Lease Bot</div>
+        <ThemeToggle className="rounded-md border border-border bg-muted/30 hover:bg-muted" />
+      </header>
+
+      <section className="mx-auto flex w-full max-w-md flex-1 items-center px-4 pb-12 pt-24 sm:px-6">
+        <div className="w-full space-y-6">
+          <div className="space-y-2">
+            <h1 className="text-3xl font-semibold tracking-tight">Log in</h1>
+            <p className="text-sm text-muted-foreground">Use your invited account credentials.</p>
+            <p className="text-xs text-muted-foreground">API health: {health} · Base URL: {apiBaseUrl}</p>
           </div>
-          <CardTitle className="text-xl">Lease Bot Login</CardTitle>
-          <CardDescription className="text-sm">
-            API health: {health} · Base URL: {apiBaseUrl}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+
           <form onSubmit={submitAuth} className="space-y-4" aria-label="Login form">
-            <Label className="grid gap-1.5 text-sm">
+            <Label className="grid gap-2 text-sm">
               Email
               <Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
             </Label>
 
-            <Label className="grid gap-1.5 text-sm">
+            <Label className="grid gap-2 text-sm">
               Password
               <Input
                 type="password"
@@ -58,14 +59,14 @@ function LoginPage() {
               />
             </Label>
 
-            {authError ? <p className="text-xs text-destructive-text">{authError}</p> : null}
+            {authError ? <p className="text-sm text-destructive-text">{authError}</p> : null}
 
-            <Button type="submit" className="w-full">
+            <Button type="submit" className="w-full font-semibold">
               Sign in
             </Button>
           </form>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
     </main>
   );
 }
