@@ -53,7 +53,17 @@ function statusTone(status) {
 function listingLabel(listing, unitNameById) {
   const unitLabel = unitNameById.get(listing.unitId) || "Unknown unit";
   const title = listing.metadata?.title || listing.metadata?.headline || listing.listingExternalId || "Listing";
-  return `${title} · ${unitLabel}`;
+  const platform = typeof listing?.platform === "string" ? listing.platform.toUpperCase() : "";
+  const label = platform ? `${platform} · ${title}` : title;
+  return `${label} · ${unitLabel}`;
+}
+
+function appointmentLeadLabel(item) {
+  const lead = item?.conversation?.leadName || item?.unit || "Showing";
+  const platform = typeof item?.conversation?.platform === "string"
+    ? item.conversation.platform.toUpperCase()
+    : "";
+  return platform ? `${platform} · ${lead}` : lead;
 }
 
 export function ShowingsPanel() {
@@ -306,7 +316,7 @@ export function ShowingsPanel() {
                 {selectedDayItems.map((item) => (
                   <div key={item.id} className="rounded-md border border-border p-3">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="truncate text-sm font-medium">{item.unit || item.conversation?.leadName || "Showing"}</p>
+                      <p className="truncate text-sm font-medium">{appointmentLeadLabel(item)}</p>
                       <Badge className={statusTone(item.status)}>{item.status}</Badge>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">{item.agentName || "Unassigned agent"}</p>
@@ -324,7 +334,7 @@ export function ShowingsPanel() {
               <div className="space-y-2">
                 {upcomingItems.map((item) => (
                   <div key={`upcoming-${item.id}`} className="rounded-md border border-border px-3 py-2">
-                    <p className="truncate text-xs font-medium">{item.conversation?.leadName || item.unit || "Lead"}</p>
+                    <p className="truncate text-xs font-medium">{appointmentLeadLabel(item)}</p>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">{item.localStart} · {item.agentName || "Agent"}</p>
                   </div>
                 ))}

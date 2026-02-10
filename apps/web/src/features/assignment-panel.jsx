@@ -54,9 +54,11 @@ function formatListingLabel(item) {
   const location = typeof metadata.location === "string" ? metadata.location.trim() : "";
   const priceText = typeof metadata.priceText === "string" ? metadata.priceText.trim() : "";
   const listingExternalId = typeof item?.listingExternalId === "string" ? item.listingExternalId.trim() : "";
+  const platform = typeof item?.platform === "string" ? item.platform.trim().toUpperCase() : "";
 
   const primary = title
     || (listingExternalId ? `Listing #${listingExternalId}` : `Listing ${String(item.id || "").slice(0, 8)}`);
+  const primaryWithPlatform = platform ? `${platform} · ${primary}` : primary;
 
   const details = [];
   if (location) {
@@ -67,7 +69,7 @@ function formatListingLabel(item) {
   }
   details.push(item.status === "active" ? "active" : "inactive");
 
-  return `${primary} (${details.join(" • ")})`;
+  return `${primaryWithPlatform} (${details.join(" • ")})`;
 }
 
 function buildAssignmentTargets(units, listings) {

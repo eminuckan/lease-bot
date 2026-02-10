@@ -39,6 +39,14 @@ function appointmentStatusTone(status) {
   return "bg-muted text-muted-foreground";
 }
 
+function appointmentLeadLabel(item) {
+  const lead = item?.conversation?.leadName || item?.unit || "Showing";
+  const platform = typeof item?.conversation?.platform === "string"
+    ? item.conversation.platform.toUpperCase()
+    : "";
+  return platform ? `${platform} · ${lead}` : lead;
+}
+
 export function AgentAppointmentsPanel() {
   const {
     user,
@@ -186,7 +194,7 @@ export function AgentAppointmentsPanel() {
                     <div className="mt-1 space-y-1">
                       {dayAppointments.slice(0, 2).map((item) => (
                         <div key={item.id} className="truncate rounded bg-muted/70 px-1.5 py-0.5 text-[10px]">
-                          {format(safeDate(item.startsAt) || new Date(), "HH:mm")} {item.conversation?.leadName || "Showing"}
+                          {format(safeDate(item.startsAt) || new Date(), "HH:mm")} {appointmentLeadLabel(item)}
                         </div>
                       ))}
                     </div>
@@ -204,7 +212,7 @@ export function AgentAppointmentsPanel() {
               {selectedDayAppointments.map((item) => (
                 <div key={item.id} className="rounded-md border border-border p-2">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="truncate text-xs font-medium">{item.conversation?.leadName || item.unit || "Showing"}</p>
+                    <p className="truncate text-xs font-medium">{appointmentLeadLabel(item)}</p>
                     <Badge className={appointmentStatusTone(item.status)}>{item.status}</Badge>
                   </div>
                   <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">

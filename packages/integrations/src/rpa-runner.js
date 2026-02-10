@@ -20,6 +20,19 @@ function sanitizeMessageBody(value) {
   return body;
 }
 
+function pickFirstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const normalized = value.trim();
+    if (normalized.length > 0) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
 const MONTHS = new Map([
   ["jan", 0],
   ["january", 0],
@@ -912,6 +925,20 @@ async function defaultIngestHandler({ adapter, page, clock }) {
               body = body.replace(/^you:\s*/i, "").trim();
             }
 
+            if (leadNameRaw) {
+              const escapedLead = leadNameRaw
+                .replace(/\s*\(\d+\)\s*$/, "")
+                .trim()
+                .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              if (escapedLead) {
+                const leadYouPrefix = new RegExp(`^(?:[A-Z]\\s+)?${escapedLead}\\s+You:\\s*`, "i");
+                if (leadYouPrefix.test(body)) {
+                  direction = "outbound";
+                  body = body.replace(leadYouPrefix, "").trim();
+                }
+              }
+            }
+
             if (!leadNameRaw) {
               const prefixedLead = body.match(
                 /^(?:[A-Z]\s+)?([A-Za-z][A-Za-z' .-]{0,50})\s+You:\s*(.+)$/i
@@ -1292,6 +1319,88 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
     }
   );
 
+  const threadContext = await page.evaluate((meta) => {
+    const clean = (value) => {
+      if (typeof value !== "string") {
+        return null;
+      }
+      const normalized = value.replace(/\s+/g, " ").trim();
+      return normalized.length > 0 ? normalized : null;
+    };
+
+    const pickRoomiesListing = () => {
+      const anchors = Array.from(document.querySelectorAll("a[href*='/rooms/']"));
+      for (const anchor of anchors) {
+        const href = anchor.getAttribute("href") || "";
+        const roomMatch = href.match(/\/rooms\/([^/?#]+)/i);
+        if (!roomMatch?.[1]) {
+          continue;
+        }
+
+        const label = clean(anchor.textContent || "");
+        if (label && !/^more$/i.test(label)) {
+          return {
+            listingExternalId: String(roomMatch[1]).trim(),
+            threadLabel: label
+          };
+        }
+      }
+      return {
+        listingExternalId: null,
+        threadLabel: null
+      };
+    };
+
+    const pickRoomiesLeadName = () => {
+      const disallowed = new Set(["messages", "more", "you", "today", "yesterday"]);
+      const selectors = [
+        "h1",
+        "h2",
+        "[class*='font-semibold']",
+        "[class*='font-bold']",
+        "[data-testid*='name']"
+      ];
+      for (const selector of selectors) {
+        let nodes = [];
+        try {
+          nodes = Array.from(document.querySelectorAll(selector));
+        } catch {
+          nodes = [];
+        }
+        for (const node of nodes) {
+          const text = clean(node.textContent || "");
+          if (!text) {
+            continue;
+          }
+          const lowered = text.toLowerCase();
+          if (disallowed.has(lowered) || lowered.includes("looking for accommodation")) {
+            continue;
+          }
+          if (text.length > 64) {
+            continue;
+          }
+          return text;
+        }
+      }
+      return null;
+    };
+
+    if (meta.platform === "roomies") {
+      const listing = pickRoomiesListing();
+      return {
+        listingExternalId: listing.listingExternalId,
+        threadLabel: listing.threadLabel,
+        leadName: pickRoomiesLeadName()
+      };
+    }
+
+    return {
+      listingExternalId: null,
+      threadLabel: null,
+      leadName: null
+    };
+  }, { platform: adapter.platform });
+
   let threadListingExternalId = null;
   let threadLeadExternalId = null;
   if (adapter.platform === "spareroom" && typeof threadId === "string") {
@@ -1315,17 +1424,21 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
           parsed = null;
         }
       }
-      const sentAt = parsed ? parsed.toISOString() : now.toISOString();
+      const sentAt = parsed ? parsed.toISOString() : null;
       return {
         ...message,
+        leadName: message.leadName || threadContext?.leadName || null,
         body: sanitizeMessageBody(message.body),
         sentAt,
         metadata: {
           adapter: adapter.platform,
           source: "playwright_rpa",
-          sentAtSource: parsed ? "platform_thread" : "clock",
+          sentAtSource: parsed ? "platform_thread" : "unparsed",
           ...(threadListingExternalId ? { listingExternalId: threadListingExternalId } : {}),
           ...(threadLeadExternalId ? { leadExternalId: threadLeadExternalId } : {}),
+          ...(threadContext?.listingExternalId ? { listingExternalId: threadContext.listingExternalId } : {}),
+          ...(threadContext?.threadLabel ? { threadLabel: threadContext.threadLabel } : {}),
+          ...(threadContext?.leadName ? { leadName: threadContext.leadName } : {}),
           ...(message.sentAtText ? { sentAtText: message.sentAtText } : {})
         }
       };

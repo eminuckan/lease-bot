@@ -1377,6 +1377,7 @@ async function fetchListings(client, unitId = null, { onlyActivePlatform = true 
     `SELECT l.id,
             l.unit_id,
             l.platform_account_id,
+            pa.platform,
             l.listing_external_id,
             l.status,
             l.rent_cents,
@@ -1400,6 +1401,7 @@ async function fetchListings(client, unitId = null, { onlyActivePlatform = true 
     id: row.id,
     unitId: row.unit_id,
     platformAccountId: row.platform_account_id,
+    platform: row.platform,
     listingExternalId: row.listing_external_id,
     status: row.status,
     rentCents: row.rent_cents,
@@ -1919,7 +1921,8 @@ function toShowingAppointmentDto(row, displayTimezone = null) {
     unit: row.property_name && row.unit_number ? `${row.property_name} ${row.unit_number}` : null,
     conversation: {
       externalThreadId: row.external_thread_id || null,
-      leadName: row.lead_name || null
+      leadName: row.lead_name || null,
+      platform: row.platform || null
     },
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -1931,6 +1934,7 @@ async function fetchShowingAppointmentByIdempotencyKey(client, idempotencyKey) {
     `SELECT sa.id,
             sa.idempotency_key,
             sa.platform_account_id,
+            pa.platform,
             sa.conversation_id,
             sa.unit_id,
             sa.listing_id,
@@ -1951,6 +1955,7 @@ async function fetchShowingAppointmentByIdempotencyKey(client, idempotencyKey) {
             c.external_thread_id,
             c.lead_name
        FROM "ShowingAppointments" sa
+       JOIN "PlatformAccounts" pa ON pa.id = sa.platform_account_id
        JOIN "Units" u ON u.id = sa.unit_id
        JOIN "Agents" a ON a.id = sa.agent_id
   LEFT JOIN "Conversations" c ON c.id = sa.conversation_id
@@ -2461,9 +2466,9 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
   const roomiesThreadGuard = `AND NOT (pa.platform = 'roomies' AND (c.external_thread_id IS NULL OR c.external_thread_id !~ '^[0-9]+$'))`;
   const orderByClause = `ORDER BY
+                                effective_last_message_at DESC NULLS LAST,
                                 CASE WHEN c.external_inbox_sort_rank IS NULL THEN 1 ELSE 0 END ASC,
                                 c.external_inbox_sort_rank ASC NULLS LAST,
-                                effective_last_message_at DESC NULLS LAST,
                                 c.updated_at DESC NULLS LAST,
                                 c.id ASC`;
   const result = await client.query(
@@ -2731,7 +2736,36 @@ async function fetchConversationDetail(client, conversationId, access = null) {
          FROM deduped
         WHERE rn = 1
         ORDER BY sent_at ASC, created_at ASC`;
-  const genericMessagesSql = `SELECT id,
+  const genericMessagesSql = `WITH ranked AS (
+         SELECT m.id,
+                m.conversation_id,
+                m.external_message_id,
+                m.sender_type,
+                m.sender_agent_id,
+                m.direction,
+                m.body,
+                m.metadata,
+                m.sent_at,
+                m.created_at,
+                COALESCE(NULLIF(m.external_message_id, ''), '__row__' || m.id::text) AS dedupe_key,
+                CASE
+                  WHEN COALESCE(m.metadata->>'sentAtSource', '') = 'platform_thread' THEN 0
+                  WHEN COALESCE(m.metadata->>'sentAtSource', '') = 'platform_outbound_send' THEN 1
+                  WHEN COALESCE(m.metadata->>'sentAtSource', '') = 'platform_inbox' THEN 2
+                  ELSE 3
+                END AS source_rank
+           FROM "Messages" m
+          WHERE m.conversation_id = $1::uuid
+       ),
+       deduped AS (
+         SELECT *,
+                ROW_NUMBER() OVER (
+                  PARTITION BY dedupe_key
+                  ORDER BY source_rank ASC, sent_at DESC, created_at DESC, id DESC
+                ) AS rn
+           FROM ranked
+       )
+       SELECT id,
               conversation_id,
               external_message_id,
               sender_type,
@@ -2741,8 +2775,8 @@ async function fetchConversationDetail(client, conversationId, access = null) {
               metadata,
               sent_at,
               created_at
-         FROM "Messages"
-        WHERE conversation_id = $1::uuid
+         FROM deduped
+        WHERE rn = 1
         ORDER BY sent_at ASC, created_at ASC`;
   const genericMessagesSqlFallback = `SELECT id,
               conversation_id,

@@ -83,9 +83,15 @@ function compareMessagesForRender(left, right) {
 }
 
 function mergeConversationMessages(existingMessages = [], incomingMessages = []) {
+  const incomingHasThreadRows = incomingMessages.some(
+    (message) => String(message?.metadata?.sentAtSource || "") === "platform_thread"
+  );
+  const seedExistingMessages = incomingHasThreadRows
+    ? existingMessages.filter((message) => String(message?.metadata?.sentAtSource || "") !== "platform_inbox")
+    : existingMessages;
   const mergedByKey = new Map();
 
-  for (const message of existingMessages) {
+  for (const message of seedExistingMessages) {
     mergedByKey.set(getMessageMergeKey(message), message);
   }
 

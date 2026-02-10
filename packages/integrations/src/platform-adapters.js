@@ -45,10 +45,10 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
       "to view this content you need to log in"
     ],
     listingSync: {
-      paths: ["/my-listings", "/listings", "/rooms/manage", "/rooms"],
+      paths: ["/dashboard", "/my-listings", "/listings", "/rooms/manage", "/rooms"],
       pageParam: "page",
       maxPages: 25,
-      managePageMarkers: ["my listings", "your listings", "manage listings", "edit listing", "deactivate", "my room"]
+      managePageMarkers: ["manage your listings", "my listings", "your listings", "manage listings", "edit listing", "deactivate", "my room"]
     },
     selectors: {
       challenge: ["#challenge-stage", "[data-testid='challenge-page']"],

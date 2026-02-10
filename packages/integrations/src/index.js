@@ -524,13 +524,14 @@ export function createPostgresQueueAdapter(client, options = {}) {
     return (hash >>> 0).toString(36);
   }
 
-  function buildUnitSyncKey(title, location) {
+  function buildUnitSyncKey(platformAccountId, title, location) {
+    const normalizedScope = normalizeUnitIdentityPart(platformAccountId || "global");
     const normalizedTitle = normalizeUnitIdentityPart(title);
     if (!normalizedTitle) {
       return null;
     }
     const normalizedLocation = normalizeUnitIdentityPart(location);
-    return `listing-sync:${normalizedTitle}|${normalizedLocation || "na"}`;
+    return `listing-sync:${normalizedScope || "global"}:${normalizedTitle}|${normalizedLocation || "na"}`;
   }
 
   function buildGeneratedUnitNumber(unitSyncKey, listingExternalId) {
@@ -1654,6 +1655,9 @@ export function createPostgresQueueAdapter(client, options = {}) {
       let inserted = 0;
       let updated = 0;
       let skipped = 0;
+      let discoveredListingExternalId = null;
+      let discoveredThreadLabel = null;
+      let discoveredLeadName = null;
 
       await client.query("BEGIN");
       try {
@@ -1673,6 +1677,31 @@ export function createPostgresQueueAdapter(client, options = {}) {
           const channel = message.channel || "in_app";
           const body = message.body || "";
           const metadata = message.metadata || {};
+          discoveredListingExternalId = discoveredListingExternalId
+            || pickFirstNonEmptyString(
+              message?.listingExternalId,
+              metadata?.listingExternalId,
+              metadata?.listing_external_id,
+              metadata?.context?.listingExternalId,
+              metadata?.context?.listing_external_id
+            );
+          discoveredThreadLabel = discoveredThreadLabel
+            || pickFirstNonEmptyString(
+              message?.threadLabel,
+              metadata?.threadLabel,
+              metadata?.thread_label,
+              metadata?.inbox?.threadLabel,
+              metadata?.context?.threadLabel,
+              metadata?.context?.thread_label
+            );
+          discoveredLeadName = discoveredLeadName
+            || pickFirstNonEmptyString(
+              message?.leadName,
+              metadata?.leadName,
+              metadata?.lead_name,
+              metadata?.context?.leadName,
+              metadata?.context?.lead_name
+            );
           const sentAt = normalizeTimestampValue(message.sentAt)
             || normalizeTimestampValue(conversation.last_message_at)
             || normalizeTimestampValue(conversation.created_at);
@@ -1810,6 +1839,35 @@ export function createPostgresQueueAdapter(client, options = {}) {
           );
         }
 
+        let resolvedListingId = normalizeUuid(conversation.listing_id);
+        if (!resolvedListingId && discoveredListingExternalId) {
+          const linkage = await resolveInboundListingLinkage(client, platformAccountId, {
+            listingExternalId: discoveredListingExternalId,
+            metadata: {
+              listingExternalId: discoveredListingExternalId
+            }
+          });
+          resolvedListingId = normalizeUuid(linkage?.listingId);
+        }
+
+        await client.query(
+          `UPDATE "Conversations"
+              SET listing_id = COALESCE(listing_id, $2::uuid),
+                  external_thread_label = CASE
+                    WHEN NULLIF($3::text, '') IS NOT NULL THEN $3::text
+                    ELSE external_thread_label
+                  END,
+                  lead_name = COALESCE(NULLIF($4::text, ''), lead_name),
+                  updated_at = NOW()
+            WHERE id = $1::uuid`,
+          [
+            conversationId,
+            resolvedListingId,
+            discoveredThreadLabel,
+            discoveredLeadName
+          ]
+        );
+
         await client.query(
           `UPDATE "Conversations" c
               SET last_message_at = latest.max_sent_at,
@@ -1913,7 +1971,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
             const priceText = typeof rawListing?.priceText === "string" ? rawListing.priceText.trim() : "";
             const status = rawListing?.status === "active" ? "active" : "inactive";
             const currencyCode = "USD";
-            const unitSyncKey = buildUnitSyncKey(title, location);
+            const unitSyncKey = buildUnitSyncKey(platformAccountId, title, location);
             const generatedUnitNumber = buildGeneratedUnitNumber(unitSyncKey, listingExternalId);
 
             const lookup = await client.query(
