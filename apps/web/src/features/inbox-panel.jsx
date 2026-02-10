@@ -1,4 +1,5 @@
 import { RefreshCw, ChevronLeft, ChevronRight, Send, Check, X, MessageSquare, User, Building2, ArrowLeft } from "lucide-react";
+import { Button } from "../components/ui/button";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
 import { formatTimestamp } from "../lib/utils";
