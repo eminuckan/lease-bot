@@ -1929,6 +1929,7 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
   const countRoomiesOutboundMatches = async () => {
     if (adapter.platform !== "roomies" || !normalizedOutboundBody || typeof page?.evaluate !== "function") {
       return {
+        totalMatches: 0,
         outboundMatches: 0,
         outboundCount: 0,
         totalCount: 0
@@ -1939,9 +1940,7 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
       const normalized = String(selector || "").toLowerCase();
       return normalized.length > 0 && !normalized.includes("[class*='message'");
     });
-    const roomiesItemSelectors = preferredItemSelectors.length > 0
-      ? preferredItemSelectors
-      : threadMessageItemSelectors;
+    const roomiesItemSelectors = preferredItemSelectors.length > 0 ? preferredItemSelectors : threadMessageItemSelectors;
 
     const snapshot = await page.evaluate((meta) => {
       const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -2032,23 +2031,32 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
         return { body, outbound };
       };
 
-      const dedupeElements = new Set();
-      const orderedElements = [];
-      for (const selector of meta.itemSelectors) {
-        if (!selector) {
-          continue;
-        }
-        const nodes = safeQueryAll(selector);
-        for (const node of nodes) {
-          if (dedupeElements.has(node)) {
+      const collectOrderedElements = (selectors) => {
+        const dedupeElements = new Set();
+        const orderedElements = [];
+        for (const selector of selectors) {
+          if (!selector) {
             continue;
           }
-          dedupeElements.add(node);
-          orderedElements.push(node);
+          const nodes = safeQueryAll(selector);
+          for (const node of nodes) {
+            if (dedupeElements.has(node)) {
+              continue;
+            }
+            dedupeElements.add(node);
+            orderedElements.push(node);
+          }
         }
+        return orderedElements;
+      };
+
+      let orderedElements = collectOrderedElements(meta.itemSelectors);
+      if (orderedElements.length === 0) {
+        orderedElements = collectOrderedElements(meta.fallbackItemSelectors);
       }
 
       let totalCount = 0;
+      let totalMatches = 0;
       let outboundCount = 0;
       let outboundMatches = 0;
       for (const element of orderedElements) {
@@ -2057,6 +2065,9 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
           continue;
         }
         totalCount += 1;
+        if (isMatch(row.body, meta.expectedBody)) {
+          totalMatches += 1;
+        }
         if (row.outbound) {
           outboundCount += 1;
           if (isMatch(row.body, meta.expectedBody)) {
@@ -2067,17 +2078,20 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
 
       return {
         totalCount,
+        totalMatches,
         outboundCount,
         outboundMatches
       };
     }, {
       itemSelectors: roomiesItemSelectors,
+      fallbackItemSelectors: threadMessageItemSelectors,
       bodySelectors: threadMessageBodySelectors,
       expectedBody: normalizedOutboundBody
     });
 
     return {
       totalCount: Number.isFinite(Number(snapshot?.totalCount)) ? Number(snapshot.totalCount) : 0,
+      totalMatches: Number.isFinite(Number(snapshot?.totalMatches)) ? Number(snapshot.totalMatches) : 0,
       outboundCount: Number.isFinite(Number(snapshot?.outboundCount)) ? Number(snapshot.outboundCount) : 0,
       outboundMatches: Number.isFinite(Number(snapshot?.outboundMatches)) ? Number(snapshot.outboundMatches) : 0
     };
@@ -2118,22 +2132,22 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
   if (
     adapter.platform === "roomies"
     && normalizedOutboundBody
-    && typeof page?.waitForFunction === "function"
+    && typeof page?.waitForTimeout === "function"
   ) {
-    try {
-      await page.waitForFunction(() => document.readyState === "complete" || document.readyState === "interactive", null, {
-        timeout: 3000
-      }).catch(() => {});
-    } catch {
-      throw createRunnerError(
-        "OUTBOUND_DELIVERY_UNCONFIRMED",
-        "Roomies send action could not be confirmed on thread after submit",
-        { retryable: false }
-      );
+    const deadlineAt = Date.now() + 15000;
+    let roomiesAfterSnapshot = await countRoomiesOutboundMatches();
+    while (
+      Date.now() < deadlineAt
+      && roomiesAfterSnapshot.totalMatches <= roomiesBeforeSnapshot.totalMatches
+      && roomiesAfterSnapshot.outboundMatches <= roomiesBeforeSnapshot.outboundMatches
+    ) {
+      await page.waitForTimeout(500);
+      roomiesAfterSnapshot = await countRoomiesOutboundMatches();
     }
-
-    const roomiesAfterSnapshot = await countRoomiesOutboundMatches();
-    if (roomiesAfterSnapshot.outboundMatches <= roomiesBeforeSnapshot.outboundMatches) {
+    if (
+      roomiesAfterSnapshot.totalMatches <= roomiesBeforeSnapshot.totalMatches
+      && roomiesAfterSnapshot.outboundMatches <= roomiesBeforeSnapshot.outboundMatches
+    ) {
       throw createRunnerError(
         "OUTBOUND_DELIVERY_UNCONFIRMED",
         "Roomies send action was not persisted in thread",
