@@ -1,5 +1,4 @@
 import { RefreshCw, ChevronLeft, ChevronRight, Send, Check, X, MessageSquare, User, Building2, ArrowLeft } from "lucide-react";
-import { Button } from "../components/ui/button";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
 import { formatTimestamp } from "../lib/utils";
@@ -42,7 +41,6 @@ export function InboxPanel() {
     draftForm,
     setDraftForm,
     createDraft,
-    updateConversationWorkflow,
     approveMessage,
     rejectMessage,
     refreshInbox,
@@ -89,28 +87,6 @@ export function InboxPanel() {
     } finally {
       setIsRefreshing(false);
     }
-  }
-
-  async function handleOneClickOutcome(outcome) {
-    if (!conversationDetail?.conversation?.id) {
-      return;
-    }
-
-    const payloadByOutcome = {
-      not_interested: { workflowOutcome: "not_interested" },
-      wants_reschedule: { workflowOutcome: "wants_reschedule", showingState: "reschedule_requested" },
-      no_show: { workflowOutcome: "no_show", showingState: "no_show" },
-      completed: { workflowOutcome: "completed", showingState: "completed" }
-    };
-
-    const labelByOutcome = {
-      not_interested: "Outcome updated: not interested",
-      wants_reschedule: "Outcome updated: wants reschedule",
-      no_show: "Outcome updated: no show",
-      completed: "Outcome updated: completed"
-    };
-
-    await updateConversationWorkflow(conversationDetail.conversation.id, payloadByOutcome[outcome], labelByOutcome[outcome]);
   }
 
   return (
@@ -312,18 +288,6 @@ export function InboxPanel() {
                 {conversationRefreshing ? (
                   <span className="hidden shrink-0 text-[11px] text-muted-foreground md:inline">Updating...</span>
                 ) : null}
-                <div className="hidden items-center gap-1 md:flex">
-                  <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("not_interested")}>Not interested</Button>
-                  <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("wants_reschedule")}>Reschedule</Button>
-                  <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("no_show")}>No show</Button>
-                  <Button type="button" size="sm" onClick={() => handleOneClickOutcome("completed")}>Completed</Button>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-2 border-b border-dashed border-border bg-card px-4 py-2 md:hidden">
-                <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("not_interested")}>Not interested</Button>
-                <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("wants_reschedule")}>Reschedule</Button>
-                <Button type="button" variant="outline" size="sm" onClick={() => handleOneClickOutcome("no_show")}>No show</Button>
-                <Button type="button" size="sm" onClick={() => handleOneClickOutcome("completed")}>Completed</Button>
               </div>
 
               {/* Messages */}
