@@ -439,6 +439,155 @@ test("R13 slot-aware flow drafts when slots are present", async () => {
   assert.equal(result.escalationReasonCode, null);
 });
 
+test("R15: multi-slot confirmations use deterministic arbitration + confirmation handshake", async () => {
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m-r15-1",
+        conversationId: "c-r15-1",
+        body: "All three options work for me",
+        metadata: {},
+        platform: "spareroom",
+        platformAccountId: "p-r15-1",
+        assignedAgentId: "a1",
+        leadName: "Lily",
+        unitId: "u1",
+        propertyName: "Atlas Apartments",
+        unitNumber: "4B",
+        hasRecentOutbound: true
+      }
+    ],
+    ruleByIntent: {
+      tour_request: {
+        id: "r1",
+        enabled: true,
+        actionConfig: { template: "tour_invite_v1" }
+      }
+    },
+    templatesByName: {
+      tour_invite_v1: {
+        id: "t1",
+        body: "Hi {{lead_name}}\\n{{slot_options_list}}"
+      }
+    },
+    slotOptionsByUnit: {
+      u1: [
+        {
+          starts_at: "2026-02-14T19:00:00.000Z",
+          ends_at: "2026-02-14T20:00:00.000Z",
+          timezone: "UTC",
+          agent_name: "Baris"
+        },
+        {
+          starts_at: "2026-02-13T18:00:00.000Z",
+          ends_at: "2026-02-13T19:00:00.000Z",
+          timezone: "UTC",
+          agent_name: "Aleyna"
+        },
+        {
+          starts_at: "2026-02-15T18:00:00.000Z",
+          ends_at: "2026-02-15T19:00:00.000Z",
+          timezone: "UTC",
+          agent_name: "Ceren"
+        }
+      ]
+    }
+  });
+
+  await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-12T10:00:00.000Z"),
+    aiClassifier: async () => ({
+      intent: "tour_request",
+      ambiguity: false,
+      suggestedReply: "All good, we can lock one slot.",
+      reasonCode: null,
+      workflowOutcome: "showing_confirmed",
+      confidence: 0.93,
+      riskLevel: "low",
+      selectedSlotIndex: null
+    })
+  });
+
+  assert.equal(fixture.outbound.length, 1);
+  assert.match(fixture.outbound[0].body, /Please reply with "confirm"/i);
+  assert.equal(fixture.showingOutcomeSyncs.length, 0);
+  assert.equal(fixture.workflowTransitions.length, 0);
+  assert.equal(fixture.processed[0].metadataPatch.workflowOutcome, "general_question");
+  assert.equal(fixture.processed[0].metadataPatch.slotConfirmationState.status, "pending");
+  assert.equal(fixture.outbound[0].metadata.slotConfirmationPending.startsAt, "2026-02-13T18:00:00.000Z");
+});
+
+test("R15: pending slot confirmation finalizes showing only after explicit confirm", async () => {
+  const pendingSlot = {
+    startsAt: "2026-02-14T19:00:00.000Z",
+    endsAt: "2026-02-14T20:00:00.000Z",
+    timezone: "UTC",
+    agentName: "Aleyna",
+    label: "Fri, Feb 14 7:00 PM - 8:00 PM UTC (Aleyna)"
+  };
+  const fixture = createMemoryAdapter({
+    pendingMessages: [
+      {
+        id: "m-r15-2",
+        conversationId: "c-r15-2",
+        body: "Yes confirm this slot please",
+        metadata: {},
+        platform: "spareroom",
+        platformAccountId: "p-r15-2",
+        assignedAgentId: "a1",
+        leadName: "Emin",
+        unitId: "u1",
+        propertyName: "Atlas Apartments",
+        unitNumber: "4B",
+        hasRecentOutbound: true,
+        pendingSlotConfirmation: pendingSlot
+      }
+    ],
+    ruleByIntent: {
+      tour_request: {
+        id: "r1",
+        enabled: true,
+        actionConfig: { template: "tour_invite_v1" }
+      }
+    },
+    templatesByName: {
+      tour_invite_v1: {
+        id: "t1",
+        body: "Hi {{lead_name}}\\n{{slot_options_list}}"
+      }
+    },
+    slotOptionsByUnit: {
+      u1: []
+    }
+  });
+
+  await processPendingMessages({
+    adapter: fixture.adapter,
+    logger: console,
+    now: new Date("2026-02-13T10:00:00.000Z"),
+    aiClassifier: async () => ({
+      intent: "tour_request",
+      ambiguity: false,
+      suggestedReply: "Confirmed.",
+      reasonCode: null,
+      workflowOutcome: "showing_confirmed",
+      confidence: 0.91,
+      riskLevel: "low",
+      selectedSlotIndex: null
+    })
+  });
+
+  assert.equal(fixture.outbound.length, 1);
+  assert.match(fixture.outbound[0].body, /you're confirmed for/i);
+  assert.equal(fixture.showingOutcomeSyncs.length, 1);
+  assert.equal(fixture.showingOutcomeSyncs[0].selectedSlotIndex, 1);
+  assert.equal(fixture.showingOutcomeSyncs[0].slotCandidates.length, 1);
+  assert.equal(fixture.showingOutcomeSyncs[0].slotCandidates[0].startsAt, pendingSlot.startsAt);
+  assert.equal(fixture.processed[0].metadataPatch.workflowOutcome, "showing_confirmed");
+});
+
 test("R3: worker slot context uses assigned-agent candidate source", async () => {
   const fixture = createMemoryAdapter({
     pendingMessages: [

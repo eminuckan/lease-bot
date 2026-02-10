@@ -36,6 +36,128 @@ function isFresh(cacheTimestamp, ttlMs) {
     && Date.now() - cacheTimestamp <= ttlMs;
 }
 
+function getMessageSourcePriority(message) {
+  const source = message?.metadata?.sentAtSource;
+  if (source === "platform_thread") {
+    return 4;
+  }
+  if (source === "platform_outbound_send") {
+    return 3;
+  }
+  if (source === "platform_inbox") {
+    return 2;
+  }
+  return 1;
+}
+
+function getMessageMergeKey(message = {}) {
+  const externalMessageId =
+    message?.externalMessageId
+    || message?.metadata?.externalMessageId
+    || message?.metadata?.external_message_id
+    || null;
+  if (externalMessageId) {
+    return `external:${externalMessageId}`;
+  }
+
+  const direction = message.direction || "unknown";
+  const sentAt = message.sentAt || message.createdAt || "";
+  const body = String(message.body || "").trim();
+  return `fallback:${direction}:${sentAt}:${body}`;
+}
+
+function compareMessagesForRender(left, right) {
+  const leftSentAt = Number(new Date(left?.sentAt || left?.createdAt || 0));
+  const rightSentAt = Number(new Date(right?.sentAt || right?.createdAt || 0));
+  if (Number.isFinite(leftSentAt) && Number.isFinite(rightSentAt) && leftSentAt !== rightSentAt) {
+    return leftSentAt - rightSentAt;
+  }
+
+  const leftCreatedAt = Number(new Date(left?.createdAt || left?.sentAt || 0));
+  const rightCreatedAt = Number(new Date(right?.createdAt || right?.sentAt || 0));
+  if (Number.isFinite(leftCreatedAt) && Number.isFinite(rightCreatedAt) && leftCreatedAt !== rightCreatedAt) {
+    return leftCreatedAt - rightCreatedAt;
+  }
+
+  return String(left?.id || "").localeCompare(String(right?.id || ""));
+}
+
+function mergeConversationMessages(existingMessages = [], incomingMessages = []) {
+  const mergedByKey = new Map();
+
+  for (const message of existingMessages) {
+    mergedByKey.set(getMessageMergeKey(message), message);
+  }
+
+  for (const message of incomingMessages) {
+    const key = getMessageMergeKey(message);
+    const previous = mergedByKey.get(key);
+    if (!previous) {
+      mergedByKey.set(key, message);
+      continue;
+    }
+
+    const previousPriority = getMessageSourcePriority(previous);
+    const nextPriority = getMessageSourcePriority(message);
+    if (nextPriority > previousPriority) {
+      mergedByKey.set(key, { ...previous, ...message });
+      continue;
+    }
+    if (nextPriority === previousPriority) {
+      const previousSentAt = Number(new Date(previous?.sentAt || previous?.createdAt || 0));
+      const nextSentAt = Number(new Date(message?.sentAt || message?.createdAt || 0));
+      if (!Number.isFinite(previousSentAt) || (Number.isFinite(nextSentAt) && nextSentAt >= previousSentAt)) {
+        mergedByKey.set(key, { ...previous, ...message });
+      }
+    }
+  }
+
+  return [...mergedByKey.values()].sort(compareMessagesForRender);
+}
+
+function resolveThreadMessageCount(...values) {
+  const finiteValues = values
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+  if (finiteValues.length === 0) {
+    return null;
+  }
+  return Math.max(...finiteValues);
+}
+
+function mergeConversationDetail(existingDetail, incomingDetail) {
+  if (!incomingDetail) {
+    return existingDetail || null;
+  }
+  if (!existingDetail) {
+    return incomingDetail;
+  }
+
+  const existingConversationId = existingDetail?.conversation?.id;
+  const incomingConversationId = incomingDetail?.conversation?.id;
+  if (existingConversationId && incomingConversationId && existingConversationId !== incomingConversationId) {
+    return incomingDetail;
+  }
+
+  const existingMessages = Array.isArray(existingDetail?.messages) ? existingDetail.messages : [];
+  const incomingMessages = Array.isArray(incomingDetail?.messages) ? incomingDetail.messages : [];
+  const mergedMessages = mergeConversationMessages(existingMessages, incomingMessages);
+  const mergedThreadMessageCount = resolveThreadMessageCount(
+    incomingDetail?.conversation?.threadMessageCount,
+    existingDetail?.conversation?.threadMessageCount,
+    mergedMessages.filter((message) => message?.metadata?.sentAtSource === "platform_thread").length
+  );
+
+  return {
+    ...incomingDetail,
+    conversation: {
+      ...(incomingDetail.conversation || {}),
+      threadMessageCount: mergedThreadMessageCount
+    },
+    messages: mergedMessages
+  };
+}
+
 async function request(pathname, options = {}) {
   const response = await fetch(`${apiBaseUrl}${pathname}`, {
     credentials: "include",
@@ -188,7 +310,7 @@ export function LeaseBotProvider({ children }) {
       && nowMs - syncState.lastSyncedAt < conversationThreadSyncSuccessCooldownMs;
 
     if (hasInboxPreviewMessages) {
-      return !syncState?.inFlight && canRetrySync;
+      return !syncedRecently && !syncState?.inFlight && canRetrySync;
     }
 
     return !syncedRecently && !syncState?.inFlight && canRetrySync && (hasNoThreadHistory || hasKnownThreadGap);
@@ -223,18 +345,20 @@ export function LeaseBotProvider({ children }) {
     try {
       const synced = await request(`/api/inbox/${conversationId}/sync`, { method: "POST" });
       const syncedAt = Date.now();
-      conversationCacheRef.current.set(conversationId, { detail: synced, fetchedAt: syncedAt });
+      const existingDetail = conversationCacheRef.current.get(conversationId)?.detail || null;
+      const mergedDetail = mergeConversationDetail(existingDetail, synced);
+      conversationCacheRef.current.set(conversationId, { detail: mergedDetail, fetchedAt: syncedAt });
 
-      const syncedThreadMessageCount = Number(synced?.conversation?.threadMessageCount);
-      const syncedMessages = Array.isArray(synced?.messages) ? synced.messages : [];
+      const syncedThreadMessageCount = Number(mergedDetail?.conversation?.threadMessageCount);
+      const syncedMessages = Array.isArray(mergedDetail?.messages) ? mergedDetail.messages : [];
       const syncedThreadMessages = syncedMessages.filter((item) => item?.metadata?.sentAtSource === "platform_thread");
 
       if (requestId === null) {
         setConversationDetail((current) => (
-          current?.conversation?.id === conversationId ? synced : current
+          current?.conversation?.id === conversationId ? mergeConversationDetail(current, mergedDetail) : current
         ));
       } else if (requestId === conversationRequestSeq.current) {
-        setConversationDetail(synced);
+        setConversationDetail((current) => mergeConversationDetail(current, mergedDetail));
       }
 
       setSyncedConversations((current) => ({
@@ -249,7 +373,7 @@ export function LeaseBotProvider({ children }) {
         }
       }));
 
-      return synced;
+      return mergedDetail;
     } catch {
       // Best-effort; keep previous detail/cache and retry later.
       setSyncedConversations((current) => ({
@@ -284,13 +408,15 @@ export function LeaseBotProvider({ children }) {
     try {
       const result = await request(`/api/inbox/${conversationId}`);
       const fetchedAt = Date.now();
-      conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
+      const existingDetail = conversationCacheRef.current.get(conversationId)?.detail || null;
+      const mergedDetail = mergeConversationDetail(existingDetail, result);
+      conversationCacheRef.current.set(conversationId, { detail: mergedDetail, fetchedAt });
 
       setConversationDetail((current) => {
         if (!current || current?.conversation?.id !== conversationId) {
           return current;
         }
-        return result;
+        return mergeConversationDetail(current, mergedDetail);
       });
 
     } catch {
@@ -420,16 +546,10 @@ export function LeaseBotProvider({ children }) {
 
       const fetchedAt = Date.now();
       const existingDetail = conversationCacheRef.current.get(conversationId)?.detail || null;
-      const existingMessageCount = Array.isArray(existingDetail?.messages) ? existingDetail.messages.length : 0;
-      const resultMessageCount = Array.isArray(result?.messages) ? result.messages.length : 0;
-      const preserveExistingDetail = existingDetail && existingMessageCount > resultMessageCount;
-      const shouldSyncThread = shouldAutoSyncConversationThread(conversationId, result);
-      if (preserveExistingDetail) {
-        conversationCacheRef.current.set(conversationId, { detail: existingDetail, fetchedAt });
-      } else {
-        setConversationDetail(result);
-        conversationCacheRef.current.set(conversationId, { detail: result, fetchedAt });
-      }
+      const mergedDetail = mergeConversationDetail(existingDetail, result);
+      const shouldSyncThread = shouldAutoSyncConversationThread(conversationId, mergedDetail);
+      setConversationDetail((current) => mergeConversationDetail(current, mergedDetail));
+      conversationCacheRef.current.set(conversationId, { detail: mergedDetail, fetchedAt });
       if (shouldSyncThread) {
         triggerThreadSync();
       }

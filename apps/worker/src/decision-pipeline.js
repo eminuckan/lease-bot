@@ -107,6 +107,98 @@ function normalizeSlotCandidate(slot) {
   return normalized;
 }
 
+function normalizePendingSlotConfirmation(slot) {
+  if (!slot || typeof slot !== "object") {
+    return null;
+  }
+
+  const startsAt = slot.startsAt || slot.starts_at || null;
+  const endsAt = slot.endsAt || slot.ends_at || null;
+  if (!startsAt || !endsAt) {
+    return null;
+  }
+
+  const normalized = normalizeSlotCandidate({
+    startsAt,
+    endsAt,
+    timezone: slot.timezone || "UTC",
+    agentId: slot.agentId || slot.agent_id || null,
+    agentName: slot.agentName || slot.agent_name || null
+  });
+
+  if (!normalized) {
+    return null;
+  }
+
+  return {
+    ...normalized,
+    label: typeof slot.label === "string" && slot.label.trim() ? slot.label.trim() : normalized.label
+  };
+}
+
+function isSameSlotCandidate(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+  return left.startsAt === right.startsAt
+    && left.endsAt === right.endsAt
+    && (left.timezone || "UTC") === (right.timezone || "UTC");
+}
+
+function compareSlotCandidates(left, right) {
+  const leftStarts = Number(new Date(left.startsAt));
+  const rightStarts = Number(new Date(right.startsAt));
+  if (Number.isFinite(leftStarts) && Number.isFinite(rightStarts) && leftStarts !== rightStarts) {
+    return leftStarts - rightStarts;
+  }
+
+  const leftEnds = Number(new Date(left.endsAt));
+  const rightEnds = Number(new Date(right.endsAt));
+  if (Number.isFinite(leftEnds) && Number.isFinite(rightEnds) && leftEnds !== rightEnds) {
+    return leftEnds - rightEnds;
+  }
+
+  const leftAgent = String(left.agentName || left.agentId || "").toLowerCase();
+  const rightAgent = String(right.agentName || right.agentId || "").toLowerCase();
+  if (leftAgent !== rightAgent) {
+    return leftAgent.localeCompare(rightAgent);
+  }
+
+  return String(left.label || "").localeCompare(String(right.label || ""));
+}
+
+function selectDeterministicSlotCandidate(candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return null;
+  }
+  const sorted = [...candidates].sort(compareSlotCandidates);
+  return sorted[0] || null;
+}
+
+const SLOT_CONFIRMATION_POSITIVE_PATTERN = /\b(confirm|confirmed|yes|yep|yeah|sounds good|works for me|that works|book it|see you)\b/i;
+const SLOT_CONFIRMATION_NEGATIVE_PATTERN = /\b(not|can't|cannot|unable|different|another|later|reschedule)\b/i;
+
+function isExplicitSlotConfirmation(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) {
+    return false;
+  }
+  if (!SLOT_CONFIRMATION_POSITIVE_PATTERN.test(normalized)) {
+    return false;
+  }
+  return !SLOT_CONFIRMATION_NEGATIVE_PATTERN.test(normalized);
+}
+
+function buildSlotConfirmationPrompt({ leadName, slotLabel }) {
+  const greeting = leadName ? `Hi ${leadName},` : "Hi,";
+  return `${greeting}\n\nGreat, I can hold this showing slot for you:\n- ${slotLabel}\n\nPlease reply with "confirm" and I will lock it in.`;
+}
+
+function buildSlotConfirmedReply({ leadName, slotLabel }) {
+  const greeting = leadName ? `Perfect ${leadName},` : "Perfect,";
+  return `${greeting} you're confirmed for:\n- ${slotLabel}\n\nSee you then.`;
+}
+
 function buildTemplateContext(message, slotOptions) {
   const unit = message.propertyName && message.unitNumber ? `${message.propertyName} ${message.unitNumber}` : "";
   const firstSlot = slotOptions.length > 0 ? slotOptions[0] : "";
@@ -456,10 +548,17 @@ export async function processPendingMessagesWithAi({
 
       const slotRows = await fetchSlotRowsForMessage(adapter, msg);
       const maxSlotOptions = Math.max(1, Number(process.env.WORKER_AUTOREPLY_SLOT_OPTION_LIMIT || 4));
-      const normalizedSlotCandidates = (Array.isArray(slotRows) ? slotRows : [])
+      let normalizedSlotCandidates = (Array.isArray(slotRows) ? slotRows : [])
         .map((slot) => normalizeSlotCandidate(slot))
         .filter(Boolean)
         .slice(0, maxSlotOptions);
+      const pendingSlotConfirmation = normalizePendingSlotConfirmation(msg.pendingSlotConfirmation);
+      if (
+        pendingSlotConfirmation
+        && !normalizedSlotCandidates.some((candidate) => isSameSlotCandidate(candidate, pendingSlotConfirmation))
+      ) {
+        normalizedSlotCandidates = [pendingSlotConfirmation, ...normalizedSlotCandidates].slice(0, maxSlotOptions);
+      }
       const slotOptions = Array.from(new Set(normalizedSlotCandidates.map((slot) => slot.label))).slice(0, maxSlotOptions);
       const followUpRuleFallbackIntent = message.metadata?.intent || "tour_request";
       const messageIntent = classifyIntent(msg.body);
@@ -522,7 +621,7 @@ export async function processPendingMessagesWithAi({
         }
       }
 
-      const pipeline = await runReplyPipelineWithAI({
+      let pipeline = await runReplyPipelineWithAI({
         inboundBody: msg.body,
         hasRecentOutbound: msg.hasRecentOutbound,
         fallbackIntent: followUpRuleFallbackIntent,
@@ -537,6 +636,55 @@ export async function processPendingMessagesWithAi({
         fewShotExamples,
         playbook
       });
+
+      let selectedSlotCandidates = normalizedSlotCandidates;
+      let slotConfirmationState = null;
+
+      if (
+        pendingSlotConfirmation
+        && pipeline.workflowOutcome === "showing_confirmed"
+        && !pipeline.selectedSlotIndex
+        && isExplicitSlotConfirmation(msg.body)
+      ) {
+        selectedSlotCandidates = [pendingSlotConfirmation];
+        pipeline = {
+          ...pipeline,
+          selectedSlotIndex: 1,
+          replyBody: buildSlotConfirmedReply({
+            leadName: msg.leadName || "",
+            slotLabel: pendingSlotConfirmation.label
+          })
+        };
+        slotConfirmationState = {
+          status: "confirmed",
+          strategy: "pending_slot_confirmation",
+          slotCandidate: pendingSlotConfirmation
+        };
+      } else if (
+        !pendingSlotConfirmation
+        && pipeline.workflowOutcome === "showing_confirmed"
+        && !pipeline.selectedSlotIndex
+        && normalizedSlotCandidates.length > 1
+      ) {
+        const selectedCandidate = selectDeterministicSlotCandidate(normalizedSlotCandidates);
+        if (selectedCandidate) {
+          selectedSlotCandidates = [selectedCandidate];
+          pipeline = {
+            ...pipeline,
+            workflowOutcome: "general_question",
+            selectedSlotIndex: null,
+            replyBody: buildSlotConfirmationPrompt({
+              leadName: msg.leadName || "",
+              slotLabel: selectedCandidate.label
+            })
+          };
+          slotConfirmationState = {
+            status: "pending",
+            strategy: "deterministic_arbitration",
+            slotCandidate: selectedCandidate
+          };
+        }
+      }
       const humanActionRequired = requiresHumanAction(pipeline);
       const workflowPersistencePayload = buildWorkflowPersistencePayload(pipeline.workflowOutcome);
 
@@ -562,7 +710,7 @@ export async function processPendingMessagesWithAi({
           conversationId: message.conversationId,
           workflowOutcome: pipeline.workflowOutcome,
           selectedSlotIndex: pipeline.selectedSlotIndex || null,
-          slotCandidates: normalizedSlotCandidates,
+          slotCandidates: selectedSlotCandidates,
           inboundBody: msg.body,
           actorType: "worker",
           actorId: msg.assignedAgentId || null,
@@ -588,6 +736,7 @@ export async function processPendingMessagesWithAi({
           selectedSlotIndex: pipeline.selectedSlotIndex,
           decision: pipeline.eligibility,
           escalationReasonCode: pipeline.escalationReasonCode,
+          slotConfirmationState,
           platformPolicy,
           guardrails: pipeline.guardrails.reasons
         }
@@ -727,6 +876,7 @@ export async function processPendingMessagesWithAi({
               platformPolicy,
               dispatchKey,
               selectedSlotIndex: pipeline.selectedSlotIndex,
+              slotConfirmationState,
               delivery: deliveryReceipt
             }
           });
@@ -745,10 +895,25 @@ export async function processPendingMessagesWithAi({
             escalationReasonCode: pipeline.escalationReasonCode,
             platformPolicy,
             selectedSlotIndex: pipeline.selectedSlotIndex,
-            slotCandidates: normalizedSlotCandidates,
+            slotCandidates: selectedSlotCandidates,
+            slotConfirmationState,
             dispatchKey,
             delivery: deliveryReceipt
           };
+          if (slotConfirmationState?.status === "pending" && slotConfirmationState.slotCandidate) {
+            outboundMetadata.slotConfirmationPending = {
+              ...slotConfirmationState.slotCandidate,
+              createdAt: now.toISOString(),
+              sourceMessageId: msg.id
+            };
+          }
+          if (slotConfirmationState?.status === "confirmed" && slotConfirmationState.slotCandidate) {
+            outboundMetadata.slotConfirmationResolved = {
+              ...slotConfirmationState.slotCandidate,
+              resolvedAt: now.toISOString(),
+              sourceMessageId: msg.id
+            };
+          }
 
           failureStage = "record_outbound_reply";
           await adapter.recordOutboundReply({
@@ -784,6 +949,7 @@ export async function processPendingMessagesWithAi({
         replyDecisionReason: pipeline.eligibility.reason,
         outcome: pipeline.outcome,
         escalationReasonCode: pipeline.escalationReasonCode,
+        slotConfirmationState,
         platformPolicy,
         guardrails: pipeline.guardrails.reasons,
         ...(humanActionRequired ? { reviewStatus: "hold", actionQueue: "agent_action" } : {})

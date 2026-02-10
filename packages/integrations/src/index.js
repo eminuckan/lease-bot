@@ -789,6 +789,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
                   m.body,
                   m.metadata,
                   m.sent_at,
+                  c.showing_state,
                   c.platform_account_id,
                   pa.platform,
                   pa.credentials AS platform_credentials,
@@ -801,6 +802,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
                   u.id AS unit_id,
                   u.property_name,
                   u.unit_number,
+                  pending_slot.pending_slot_metadata,
                   EXISTS (
                     SELECT 1
                       FROM "Messages" mo
@@ -814,6 +816,15 @@ export function createPostgresQueueAdapter(client, options = {}) {
              JOIN "PlatformAccounts" pa ON pa.id = c.platform_account_id
         LEFT JOIN "Listings" l ON l.id = c.listing_id
         LEFT JOIN "Units" u ON u.id = l.unit_id
+        LEFT JOIN LATERAL (
+          SELECT mo.metadata AS pending_slot_metadata
+            FROM "Messages" mo
+           WHERE mo.conversation_id = m.conversation_id
+             AND mo.direction = 'outbound'
+             AND (COALESCE(mo.metadata, '{}'::jsonb) ? 'slotConfirmationPending')
+           ORDER BY mo.sent_at DESC, mo.created_at DESC
+           LIMIT 1
+        ) pending_slot ON TRUE
             ORDER BY m.sent_at ASC, m.created_at ASC`,
           [limit, claimedAt, workerId, claimExpiresAt, defaultPlatformSendMode]
         );
@@ -844,7 +855,11 @@ export function createPostgresQueueAdapter(client, options = {}) {
         unitId: row.unit_id,
         propertyName: row.property_name,
         unitNumber: row.unit_number,
-        hasRecentOutbound: Boolean(row.has_recent_outbound)
+        hasRecentOutbound: Boolean(row.has_recent_outbound),
+        showingState: row.showing_state || null,
+        pendingSlotConfirmation: ["confirmed", "completed", "cancelled", "no_show"].includes(row.showing_state)
+          ? null
+          : row.pending_slot_metadata?.slotConfirmationPending || null
       }));
     },
 
