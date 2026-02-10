@@ -106,6 +106,7 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
       composer: ["textarea[name='body']", "textarea[name='message']", "textarea[data-testid='message-input']", "textarea"],
       submit: [
         "button[data-testid='send-message']",
+        "button[class*='bg-brand-orange']:not([role='menuitem'])",
         "button[type='submit'][class*='bg-brand-orange']",
         "form button[type='submit']:not([role='menuitem'])",
         "button[type='submit']:not([role='menuitem'])",

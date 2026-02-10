@@ -687,6 +687,7 @@ async function pickFirstExistingSelector(page, selectors = []) {
 }
 
 async function pickFirstSelectorTarget(page, selectors = []) {
+  let firstExistingTarget = null;
   for (const selector of selectors) {
     if (!selector) {
       continue;
@@ -732,10 +733,16 @@ async function pickFirstSelectorTarget(page, selectors = []) {
         }, selector);
 
         if (match?.exists) {
-          return {
-            selector,
-            index: Number.isInteger(match.index) ? match.index : 0
-          };
+          if (Number.isInteger(match.index) && match.index >= 0) {
+            return {
+              selector,
+              index: match.index
+            };
+          }
+          if (!firstExistingTarget) {
+            firstExistingTarget = { selector, index: 0 };
+          }
+          continue;
         }
       }
     } catch {
@@ -744,13 +751,15 @@ async function pickFirstSelectorTarget(page, selectors = []) {
 
     try {
       if (await page.$(selector)) {
-        return { selector, index: 0 };
+        if (!firstExistingTarget) {
+          firstExistingTarget = { selector, index: 0 };
+        }
       }
     } catch {
       continue;
     }
   }
-  return null;
+  return firstExistingTarget;
 }
 
 async function fillSelectorTarget(page, target, value) {
@@ -1902,6 +1911,7 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
 
   const composerSelectors = toSelectorList(adapter.selectors?.composer, ["textarea[name='message']", "textarea"]);
   const submitSelectors = toSelectorList(adapter.selectors?.submit, ["button[type='submit']"]);
+  const threadMessageBodySelectors = toSelectorList(adapter.selectors?.threadMessageBody, ["[data-testid='message-body']", "p", "div"]);
   const composerTarget = await pickFirstSelectorTarget(page, composerSelectors);
   if (!composerTarget) {
     throw createRunnerError("OUTBOUND_COMPOSER_MISSING", `Could not find message composer on ${adapter.platform}`, {
@@ -1909,6 +1919,63 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
     });
   }
   const submitTarget = await pickFirstSelectorTarget(page, submitSelectors);
+
+  const normalizedOutboundBody = String(payload.body || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const countThreadBodyMatches = async () => {
+    if (!normalizedOutboundBody || typeof page?.evaluate !== "function") {
+      return 0;
+    }
+    return page.evaluate((meta) => {
+      const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const isMatch = (text, expected) => {
+        if (!text || !expected) {
+          return false;
+        }
+        if (text === expected) {
+          return true;
+        }
+        if (expected.length >= 16 && text.includes(expected)) {
+          return true;
+        }
+        if (text.length >= 16 && expected.includes(text)) {
+          return true;
+        }
+        return false;
+      };
+
+      const seen = new Set();
+      let matches = 0;
+      for (const selector of meta.selectors) {
+        if (!selector) {
+          continue;
+        }
+        let nodes = [];
+        try {
+          nodes = Array.from(document.querySelectorAll(selector));
+        } catch {
+          nodes = [];
+        }
+        for (const node of nodes) {
+          if (seen.has(node)) {
+            continue;
+          }
+          seen.add(node);
+          const text = normalize(node.innerText || node.textContent || "");
+          if (isMatch(text, meta.expectedBody)) {
+            matches += 1;
+          }
+        }
+      }
+      return matches;
+    }, {
+      selectors: threadMessageBodySelectors,
+      expectedBody: normalizedOutboundBody
+    });
+  };
+
+  const bodyMatchesBeforeSend = adapter.platform === "roomies"
+    ? await countThreadBodyMatches()
+    : 0;
 
   // SpareRoom: after sending, the thread page appends a new <li id="msg_<id>">. Capture it so
   // outbound records use the same externalMessageId as thread sync ingestion.
@@ -1938,6 +2005,73 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
     throw createRunnerError("OUTBOUND_SUBMIT_MISSING", `Could not find send button on ${adapter.platform}`, {
       retryable: false
     });
+  }
+
+  if (
+    adapter.platform === "roomies"
+    && normalizedOutboundBody
+    && typeof page?.waitForFunction === "function"
+  ) {
+    try {
+      await page.waitForFunction(
+        (meta) => {
+          const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+          const isMatch = (text, expected) => {
+            if (!text || !expected) {
+              return false;
+            }
+            if (text === expected) {
+              return true;
+            }
+            if (expected.length >= 16 && text.includes(expected)) {
+              return true;
+            }
+            if (text.length >= 16 && expected.includes(text)) {
+              return true;
+            }
+            return false;
+          };
+
+          const seen = new Set();
+          let matches = 0;
+          for (const selector of meta.selectors) {
+            if (!selector) {
+              continue;
+            }
+            let nodes = [];
+            try {
+              nodes = Array.from(document.querySelectorAll(selector));
+            } catch {
+              nodes = [];
+            }
+            for (const node of nodes) {
+              if (seen.has(node)) {
+                continue;
+              }
+              seen.add(node);
+              const text = normalize(node.innerText || node.textContent || "");
+              if (isMatch(text, meta.expectedBody)) {
+                matches += 1;
+              }
+            }
+          }
+
+          return matches > meta.beforeMatches;
+        },
+        {
+          selectors: threadMessageBodySelectors,
+          expectedBody: normalizedOutboundBody,
+          beforeMatches: bodyMatchesBeforeSend
+        },
+        { timeout: 15000 }
+      );
+    } catch {
+      throw createRunnerError(
+        "OUTBOUND_DELIVERY_UNCONFIRMED",
+        "Roomies send action could not be confirmed on thread after submit",
+        { retryable: false }
+      );
+    }
   }
 
   let capturedExternalMessageId = null;
