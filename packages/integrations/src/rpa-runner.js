@@ -715,6 +715,14 @@ async function defaultIngestHandler({ adapter, page, clock }) {
         if (match?.[1]) {
           return String(match[1]).trim();
         }
+        const queryMatch = href.match(/[?&](?:thread_id|conversation_id|conversation|thread|message_thread_id|id)=([^&#]+)/i);
+        if (queryMatch?.[1]) {
+          try {
+            return decodeURIComponent(String(queryMatch[1])).trim();
+          } catch {
+            return String(queryMatch[1]).trim();
+          }
+        }
         return `thread-${index + 1}`;
       };
 
@@ -728,7 +736,7 @@ async function defaultIngestHandler({ adapter, page, clock }) {
 
         const anchor = element.matches("a[href]")
           ? element
-          : element.querySelector("a[href*='/rooms/'], a[href*='/listings/']");
+          : element.querySelector("a[href*='/rooms/'], a[href*='/listings/'], a[href*='/listing/'], a[href*='/for-rent/'], a[href*='/apartment/']");
         const href = anchor?.getAttribute("href") || "";
         const roomMatch = href.match(/\/rooms\/([^/?#]+)/i);
         if (roomMatch?.[1]) {
@@ -737,6 +745,18 @@ async function defaultIngestHandler({ adapter, page, clock }) {
         const listingMatch = href.match(/\/listings\/([^/?#]+)/i);
         if (listingMatch?.[1]) {
           return String(listingMatch[1]).trim();
+        }
+        const leasebreakListingMatch = href.match(/\/(?:listing|for-rent|apartments?)\/([^/?#]+)/i);
+        if (leasebreakListingMatch?.[1]) {
+          return String(leasebreakListingMatch[1]).trim();
+        }
+        const queryMatch = href.match(/[?&](?:listing_id|listing|room_id|unit_id|advert_id)=([^&#]+)/i);
+        if (queryMatch?.[1]) {
+          try {
+            return decodeURIComponent(String(queryMatch[1])).trim();
+          } catch {
+            return String(queryMatch[1]).trim();
+          }
         }
 
         if (meta.platform === "spareroom" && typeof threadId === "string") {
@@ -1115,7 +1135,7 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
 }
 
 async function defaultListingSyncHandler({ adapter, page }) {
-  if (adapter.platform === "roomies") {
+  if (adapter.platform === "roomies" || adapter.platform === "leasebreak") {
     const listingSyncConfig = adapter.listingSync || {};
     const maxPages = Math.max(
       1,
@@ -1129,7 +1149,7 @@ async function defaultListingSyncHandler({ adapter, page }) {
       : [];
     const candidatePaths = configuredPaths.length > 0
       ? configuredPaths
-      : ["/my-listings", "/listings", "/rooms"];
+      : ["/my-listings", "/listings", "/rooms", "/messages"];
     const listings = [];
     const seenExternalIds = new Set();
 
@@ -1155,6 +1175,8 @@ async function defaultListingSyncHandler({ adapter, page }) {
             || lowered.includes("room")
             || lowered.includes("manage")
             || lowered.includes("landlord")
+            || lowered.includes("rent")
+            || lowered.includes("apartment")
           ) {
             result.add(`${parsed.pathname}${parsed.search || ""}`);
           }
@@ -1222,7 +1244,7 @@ async function defaultListingSyncHandler({ adapter, page }) {
             }
           }
 
-          const listingAnchors = safeQueryAll("a[href*='/rooms/'], a[href*='/listings/']");
+          const listingAnchors = safeQueryAll("a[href*='/rooms/'], a[href*='/listings/'], a[href*='/listing/'], a[href*='/for-rent/'], a[href*='/apartment/']");
           for (const anchor of listingAnchors) {
             const card = anchor.closest("article, li, div");
             if (!card) {
@@ -1239,15 +1261,24 @@ async function defaultListingSyncHandler({ adapter, page }) {
             const linkElement = card.matches("a[href]")
               ? card
               : card.querySelector(meta.listingLinkSelectors.join(", "))
-              || card.querySelector("a[href*='/rooms/'], a[href*='/listings/']");
+              || card.querySelector("a[href*='/rooms/'], a[href*='/listings/'], a[href*='/listing/'], a[href*='/for-rent/'], a[href*='/apartment/']");
             const href = linkElement?.getAttribute("href") || "";
             const roomMatch = href.match(/\/rooms\/([^/?#]+)/i);
             const listingMatch = href.match(/\/listings\/([^/?#]+)/i);
+            const genericListingMatch = href.match(/\/(?:listing|for-rent|apartments?)\/([^/?#]+)/i);
+            const queryListingMatch = href.match(/[?&](?:listing_id|listing|room_id|unit_id|advert_id)=([^&#]+)/i);
             const attrExternalId = card.getAttribute("data-listing-id")
               || card.getAttribute("data-room-id")
               || card.getAttribute("data-id")
               || "";
-            const listingExternalId = (roomMatch?.[1] || listingMatch?.[1] || attrExternalId || "").trim();
+            const listingExternalId = (
+              roomMatch?.[1]
+              || listingMatch?.[1]
+              || genericListingMatch?.[1]
+              || queryListingMatch?.[1]
+              || attrExternalId
+              || ""
+            ).trim();
             if (!listingExternalId) {
               continue;
             }
@@ -1262,10 +1293,14 @@ async function defaultListingSyncHandler({ adapter, page }) {
             const statusLower = (statusText || "").toLowerCase();
             const status = statusLower.includes("inactive")
               || statusLower.includes("deactivate")
+              || statusLower.includes("deactivated")
               || statusLower.includes("paused")
               || statusLower.includes("archiv")
               || statusLower.includes("off market")
               || statusLower.includes("draft")
+              || statusLower.includes("rented")
+              || statusLower.includes("expired")
+              || statusLower.includes("closed")
               ? "inactive"
               : "active";
 
@@ -1313,13 +1348,15 @@ async function defaultListingSyncHandler({ adapter, page }) {
           ]),
           listingLinkSelectors: toSelectorList(adapter.selectors?.listingLink, [
             "a[href*='/rooms/']",
-            "a[href*='/listings/']"
+            "a[href*='/listings/']",
+            "a[href*='/listing/']",
+            "a[href*='/for-rent/']"
           ]),
           managePageMarkers: Array.isArray(listingSyncConfig.managePageMarkers)
             ? listingSyncConfig.managePageMarkers
                 .map((value) => String(value || "").toLowerCase().trim())
                 .filter(Boolean)
-            : ["my listings", "your listings", "manage listings", "edit listing", "deactivate", "my room"]
+            : ["my listings", "your listings", "manage listings", "edit listing", "deactivate", "my room", "active listings", "inactive listings"]
         });
 
         if (pageListings.length === 0) {
@@ -1577,6 +1614,8 @@ export function createPlaywrightRpaRunner(options = {}) {
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
   const roomiesHeadlessFallbackUserAgent =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
+  const leasebreakHeadlessFallbackUserAgent =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
 
   function resolveHeadlessForPlatform(platform) {
     const normalizedPlatform = String(platform || "").trim().toLowerCase();
@@ -1619,6 +1658,10 @@ export function createPlaywrightRpaRunner(options = {}) {
 
     if (normalizedPlatform === "roomies" && runHeadless && !contextOptions.userAgent) {
       contextOptions.userAgent = roomiesHeadlessFallbackUserAgent;
+    }
+
+    if (normalizedPlatform === "leasebreak" && runHeadless && !contextOptions.userAgent) {
+      contextOptions.userAgent = leasebreakHeadlessFallbackUserAgent;
     }
 
     return contextOptions;

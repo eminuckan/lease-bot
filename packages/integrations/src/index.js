@@ -2011,7 +2011,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
       const threadSyncEnabled = process.env.WORKER_THREAD_SYNC_ON_NEW_INBOUND === "1";
       const threadSyncPlatforms = process.env.WORKER_THREAD_SYNC_PLATFORMS
         ? process.env.WORKER_THREAD_SYNC_PLATFORMS.split(",").map((value) => value.trim()).filter(Boolean)
-        : ["spareroom", "roomies"];
+        : ["spareroom", "roomies", "leasebreak"];
       const threadSyncMaxPerCycle = Number(process.env.WORKER_THREAD_SYNC_MAX_PER_CYCLE || 2);
       let threadSyncUsed = 0;
 

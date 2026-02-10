@@ -76,13 +76,39 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
     baseUrl: "https://www.leasebreak.com",
     inboxPath: "/messages",
     threadPath: (threadId) => `/messages/${encodeURIComponent(threadId)}`,
+    authRequiredUrlPatterns: ["/users/sign_in", "/login", "/session/new"],
+    authRequiredText: [
+      "log in to continue",
+      "sign in to continue",
+      "please sign in",
+      "you need to sign in",
+      "you need to log in"
+    ],
+    listingSync: {
+      paths: ["/my/listings", "/my-listings", "/listings/my", "/account/listings", "/messages"],
+      pageParam: "page",
+      maxPages: 25,
+      managePageMarkers: ["my listings", "manage listings", "active listings", "inactive listings", "deactivate"]
+    },
     selectors: {
-      challenge: ["#cf-challenge-running", ".challenge-form"],
-      captcha: ["iframe[src*='hcaptcha']", "[data-testid='captcha-container']"],
-      messageItems: ["[data-thread-id][data-message-id]", ".message-row"],
-      messageBody: [".message-preview", "[data-testid='message-body']"],
-      composer: "textarea[name='message']",
-      submit: "button[type='submit']"
+      challenge: ["#cf-challenge-running", ".challenge-form", "#challenge-stage", "[data-testid='challenge-page']"],
+      captcha: ["iframe[src*='hcaptcha']", "iframe[src*='recaptcha']", "[name='cf-turnstile-response']", "[data-sitekey]"],
+      messageItems: ["[data-thread-id][data-message-id]", "[data-thread-id]", ".message-row", "a[href*='/messages/']"],
+      messageBody: [".message-preview", "[data-testid='message-body']", "[class*='preview' i]", "[class*='snippet' i]"],
+      messageSentAt: ["time[datetime]", ".message-time", "[class*='time' i]", "[class*='date' i]"],
+      leadName: ["[data-testid='message-lead-name']", ".message-name", "[class*='name' i]", "h3", "h4", "strong"],
+      threadLabel: ["[data-testid='message-thread-label']", ".listing-title", "[class*='listing' i]", "[class*='title' i]"],
+      threadMessageItems: ["[data-message-id]", "[data-testid='thread-message']", ".message", "[class*='message-bubble' i]"],
+      threadMessageBody: ["[data-testid='message-body']", ".message-body", "[class*='message-content' i]", "p"],
+      threadMessageSentAt: ["time[datetime]", ".message-time", "[class*='time' i]", "[class*='date' i]"],
+      composer: ["textarea[name='message']", "textarea[name='body']", "textarea[data-testid='message-input']", "textarea"],
+      submit: ["button[type='submit']", "button[data-testid='send-button']", "button[data-testid='thread-send']"],
+      listingItems: ["[data-listing-id]", "[data-testid='listing-card']", "article[class*='listing' i]", "li[class*='listing' i]"],
+      listingTitle: ["[data-testid='listing-title']", ".listing-title", "[class*='listing-title' i]", "h2", "h3"],
+      listingLocation: ["[data-testid='listing-location']", ".listing-location", "[class*='location' i]"],
+      listingPrice: ["[data-testid='listing-price']", ".listing-price", "[class*='price' i]"],
+      listingStatus: ["[data-testid='listing-status']", ".listing-status", "[class*='status' i]", ".badge"],
+      listingLink: ["a[href*='/listing/']", "a[href*='/for-rent/']", "a[href*='/listings/']"]
     }
   },
   renthop: {

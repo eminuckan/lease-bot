@@ -646,3 +646,143 @@ test("R13 roomies: default send handler uses selector fallback for composer and 
   assert.equal(clickedSelectors.length, 1);
   assert.equal(clickedSelectors[0], "button[type='submit']");
 });
+
+test("R13 leasebreak: default runtime supports thread_sync and listing_sync handlers", async () => {
+  const visitedUrls = [];
+
+  const rpaRunner = createPlaywrightRpaRunner({
+    playwrightFactory: createFakePlaywrightFactory(() => {
+      let currentUrl = "about:blank";
+      return {
+        async goto(url) {
+          currentUrl = url;
+          visitedUrls.push(url);
+          return { status: () => 200 };
+        },
+        url() {
+          return currentUrl;
+        },
+        async title() {
+          return "Leasebreak";
+        },
+        async $() {
+          return null;
+        },
+        async evaluate(fn, arg) {
+          if (arg && arg.threadId) {
+            return [
+              {
+                externalThreadId: arg.threadId,
+                externalMessageId: "leasebreak-thread-message-1",
+                direction: "inbound",
+                body: "Can we schedule for next week?",
+                channel: "in_app",
+                sentAtText: "Today 4:15 PM EST"
+              }
+            ];
+          }
+
+          if (arg && arg.listingItemSelectors) {
+            return [
+              {
+                listingExternalId: "leasebreak-listing-987",
+                status: "active",
+                statusClasses: ["listing-active"],
+                title: "Furnished room in Upper West Side",
+                location: "New York, NY",
+                priceText: "$2,100 / month",
+                href: "/listing/leasebreak-listing-987",
+                headerText: "active listings"
+              }
+            ];
+          }
+
+          return ["/my/listings"];
+        },
+        async fill() {},
+        async click() {},
+        async content() {
+          return "<html><body>ok</body></html>";
+        },
+        async screenshot() {}
+      };
+    })
+  });
+
+  const threadSyncResult = await rpaRunner.run({
+    platform: "leasebreak",
+    action: "thread_sync",
+    account: { id: "leasebreak-account-1" },
+    payload: { externalThreadId: "leasebreak-thread-1" }
+  });
+  assert.equal(Array.isArray(threadSyncResult.messages), true);
+  assert.equal(threadSyncResult.messages.length, 1);
+  assert.equal(threadSyncResult.messages[0].externalThreadId, "leasebreak-thread-1");
+
+  const listingSyncResult = await rpaRunner.run({
+    platform: "leasebreak",
+    action: "listing_sync",
+    account: { id: "leasebreak-account-1" }
+  });
+  assert.equal(Array.isArray(listingSyncResult.listings), true);
+  assert.equal(listingSyncResult.listings.length, 1);
+  assert.equal(listingSyncResult.listings[0].listingExternalId, "leasebreak-listing-987");
+
+  assert.equal(visitedUrls.some((url) => url.includes("/messages/leasebreak-thread-1")), true);
+});
+
+test("R13 leasebreak: default send handler uses selector fallback for composer and submit", async () => {
+  let currentUrl = "about:blank";
+  const filledSelectors = [];
+  const clickedSelectors = [];
+
+  const rpaRunner = createPlaywrightRpaRunner({
+    playwrightFactory: createFakePlaywrightFactory(() => ({
+      async goto(url) {
+        currentUrl = url;
+        return { status: () => 200 };
+      },
+      url() {
+        return currentUrl;
+      },
+      async title() {
+        return "Leasebreak";
+      },
+      async $(selector) {
+        if (selector === "textarea[name='message']" || selector === "button[type='submit']") {
+          return {};
+        }
+        return null;
+      },
+      async fill(selector, value) {
+        filledSelectors.push({ selector, value });
+      },
+      async click(selector) {
+        clickedSelectors.push(selector);
+      },
+      async evaluate() {
+        return null;
+      },
+      async content() {
+        return "<html><body>ok</body></html>";
+      },
+      async screenshot() {}
+    }))
+  });
+
+  const result = await rpaRunner.run({
+    platform: "leasebreak",
+    action: "send",
+    account: { id: "leasebreak-account-1" },
+    payload: {
+      externalThreadId: "leasebreak-thread-1",
+      body: "Great, we can do a virtual showing."
+    }
+  });
+
+  assert.equal(result.status, "sent");
+  assert.equal(filledSelectors.length, 1);
+  assert.equal(filledSelectors[0].selector, "textarea[name='message']");
+  assert.equal(clickedSelectors.length, 1);
+  assert.equal(clickedSelectors[0], "button[type='submit']");
+});
