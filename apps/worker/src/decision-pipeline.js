@@ -44,6 +44,49 @@ function parseCsvEnv(value) {
     .filter(Boolean);
 }
 
+function parsePlatformCsvMapEnv(value) {
+  if (typeof value !== "string") {
+    return new Map();
+  }
+
+  const map = new Map();
+  const entries = value
+    .split(/[\n;]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  for (const entry of entries) {
+    const separatorIndex = entry.indexOf(":");
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const platform = entry.slice(0, separatorIndex).trim().toLowerCase();
+    const names = parseCsvEnv(entry.slice(separatorIndex + 1));
+    if (platform && names.length > 0) {
+      map.set(platform, names);
+    }
+  }
+
+  return map;
+}
+
+function resolveLeadAllowlistForPlatform({ platform, globalAllowlist, platformAllowlistMap }) {
+  const platformKey = String(platform || "").trim().toLowerCase();
+  const platformSpecific = platformAllowlistMap.get(platformKey);
+  if (Array.isArray(platformSpecific) && platformSpecific.length > 0) {
+    return {
+      configured: platformSpecific,
+      env: "WORKER_AUTOREPLY_ALLOW_LEAD_NAMES_BY_PLATFORM"
+    };
+  }
+
+  return {
+    configured: globalAllowlist,
+    env: "WORKER_AUTOREPLY_ALLOW_LEAD_NAMES"
+  };
+}
+
 function normalizeLeadName(value) {
   return String(value || "")
     .trim()
@@ -386,9 +429,8 @@ export async function processPendingMessagesWithAi({
   aiEnabled,
   geminiModel
 }) {
-  const leadAllowlist = parseCsvEnv(process.env.WORKER_AUTOREPLY_ALLOW_LEAD_NAMES);
-  const leadAllowlistSet = new Set(leadAllowlist.map(normalizeLeadName));
-  const leadAllowlistActive = leadAllowlistSet.size > 0;
+  const globalLeadAllowlist = parseCsvEnv(process.env.WORKER_AUTOREPLY_ALLOW_LEAD_NAMES);
+  const platformLeadAllowlistMap = parsePlatformCsvMapEnv(process.env.WORKER_AUTOREPLY_ALLOW_LEAD_NAMES_BY_PLATFORM);
   const maxAutoReplyAgeMinutes = Number(process.env.WORKER_AUTOREPLY_MAX_MESSAGE_AGE_MINUTES || 60);
 
   const pendingMessages = await adapter.fetchPendingMessages({
@@ -404,6 +446,16 @@ export async function processPendingMessagesWithAi({
     let msg = message;
     const platform = message.platform || "unknown";
     const platformPolicy = getPolicyContext(message);
+    const {
+      configured: leadAllowlist,
+      env: leadAllowlistEnv
+    } = resolveLeadAllowlistForPlatform({
+      platform,
+      globalAllowlist: globalLeadAllowlist,
+      platformAllowlistMap: platformLeadAllowlistMap
+    });
+    const leadAllowlistSet = new Set(leadAllowlist.map(normalizeLeadName));
+    const leadAllowlistActive = leadAllowlistSet.size > 0;
     let failureStage = "pipeline";
     try {
       if (!platformPolicy.isActive) {
@@ -451,7 +503,7 @@ export async function processPendingMessagesWithAi({
             platformPolicy,
             allowlist: {
               type: "lead_name",
-              env: "WORKER_AUTOREPLY_ALLOW_LEAD_NAMES",
+              env: leadAllowlistEnv,
               configured: leadAllowlist,
               matched: false
             }
@@ -510,7 +562,7 @@ export async function processPendingMessagesWithAi({
               platformPolicy,
               allowlist: {
                 type: "lead_name",
-                env: "WORKER_AUTOREPLY_ALLOW_LEAD_NAMES",
+                env: leadAllowlistEnv,
                 configured: leadAllowlist,
                 matched: true,
                 maxMessageAgeMinutes: maxAutoReplyAgeMinutes
