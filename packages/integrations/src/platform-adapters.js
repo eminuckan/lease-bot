@@ -35,8 +35,8 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
   roomies: {
     platform: "roomies",
     baseUrl: "https://www.roomies.com",
-    inboxPath: "/messages",
-    threadPath: (threadId) => `/messages/${encodeURIComponent(threadId)}`,
+    inboxPath: "/inbox",
+    threadPath: (threadId) => `/inbox/${encodeURIComponent(threadId)}`,
     authRequiredUrlPatterns: ["/login", "/register", "/users/sign_in"],
     authRequiredText: [
       "please login",
@@ -53,7 +53,7 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
     selectors: {
       challenge: ["#challenge-stage", "[data-testid='challenge-page']"],
       captcha: ["iframe[src*='recaptcha']", "[name='cf-turnstile-response']"],
-      messageItems: ["[data-thread-id][data-message-id]", "[data-thread-id]", "[data-testid='message-row']", "a[href*='/messages/']"],
+      messageItems: ["[data-thread-id][data-message-id]", "[data-thread-id]", "[data-testid='message-row']", "a[href*='/messages/']", "a[href*='/inbox/']"],
       messageBody: ["[data-testid='message-preview']", ".message-snippet", "[class*='preview' i]", "[class*='snippet' i]"],
       messageSentAt: ["time[datetime]", "[data-testid='message-time']", ".message-time", "[class*='time' i]", "[class*='date' i]"],
       leadName: ["[data-testid='message-lead-name']", "[class*='lead-name' i]", "[class*='name' i]", "h3", "h4", "strong"],

@@ -650,7 +650,8 @@ async function defaultIngestHandler({ adapter, page, clock }) {
   const messageSelectors = toSelectorList(adapter.selectors?.messageItems, [
     "[data-thread-id][data-message-id]",
     "[data-thread-id]",
-    "a[href*='/messages/']"
+    "a[href*='/messages/']",
+    "a[href*='/inbox/']"
   ]);
   const bodySelectors = toSelectorList(adapter.selectors?.messageBody, ["[data-role='message-body']", "p", "span"]);
   const sentAtSelectors = toSelectorList(adapter.selectors?.messageSentAt, ["time[datetime]", "[class*='time' i]", "[class*='date' i]"]);
@@ -709,9 +710,9 @@ async function defaultIngestHandler({ adapter, page, clock }) {
 
         const anchor = element.matches("a[href]")
           ? element
-          : element.querySelector("a[href*='/messages/']");
+          : element.querySelector("a[href*='/messages/'], a[href*='/inbox/']");
         const href = anchor?.getAttribute("href") || "";
-        const match = href.match(/\/messages\/([^/?#]+)/i);
+        const match = href.match(/\/(?:messages|inbox)\/([^/?#]+)/i);
         if (match?.[1]) {
           return String(match[1]).trim();
         }

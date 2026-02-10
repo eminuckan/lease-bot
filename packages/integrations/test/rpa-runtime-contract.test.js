@@ -588,7 +588,7 @@ test("R13 roomies: default runtime supports thread_sync and listing_sync handler
   assert.equal(listingSyncResult.listings.length, 1);
   assert.equal(listingSyncResult.listings[0].listingExternalId, "room-12345");
 
-  assert.equal(visitedUrls.some((url) => url.includes("/messages/roomies-thread-1")), true);
+  assert.equal(visitedUrls.some((url) => url.includes("/inbox/roomies-thread-1")), true);
 });
 
 test("R13 roomies: default send handler uses selector fallback for composer and submit", async () => {
