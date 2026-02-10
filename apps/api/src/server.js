@@ -2873,6 +2873,39 @@ async function fetchConversationDetail(client, conversationId, access = null) {
   };
 }
 
+function shouldHydrateConversationThread(detail) {
+  const platform = detail?.conversation?.platform;
+  if (!["spareroom", "roomies", "leasebreak"].includes(platform)) {
+    return false;
+  }
+
+  const messages = Array.isArray(detail?.messages) ? detail.messages : [];
+  if (messages.length === 0) {
+    return true;
+  }
+
+  const hasThreadRows = messages.some(
+    (message) => String(message?.metadata?.sentAtSource || "") === "platform_thread"
+  );
+  const hasInboxPreviewRows = messages.some(
+    (message) => String(message?.metadata?.sentAtSource || "") === "platform_inbox"
+  );
+  const hasLikelyTruncatedPreview = messages.some((message) => {
+    const source = String(message?.metadata?.sentAtSource || "");
+    const body = typeof message?.body === "string" ? message.body.trim() : "";
+    return source === "platform_inbox" && /\.\.\.\s*$/.test(body);
+  });
+
+  if (!hasThreadRows && hasInboxPreviewRows) {
+    return true;
+  }
+  if (!hasThreadRows && hasLikelyTruncatedPreview) {
+    return true;
+  }
+
+  return false;
+}
+
 export async function routeApi(req, res, url) {
   if (url.pathname === "/api/me" && req.method === "GET") {
     const session = await getSession(req);
@@ -3881,7 +3914,31 @@ export async function routeApi(req, res, url) {
     }
 
     const withClientRunner = routeTestOverrides?.withClient || withClient;
-    const payload = await withClientRunner((client) => fetchConversationDetail(client, conversationId, access));
+    const payload = await withClientRunner(async (client) => {
+      let detail = await fetchConversationDetail(client, conversationId, access);
+      if (!detail) {
+        return null;
+      }
+
+      if (shouldHydrateConversationThread(detail)) {
+        try {
+          const adapter = createPostgresQueueAdapter(client, { connectorRegistry });
+          await adapter.syncConversationThread({ conversationId });
+          const refreshed = await fetchConversationDetail(client, conversationId, access);
+          if (refreshed) {
+            detail = refreshed;
+          }
+        } catch (error) {
+          console.warn("[inbox] opportunistic thread hydration failed", {
+            conversationId,
+            platform: detail?.conversation?.platform || null,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      return detail;
+    });
     if (!payload) {
       notFound(res);
       return;

@@ -2166,10 +2166,30 @@ export function createPostgresQueueAdapter(client, options = {}) {
              ) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8::timestamptz)
              ON CONFLICT (conversation_id, external_message_id)
              DO UPDATE SET
-               body = EXCLUDED.body,
-               channel = EXCLUDED.channel,
-               direction = EXCLUDED.direction,
-               metadata = COALESCE("Messages".metadata, '{}'::jsonb) || EXCLUDED.metadata,
+               body = CASE
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
+                   AND COALESCE("Messages".metadata->>'sentAtSource', '') = 'platform_thread'
+                 THEN "Messages".body
+                 ELSE EXCLUDED.body
+               END,
+               channel = CASE
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
+                   AND COALESCE("Messages".metadata->>'sentAtSource', '') = 'platform_thread'
+                 THEN "Messages".channel
+                 ELSE EXCLUDED.channel
+               END,
+               direction = CASE
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
+                   AND COALESCE("Messages".metadata->>'sentAtSource', '') = 'platform_thread'
+                 THEN "Messages".direction
+                 ELSE EXCLUDED.direction
+               END,
+               metadata = CASE
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
+                   AND COALESCE("Messages".metadata->>'sentAtSource', '') = 'platform_thread'
+                 THEN "Messages".metadata
+                 ELSE COALESCE("Messages".metadata, '{}'::jsonb) || EXCLUDED.metadata
+               END,
                sent_at = CASE
                  WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_thread' THEN EXCLUDED.sent_at
                  WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
@@ -2181,10 +2201,30 @@ export function createPostgresQueueAdapter(client, options = {}) {
                  ELSE "Messages".sent_at
                END
              WHERE
-               "Messages".body IS DISTINCT FROM EXCLUDED.body
-               OR "Messages".channel IS DISTINCT FROM EXCLUDED.channel
-               OR "Messages".direction IS DISTINCT FROM EXCLUDED.direction
-               OR "Messages".metadata IS DISTINCT FROM (COALESCE("Messages".metadata, '{}'::jsonb) || EXCLUDED.metadata)
+               "Messages".body IS DISTINCT FROM CASE
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
+                   AND COALESCE("Messages".metadata->>'sentAtSource', '') = 'platform_thread'
+                 THEN "Messages".body
+                 ELSE EXCLUDED.body
+               END
+               OR "Messages".channel IS DISTINCT FROM CASE
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
+                   AND COALESCE("Messages".metadata->>'sentAtSource', '') = 'platform_thread'
+                 THEN "Messages".channel
+                 ELSE EXCLUDED.channel
+               END
+               OR "Messages".direction IS DISTINCT FROM CASE
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
+                   AND COALESCE("Messages".metadata->>'sentAtSource', '') = 'platform_thread'
+                 THEN "Messages".direction
+                 ELSE EXCLUDED.direction
+               END
+               OR "Messages".metadata IS DISTINCT FROM CASE
+                 WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
+                   AND COALESCE("Messages".metadata->>'sentAtSource', '') = 'platform_thread'
+                 THEN "Messages".metadata
+                 ELSE COALESCE("Messages".metadata, '{}'::jsonb) || EXCLUDED.metadata
+               END
                OR "Messages".sent_at IS DISTINCT FROM CASE
                  WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_thread' THEN EXCLUDED.sent_at
                  WHEN EXCLUDED.metadata->>'sentAtSource' = 'platform_inbox'
