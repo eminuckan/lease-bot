@@ -1767,14 +1767,48 @@ export function createPostgresQueueAdapter(client, options = {}) {
           }
         }
 
-        // SpareRoom inbox preview rows are useful for fast list ingest, but once a thread sync succeeds
+        // Inbox preview rows are useful for fast list ingest, but once a thread sync succeeds
         // we prefer canonical thread rows in detail views to avoid truncated/partial duplicates.
+        // Roomies preview ids use a `preview-` prefix and may fall back to clock timestamps,
+        // so remove them explicitly as well.
         await client.query(
           `DELETE FROM "Messages"
             WHERE conversation_id = $1::uuid
-              AND COALESCE(metadata->>'sentAtSource', '') = 'platform_inbox'`,
+              AND (
+                COALESCE(metadata->>'sentAtSource', '') = 'platform_inbox'
+                OR external_message_id LIKE 'preview-%'
+              )`,
           [conversationId]
         );
+
+        // Roomies parser now uses platform-native message ids when available (Alpine runtime state).
+        // Older runs may have left fallback token ids for the same message body/timestamp.
+        // Keep one canonical row per (sent_at, body), preferring numeric native ids.
+        if (platform === "roomies") {
+          await client.query(
+            `WITH ranked AS (
+               SELECT id,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY conversation_id, sent_at, body
+                        ORDER BY
+                          CASE
+                            WHEN COALESCE(external_message_id, '') ~ '^[0-9]+$' THEN 0
+                            ELSE 1
+                          END ASC,
+                          created_at DESC,
+                          id DESC
+                      ) AS rn
+                 FROM "Messages"
+                WHERE conversation_id = $1::uuid
+                  AND COALESCE(metadata->>'sentAtSource', '') = 'platform_thread'
+             )
+             DELETE FROM "Messages" m
+              USING ranked
+              WHERE m.id = ranked.id
+                AND ranked.rn > 1`,
+            [conversationId]
+          );
+        }
 
         await client.query(
           `UPDATE "Conversations" c

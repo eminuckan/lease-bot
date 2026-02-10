@@ -53,14 +53,56 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
     selectors: {
       challenge: ["#challenge-stage", "[data-testid='challenge-page']"],
       captcha: ["iframe[src*='recaptcha']", "[name='cf-turnstile-response']"],
-      messageItems: ["[data-thread-id][data-message-id]", "[data-thread-id]", "[data-testid='message-row']", "a[href*='/messages/']", "a[href*='/inbox/']"],
-      messageBody: ["[data-testid='message-preview']", ".message-snippet", "[class*='preview' i]", "[class*='snippet' i]"],
+      messageItems: [
+        "a[href*='/inbox/'][class*='hover:bg-teal-lightest']",
+        "a[href*='/inbox/'][class*='flex'][class*='gap-4']",
+        "[data-thread-id][data-message-id]",
+        "[data-thread-id]",
+        "[data-testid='message-row']",
+        "a[href*='/messages/']",
+        "a[href*='/inbox/']"
+      ],
+      messageBody: [
+        "div.text-gray-700.text-sm.truncate",
+        "[data-testid='message-preview']",
+        ".message-snippet",
+        "[class*='preview' i]",
+        "[class*='snippet' i]"
+      ],
       messageSentAt: ["time[datetime]", "[data-testid='message-time']", ".message-time", "[class*='time' i]", "[class*='date' i]"],
-      leadName: ["[data-testid='message-lead-name']", "[class*='lead-name' i]", "[class*='name' i]", "h3", "h4", "strong"],
+      leadName: [
+        "div.font-semibold.text-gray-800",
+        "[data-testid='message-lead-name']",
+        "[class*='lead-name' i]",
+        "[class*='name' i]",
+        "h3",
+        "h4",
+        "strong"
+      ],
       threadLabel: ["[data-testid='message-thread-label']", "[class*='listing' i]", "[class*='room' i]", "[class*='title' i]"],
-      threadMessageItems: ["[data-message-id]", "[data-testid='thread-message']", "[class*='message-bubble' i]", "[class*='message' i]"],
-      threadMessageBody: ["[data-testid='message-body']", ".message-body", "[class*='message-content' i]", "p"],
-      threadMessageSentAt: ["time[datetime]", "[data-testid='message-time']", ".message-time", "[class*='time' i]", "[class*='date' i]"],
+      threadMessageItems: [
+        "li[x-data*='messageItem']",
+        "[data-message-id]",
+        "[data-testid='thread-message']",
+        "[class*='message-bubble' i]",
+        "[class*='message' i]"
+      ],
+      threadMessageBody: [
+        "div.whitespace-pre-line[x-text='message.content']",
+        "div.whitespace-pre-line",
+        "[data-testid='message-body']",
+        ".message-body",
+        "[class*='message-content' i]",
+        "p"
+      ],
+      threadMessageSentAt: [
+        "time[datetime]",
+        "time[x-text*='toLocaleTimeString']",
+        "[data-testid='message-time']",
+        ".message-time",
+        "[class*='time' i]",
+        "[class*='date' i]"
+      ],
       composer: ["textarea[name='body']", "textarea[name='message']", "textarea[data-testid='message-input']", "textarea"],
       submit: ["button[data-testid='send-message']", "button[type='submit']"],
       listingItems: ["[data-listing-id]", "[data-room-id]", "[data-testid='listing-card']"],

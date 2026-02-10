@@ -160,7 +160,7 @@ function hasExplicitTimeInHumanDateText(text) {
     return Boolean(parseTimeOfDay(timePart));
   }
 
-  const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(.*))?$/);
+  const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:,?\s+(.*))?$/);
   if (slashMatch) {
     const timePart = slashMatch[4] ? slashMatch[4].trim() : "";
     return Boolean(parseTimeOfDay(timePart));
@@ -291,7 +291,9 @@ function parseHumanDateText(text, now = new Date()) {
   // - "3 hours ago"
   // - "15m ago"
   // - "2d ago"
-  const relativeAgoMatch = normalized.match(/^(\d{1,3})\s*(m(?:in(?:ute)?s?)?|h(?:our)?s?|d(?:ay)?s?)\s+ago$/i);
+  const relativeAgoMatch = normalized.match(
+    /^(\d{1,3})\s*(m(?:in(?:ute)?s?)?|h(?:our)?s?|d(?:ay)?s?|w(?:eek)?s?)\s+ago$/i
+  );
   if (relativeAgoMatch) {
     const amount = Number(relativeAgoMatch[1]);
     const unitToken = String(relativeAgoMatch[2] || "").toLowerCase();
@@ -306,6 +308,8 @@ function parseHumanDateText(text, now = new Date()) {
       date.setHours(date.getHours() - amount);
     } else if (unitToken.startsWith("d")) {
       date.setDate(date.getDate() - amount);
+    } else if (unitToken.startsWith("w")) {
+      date.setDate(date.getDate() - (amount * 7));
     } else {
       return null;
     }
@@ -313,7 +317,7 @@ function parseHumanDateText(text, now = new Date()) {
   }
 
   // US-style "MM/DD/YYYY" (SpareRoom thread pages often use this).
-  const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(.*))?$/);
+  const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:,?\s+(.*))?$/);
   if (slashMatch) {
     const month = Number(slashMatch[1]);
     const day = Number(slashMatch[2]);
@@ -714,7 +718,21 @@ async function defaultIngestHandler({ adapter, page, clock }) {
           }
           try {
             const element = root.querySelector(selector);
-            const text = element?.textContent?.replace(/\s+/g, " ").trim();
+            if (!element) {
+              continue;
+            }
+
+            const datetime = element.getAttribute?.("datetime");
+            if (datetime && String(datetime).trim()) {
+              return String(datetime).trim();
+            }
+
+            const title = element.getAttribute?.("title");
+            if (title && String(title).trim() && /\d{4}-\d{2}-\d{2}/.test(String(title))) {
+              return String(title).trim();
+            }
+
+            const text = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
             if (text) {
               return text;
             }
@@ -815,6 +833,10 @@ async function defaultIngestHandler({ adapter, page, clock }) {
       };
 
       const parseMessageId = (element, threadId, body, sentAtText, direction, index) => {
+        if (meta.platform === "roomies" && threadId) {
+          return `preview-${String(threadId).trim()}`;
+        }
+
         const idAttr = element.getAttribute("data-message-id")
           || element.getAttribute("data-last-message-id")
           || element.getAttribute("data-id");
@@ -849,27 +871,69 @@ async function defaultIngestHandler({ adapter, page, clock }) {
         .map((element, index) => {
           const threadId = parseThreadId(element, index);
           const className = String(element.getAttribute("class") || "").toLowerCase();
-          const direction = className.includes("thread_out")
+          let direction = className.includes("thread_out")
             || className.includes("outbound")
             || className.includes("from-me")
             || className.includes("message_out")
             ? "outbound"
             : "inbound";
 
-          const body = extractTextBySelectors(element, meta.bodySelectors)
-            || (element.textContent || "").replace(/\s+/g, " ").trim();
+          let body = extractTextBySelectors(element, meta.bodySelectors)
+            || (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+          let sentAtText = extractTextBySelectors(element, meta.sentAtSelectors) || "";
+          let leadNameRaw = element.getAttribute("data-lead-name")
+            || extractTextBySelectors(element, meta.leadNameSelectors)
+            || "";
+
           if (meta.platform === "roomies") {
             if (!/^\d{5,}$/.test(String(threadId || "").trim())) {
               return null;
             }
+
+            if (sentAtText) {
+              const escapedSentAt = sentAtText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              body = body.replace(new RegExp(`\\s*${escapedSentAt}\\s*$`, "i"), "").trim();
+            } else {
+              const relativeTailMatch = body.match(
+                /\b(\d{1,3}\s*(?:m(?:in(?:ute)?s?)?|h(?:our)?s?|d(?:ay)?s?|w(?:eek)?s?)\s+ago)\s*$/i
+              );
+              if (relativeTailMatch?.[1]) {
+                sentAtText = relativeTailMatch[1];
+                body = body.slice(0, relativeTailMatch.index).trim();
+              }
+            }
+
             if (!body || /^unread(?:\s+only)?$/i.test(body.trim())) {
               return null;
             }
+
+            if (/^you:\s*/i.test(body)) {
+              direction = "outbound";
+              body = body.replace(/^you:\s*/i, "").trim();
+            }
+
+            if (!leadNameRaw) {
+              const prefixedLead = body.match(
+                /^(?:[A-Z]\s+)?([A-Za-z][A-Za-z' .-]{0,50})\s+You:\s*(.+)$/i
+              );
+              if (prefixedLead?.[1] && prefixedLead?.[2]) {
+                leadNameRaw = prefixedLead[1].trim();
+                body = prefixedLead[2].trim();
+                direction = "outbound";
+              }
+            }
+
+            if (!leadNameRaw) {
+              const splitLead = body.match(
+                /^(?:[A-Z]\s+)?([A-Za-z][A-Za-z' .-]{0,50})\s+(.+)$/i
+              );
+              if (splitLead?.[1] && splitLead?.[2]) {
+                leadNameRaw = splitLead[1].trim();
+                body = splitLead[2].trim();
+              }
+            }
           }
-          const sentAtText = extractTextBySelectors(element, meta.sentAtSelectors) || "";
-          const leadNameRaw = element.getAttribute("data-lead-name")
-            || extractTextBySelectors(element, meta.leadNameSelectors)
-            || "";
+
           const threadLabel = extractTextBySelectors(element, meta.threadLabelSelectors);
 
           const threadMessageCountMatch = leadNameRaw.match(/\((\d+)\)\s*$/);
@@ -906,7 +970,7 @@ async function defaultIngestHandler({ adapter, page, clock }) {
             }
           };
         })
-        .filter((row) => row.externalThreadId && row.externalMessageId);
+        .filter((row) => row && row.externalThreadId && row.externalMessageId);
 
       const seenMessageIds = new Set();
       return rawRows.filter((row) => {
@@ -958,7 +1022,7 @@ async function defaultIngestHandler({ adapter, page, clock }) {
           return null;
         }
         const body = String(message.body || "").trim();
-        const youPrefix = body.match(/^([A-Z][A-Za-z' .-]{1,40})\s+You:/);
+        const youPrefix = body.match(/^(?:[A-Z]\s+)?([A-Za-z][A-Za-z' .-]{1,50})\s+You:/i);
         if (youPrefix?.[1]) {
           return youPrefix[1].trim();
         }
@@ -987,6 +1051,20 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
 
   const response = await page.goto(adapter.threadUrl(threadId), { waitUntil: "domcontentloaded" });
   await detectProtectionLayer(page, adapter, response);
+  if (adapter.platform === "roomies" && typeof page?.waitForFunction === "function") {
+    const threadReadyTimeoutMs = Math.max(1_000, Number(process.env.LEASE_BOT_RPA_THREAD_READY_TIMEOUT_MS || 12_000));
+    await page.waitForFunction(
+      () => {
+        const bodyText = String(document.body?.innerText || "").toLowerCase();
+        const hasItems = document.querySelectorAll("li[x-data*='messageItem']").length > 0;
+        if (hasItems) {
+          return true;
+        }
+        return !bodyText.includes("loading messages");
+      },
+      { timeout: threadReadyTimeoutMs }
+    ).catch(() => null);
+  }
 
   const threadMessageSelectors = toSelectorList(adapter.selectors?.threadMessageItems, [
     "li.message[id^='msg_']",
@@ -1027,7 +1105,18 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
         for (const selector of selectors) {
           try {
             const node = root.querySelector(selector);
-            const value = node?.textContent?.replace(/\s+/g, " ").trim();
+            if (!node) {
+              continue;
+            }
+            const datetime = node.getAttribute?.("datetime");
+            if (datetime && String(datetime).trim()) {
+              return String(datetime).trim();
+            }
+            const title = node.getAttribute?.("title");
+            if (title && String(title).trim() && /\d{4}-\d{2}-\d{2}/.test(String(title))) {
+              return String(title).trim();
+            }
+            const value = (node.innerText || node.textContent || "").replace(/\s+/g, " ").trim();
             if (value) {
               return value;
             }
@@ -1038,13 +1127,13 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
         return "";
       };
 
-      const containsAnySelector = (root, selectors) => {
+      const matchesAnySelector = (root, selectors) => {
         for (const selector of selectors) {
           if (!selector) {
             continue;
           }
           try {
-            if (root.matches(selector) || root.querySelector(selector)) {
+            if (root.matches(selector)) {
               return true;
             }
           } catch {
@@ -1067,14 +1156,64 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
       const rows = [];
       for (let index = 0; index < orderedElements.length; index += 1) {
         const element = orderedElements[index];
-        if (containsAnySelector(element, meta.composerSelectors)) {
+        if (matchesAnySelector(element, meta.composerSelectors)) {
           continue;
+        }
+
+        if (meta.platform === "roomies") {
+          const stack = element._x_dataStack;
+          const alpineState = Array.isArray(stack) ? stack[0] : null;
+          const message = alpineState && typeof alpineState === "object" ? alpineState.message : null;
+          if (message && typeof message === "object") {
+            const body = (typeof message.content === "string" ? message.content : "")
+              .replace(/\s+/g, " ")
+              .trim();
+            if (!body || message.system === true) {
+              continue;
+            }
+
+            const externalMessageIdRaw = message.id ?? message.message_id ?? message.uuid ?? null;
+            let externalMessageId = externalMessageIdRaw === null || externalMessageIdRaw === undefined
+              ? ""
+              : String(externalMessageIdRaw).trim();
+            if (!externalMessageId) {
+              const stableToken = [meta.threadId, body.slice(0, 120), alpineState.isSender ? "outbound" : "inbound"]
+                .join("|")
+                .toLowerCase()
+                .replace(/\s+/g, " ")
+                .trim()
+                .replace(/[^a-z0-9]+/g, "-")
+                .replace(/^-+|-+$/g, "")
+                .slice(0, 120);
+              externalMessageId = stableToken ? `thread-${stableToken}` : `message-${index + 1}`;
+            }
+
+            const sentAtText = (
+              typeof message.delivered_at === "string" && message.delivered_at.trim()
+                ? message.delivered_at.trim()
+                : typeof message.read_at === "string" && message.read_at.trim()
+                ? message.read_at.trim()
+                : typeof message.created_at === "string" && message.created_at.trim()
+                ? message.created_at.trim()
+                : ""
+            ) || null;
+
+            rows.push({
+              externalThreadId: meta.threadId,
+              externalMessageId,
+              direction: alpineState.isSender ? "outbound" : "inbound",
+              body,
+              channel: "in_app",
+              sentAtText
+            });
+            continue;
+          }
         }
 
         const className = String(element.getAttribute("class") || "").toLowerCase();
         const dataDirection = String(element.getAttribute("data-direction") || "").toLowerCase();
         const dataAuthor = String(element.getAttribute("data-author") || "").toLowerCase();
-        const isOutbound = className.includes("message_out")
+        let isOutbound = className.includes("message_out")
           || className.includes("outbound")
           || className.includes("from-me")
           || className.includes("sent")
@@ -1084,8 +1223,17 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
           || dataAuthor === "me"
           || dataAuthor === "self";
 
-        const body = textBySelectors(element, meta.bodySelectors)
-          || (element.childElementCount <= 8 ? (element.textContent || "").replace(/\s+/g, " ").trim() : "");
+        let body = textBySelectors(element, meta.bodySelectors)
+          || (element.childElementCount <= 8 ? (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim() : "");
+        if (meta.platform === "roomies") {
+          const bubble = element.querySelector("div.inline-block.px-4.py-2.rounded-lg");
+          if (bubble) {
+            const bubbleClassName = String(bubble.getAttribute("class") || "").toLowerCase();
+            if (bubbleClassName.includes("bg-teal") || bubbleClassName.includes("text-white")) {
+              isOutbound = true;
+            }
+          }
+        }
         if (!body) {
           continue;
         }
@@ -1135,6 +1283,7 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
       });
     },
     {
+      platform: adapter.platform,
       threadId,
       threadMessageSelectors,
       bodySelectors,
