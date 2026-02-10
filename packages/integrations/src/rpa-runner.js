@@ -686,6 +686,106 @@ async function pickFirstExistingSelector(page, selectors = []) {
   return null;
 }
 
+async function pickFirstSelectorTarget(page, selectors = []) {
+  for (const selector of selectors) {
+    if (!selector) {
+      continue;
+    }
+
+    try {
+      if (typeof page?.evaluate === "function") {
+        const match = await page.evaluate((candidateSelector) => {
+          const toBoolean = (value) => Boolean(value);
+          const isVisible = (element) => {
+            if (!element) {
+              return false;
+            }
+            const style = window.getComputedStyle(element);
+            if (!style) {
+              return false;
+            }
+            if (style.display === "none" || style.visibility === "hidden") {
+              return false;
+            }
+            if (Number.parseFloat(style.opacity || "1") === 0) {
+              return false;
+            }
+            const rect = element.getBoundingClientRect();
+            return toBoolean(rect.width > 0 && rect.height > 0);
+          };
+
+          let nodes = [];
+          try {
+            nodes = Array.from(document.querySelectorAll(candidateSelector));
+          } catch {
+            nodes = [];
+          }
+          if (nodes.length === 0) {
+            return null;
+          }
+
+          const visibleIndex = nodes.findIndex((node) => isVisible(node));
+          return {
+            exists: true,
+            index: visibleIndex >= 0 ? visibleIndex : 0
+          };
+        }, selector);
+
+        if (match?.exists) {
+          return {
+            selector,
+            index: Number.isInteger(match.index) ? match.index : 0
+          };
+        }
+      }
+    } catch {
+      // Fall back to presence checks below.
+    }
+
+    try {
+      if (await page.$(selector)) {
+        return { selector, index: 0 };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+async function fillSelectorTarget(page, target, value) {
+  const selector = target?.selector;
+  if (!selector) {
+    throw createRunnerError("OUTBOUND_COMPOSER_MISSING", "Could not resolve message composer target", {
+      retryable: false
+    });
+  }
+  const index = Number.isInteger(target?.index) ? Math.max(0, target.index) : 0;
+
+  if (typeof page?.locator === "function") {
+    await page.locator(selector).nth(index).fill(value);
+    return;
+  }
+
+  await page.fill(selector, value);
+}
+
+async function clickSelectorTarget(page, target) {
+  const selector = target?.selector;
+  if (!selector) {
+    return false;
+  }
+  const index = Number.isInteger(target?.index) ? Math.max(0, target.index) : 0;
+
+  if (typeof page?.locator === "function") {
+    await page.locator(selector).nth(index).click();
+    return true;
+  }
+
+  await page.click(selector);
+  return true;
+}
+
 async function defaultIngestHandler({ adapter, page, clock }) {
   const response = await page.goto(adapter.inboxUrl, { waitUntil: "domcontentloaded" });
   await detectProtectionLayer(page, adapter, response);
@@ -1802,13 +1902,13 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
 
   const composerSelectors = toSelectorList(adapter.selectors?.composer, ["textarea[name='message']", "textarea"]);
   const submitSelectors = toSelectorList(adapter.selectors?.submit, ["button[type='submit']"]);
-  const composerSelector = await pickFirstExistingSelector(page, composerSelectors);
-  if (!composerSelector) {
+  const composerTarget = await pickFirstSelectorTarget(page, composerSelectors);
+  if (!composerTarget) {
     throw createRunnerError("OUTBOUND_COMPOSER_MISSING", `Could not find message composer on ${adapter.platform}`, {
       retryable: false
     });
   }
-  const submitSelector = await pickFirstExistingSelector(page, submitSelectors);
+  const submitTarget = await pickFirstSelectorTarget(page, submitSelectors);
 
   // SpareRoom: after sending, the thread page appends a new <li id="msg_<id>">. Capture it so
   // outbound records use the same externalMessageId as thread sync ingestion.
@@ -1829,9 +1929,9 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
     }
   }
 
-  await page.fill(composerSelector, payload.body);
-  if (submitSelector) {
-    await page.click(submitSelector);
+  await fillSelectorTarget(page, composerTarget, payload.body);
+  if (submitTarget) {
+    await clickSelectorTarget(page, submitTarget);
   } else if (typeof page?.keyboard?.press === "function") {
     await page.keyboard.press("Enter");
   } else {

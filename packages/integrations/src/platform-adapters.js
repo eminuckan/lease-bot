@@ -104,7 +104,13 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
         "[class*='date' i]"
       ],
       composer: ["textarea[name='body']", "textarea[name='message']", "textarea[data-testid='message-input']", "textarea"],
-      submit: ["button[data-testid='send-message']", "button[type='submit']"],
+      submit: [
+        "button[data-testid='send-message']",
+        "button[type='submit'][class*='bg-brand-orange']",
+        "form button[type='submit']:not([role='menuitem'])",
+        "button[type='submit']:not([role='menuitem'])",
+        "button[type='submit']"
+      ],
       listingItems: ["[data-listing-id]", "[data-room-id]", "[data-testid='listing-card']"],
       listingTitle: ["[data-testid='listing-title']", ".listing-title", "[class*='listing-title' i]", "[class*='room-title' i]", "h2", "h3"],
       listingLocation: ["[data-testid='listing-location']", ".listing-location", "[class*='location' i]"],
