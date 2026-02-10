@@ -1811,14 +1811,23 @@ export function createPostgresQueueAdapter(client, options = {}) {
         );
 
         // Roomies parser now uses platform-native message ids when available (Alpine runtime state).
-        // Older runs may have left fallback token ids for the same message body/timestamp.
-        // Keep one canonical row per (sent_at, body), preferring numeric native ids.
+        // Older runs may have left fallback token ids for the same message body/signature.
+        // Keep one canonical row per canonical signature, preferring numeric native ids.
         if (platform === "roomies") {
           await client.query(
             `WITH ranked AS (
                SELECT id,
                       ROW_NUMBER() OVER (
-                        PARTITION BY conversation_id, sent_at, body
+                        PARTITION BY conversation_id,
+                                     direction,
+                                     COALESCE(NULLIF(TRIM(body), ''), '__empty__'),
+                                     COALESCE(
+                                       NULLIF(
+                                         LOWER(REGEXP_REPLACE(COALESCE(metadata->>'sentAtText', ''), '\\s+', ' ', 'g')),
+                                         ''
+                                       ),
+                                       '__no_sent_at_text__'
+                                     )
                         ORDER BY
                           CASE
                             WHEN COALESCE(external_message_id, '') ~ '^[0-9]+$' THEN 0
@@ -1827,7 +1836,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
                           created_at DESC,
                           id DESC
                       ) AS rn
-                 FROM "Messages"
+                FROM "Messages"
                 WHERE conversation_id = $1::uuid
                   AND COALESCE(metadata->>'sentAtSource', '') = 'platform_thread'
              )
@@ -1835,6 +1844,26 @@ export function createPostgresQueueAdapter(client, options = {}) {
               USING ranked
               WHERE m.id = ranked.id
                 AND ranked.rn > 1`,
+            [conversationId]
+          );
+
+          // If we have canonical roomies thread rows, remove legacy outbound send fallbacks
+          // (non-numeric external ids) with the same body so the UI does not show duplicates.
+          await client.query(
+            `DELETE FROM "Messages" m
+              WHERE m.conversation_id = $1::uuid
+                AND m.direction = 'outbound'
+                AND COALESCE(m.external_message_id, '') !~ '^[0-9]+$'
+                AND EXISTS (
+                  SELECT 1
+                    FROM "Messages" canonical
+                   WHERE canonical.conversation_id = m.conversation_id
+                     AND canonical.direction = 'outbound'
+                     AND COALESCE(canonical.external_message_id, '') ~ '^[0-9]+$'
+                     AND COALESCE(NULLIF(TRIM(LOWER(canonical.body)), ''), '__empty__')
+                         = COALESCE(NULLIF(TRIM(LOWER(m.body)), ''), '__empty__')
+                     AND COALESCE(canonical.metadata->>'sentAtSource', '') = 'platform_thread'
+                )`,
             [conversationId]
           );
         }

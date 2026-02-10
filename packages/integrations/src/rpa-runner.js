@@ -1208,6 +1208,15 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
     "[data-testid='thread-message']",
     "[class*='message' i]"
   ]);
+  const normalizedThreadMessageSelectors = adapter.platform === "roomies"
+    ? (() => {
+      const preferred = threadMessageSelectors.filter((selector) => {
+        const normalized = String(selector || "").toLowerCase();
+        return normalized.length > 0 && !normalized.includes("[class*='message'");
+      });
+      return preferred.length > 0 ? preferred : threadMessageSelectors;
+    })()
+    : threadMessageSelectors;
   const bodySelectors = toSelectorList(adapter.selectors?.threadMessageBody, [
     "dd.message_body",
     "[data-testid='message-body']",
@@ -1279,14 +1288,21 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
         return false;
       };
 
-      for (const selector of meta.threadMessageSelectors) {
-        const nodes = safeQueryAll(selector);
-        for (const node of nodes) {
-          if (!dedupeElements.has(node)) {
-            dedupeElements.add(node);
-            orderedElements.push(node);
+      const collectOrderedElements = (selectors) => {
+        for (const selector of selectors || []) {
+          const nodes = safeQueryAll(selector);
+          for (const node of nodes) {
+            if (!dedupeElements.has(node)) {
+              dedupeElements.add(node);
+              orderedElements.push(node);
+            }
           }
         }
+      };
+
+      collectOrderedElements(meta.threadMessageSelectors);
+      if (orderedElements.length === 0 && Array.isArray(meta.fallbackThreadMessageSelectors)) {
+        collectOrderedElements(meta.fallbackThreadMessageSelectors);
       }
 
       const rows = [];
@@ -1410,9 +1426,25 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
       }
 
       const seenMessageIds = new Set();
+      const seenRoomiesSignatures = new Set();
+      const normalizeSignatureText = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
       return rows.filter((row) => {
         if (seenMessageIds.has(row.externalMessageId)) {
           return false;
+        }
+        if (meta.platform === "roomies") {
+          const sentAtText = normalizeSignatureText(row.sentAtText || "");
+          if (sentAtText) {
+            const signature = [
+              String(row.direction || "").trim().toLowerCase(),
+              sentAtText,
+              normalizeSignatureText(row.body || "")
+            ].join("|");
+            if (seenRoomiesSignatures.has(signature)) {
+              return false;
+            }
+            seenRoomiesSignatures.add(signature);
+          }
         }
         seenMessageIds.add(row.externalMessageId);
         return true;
@@ -1421,7 +1453,8 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
     {
       platform: adapter.platform,
       threadId,
-      threadMessageSelectors,
+      threadMessageSelectors: normalizedThreadMessageSelectors,
+      fallbackThreadMessageSelectors: threadMessageSelectors,
       bodySelectors,
       sentAtSelectors,
       composerSelectors
