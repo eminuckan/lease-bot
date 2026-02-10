@@ -614,106 +614,261 @@ async function detectProtectionLayer(page, adapter, response = null) {
   }
 }
 
+function toSelectorList(value, fallback = []) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean);
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    return normalized ? [normalized] : [];
+  }
+  return Array.isArray(fallback) ? fallback.filter(Boolean) : [];
+}
+
+async function pickFirstExistingSelector(page, selectors = []) {
+  for (const selector of selectors) {
+    if (!selector) {
+      continue;
+    }
+    try {
+      if (await page.$(selector)) {
+        return selector;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 async function defaultIngestHandler({ adapter, page, clock }) {
   const response = await page.goto(adapter.inboxUrl, { waitUntil: "domcontentloaded" });
   await detectProtectionLayer(page, adapter, response);
 
-  const selector = adapter.selectors?.messageItems?.[0] || "[data-thread-id][data-message-id]";
-  const bodySelector = adapter.selectors?.messageBody?.[0] || "[data-role='message-body']";
-  const sentAtSelector = Array.isArray(adapter.selectors?.messageSentAt)
-    ? adapter.selectors.messageSentAt[0]
-    : typeof adapter.selectors?.messageSentAt === "string"
-    ? adapter.selectors.messageSentAt
-    : null;
-  const leadNameSelector = Array.isArray(adapter.selectors?.leadName)
-    ? adapter.selectors.leadName[0]
-    : typeof adapter.selectors?.leadName === "string"
-    ? adapter.selectors.leadName
-    : null;
-  const threadLabelSelector = Array.isArray(adapter.selectors?.threadLabel)
-    ? adapter.selectors.threadLabel[0]
-    : typeof adapter.selectors?.threadLabel === "string"
-    ? adapter.selectors.threadLabel
-    : null;
+  const messageSelectors = toSelectorList(adapter.selectors?.messageItems, [
+    "[data-thread-id][data-message-id]",
+    "[data-thread-id]",
+    "a[href*='/messages/']"
+  ]);
+  const bodySelectors = toSelectorList(adapter.selectors?.messageBody, ["[data-role='message-body']", "p", "span"]);
+  const sentAtSelectors = toSelectorList(adapter.selectors?.messageSentAt, ["time[datetime]", "[class*='time' i]", "[class*='date' i]"]);
+  const leadNameSelectors = toSelectorList(adapter.selectors?.leadName, ["[class*='name' i]", "h3", "h4", "strong"]);
+  const threadLabelSelectors = toSelectorList(adapter.selectors?.threadLabel, ["[class*='listing' i]", "[class*='title' i]"]);
   const maxThreads = Number(process.env.LEASE_BOT_RPA_INBOX_THREAD_LIMIT || 0);
   const now = clock();
-  const messages = await page.$$eval(
-    selector,
-    (elements, meta) => {
-      const sliced = meta.maxThreads > 0 ? elements.slice(0, meta.maxThreads) : elements;
-      return sliced.map((element, index) => {
-      const threadId = element.getAttribute("data-thread-id") || element.getAttribute("data-thread") || `thread-${index + 1}`;
-      const messageId = element.getAttribute("data-message-id") || `message-${index + 1}`;
-      const className = element.getAttribute("class") || "";
-      const direction = meta.platform === "spareroom" && className.includes("thread_out") ? "outbound" : "inbound";
-      const bodyElement = element.querySelector(meta.bodySelector);
-      const body = bodyElement?.textContent?.trim() || element.textContent?.trim() || "";
-      const sentAtText = meta.sentAtSelector ? element.querySelector(meta.sentAtSelector)?.textContent?.trim() : null;
-      let listingExternalId = null;
-      let leadExternalId = null;
-      if (meta.platform === "spareroom" && typeof threadId === "string") {
-        const match = threadId.match(/^(\d+)_([0-9]+)$/);
-        if (match) {
-          leadExternalId = match[1] || null;
-          listingExternalId = match[2] || null;
+  const messages = await page.evaluate(
+    (meta) => {
+      const dedupeElements = new Set();
+      const orderedElements = [];
+      const safeQueryAll = (selector) => {
+        try {
+          return Array.from(document.querySelectorAll(selector));
+        } catch {
+          return [];
         }
-      }
-      const leadNameRaw = element.getAttribute("data-lead-name")
-        || (meta.leadNameSelector ? element.querySelector(meta.leadNameSelector)?.textContent?.trim() : null)
-        || null;
-      let threadMessageCount = null;
-      if (meta.platform === "spareroom" && leadNameRaw) {
-        const match = leadNameRaw.match(/\((\d+)\)\s*$/);
-        if (match) {
-          const parsed = Number(match[1]);
-          if (Number.isFinite(parsed)) {
-            threadMessageCount = parsed;
+      };
+
+      for (const selector of meta.messageSelectors) {
+        const nodes = safeQueryAll(selector);
+        for (const node of nodes) {
+          if (!dedupeElements.has(node)) {
+            dedupeElements.add(node);
+            orderedElements.push(node);
           }
         }
       }
-      const leadName = leadNameRaw ? leadNameRaw.replace(/\s*\(\d+\)\s*$/, "").trim() : null;
-      const threadLabel = meta.threadLabelSelector
-        ? element.querySelector(meta.threadLabelSelector)?.textContent?.trim() || null
-        : meta.platform === "spareroom"
-        ? element.querySelector("span.ad-title")?.textContent?.trim() || null
-        : null;
-      const inboxSortRank = meta.platform === "spareroom" ? index + 1 : null;
-      return {
-        externalThreadId: threadId,
-        externalMessageId: messageId,
-        body,
-        leadName,
-        direction,
-        threadLabel,
-        threadMessageCount,
-        inboxSortRank,
-        sentAtText,
-        channel: "in_app",
-        metadata: {
-          adapter: meta.platform,
-          source: "playwright_rpa",
-          ...(listingExternalId ? { listingExternalId } : {}),
-          ...(leadExternalId ? { leadExternalId } : {}),
-          ...(meta.platform === "spareroom"
-            ? {
-                inbox: {
-                  sortRank: inboxSortRank,
-                  threadLabel,
-                  threadMessageCount
-                }
-              }
-            : {})
+
+      const extractTextBySelectors = (root, selectors) => {
+        for (const selector of selectors) {
+          if (!selector) {
+            continue;
+          }
+          try {
+            const element = root.querySelector(selector);
+            const text = element?.textContent?.replace(/\s+/g, " ").trim();
+            if (text) {
+              return text;
+            }
+          } catch {
+            continue;
+          }
         }
+        return "";
       };
-    });
+
+      const parseThreadId = (element, index) => {
+        const fromAttr = element.getAttribute("data-thread-id")
+          || element.getAttribute("data-thread")
+          || element.getAttribute("data-conversation-id")
+          || element.getAttribute("data-id");
+        if (fromAttr && String(fromAttr).trim()) {
+          return String(fromAttr).trim();
+        }
+
+        const anchor = element.matches("a[href]")
+          ? element
+          : element.querySelector("a[href*='/messages/']");
+        const href = anchor?.getAttribute("href") || "";
+        const match = href.match(/\/messages\/([^/?#]+)/i);
+        if (match?.[1]) {
+          return String(match[1]).trim();
+        }
+        return `thread-${index + 1}`;
+      };
+
+      const parseListingExternalId = (element, threadId) => {
+        const fromAttr = element.getAttribute("data-listing-id")
+          || element.getAttribute("data-room-id")
+          || element.getAttribute("data-unit-id");
+        if (fromAttr && String(fromAttr).trim()) {
+          return String(fromAttr).trim();
+        }
+
+        const anchor = element.matches("a[href]")
+          ? element
+          : element.querySelector("a[href*='/rooms/'], a[href*='/listings/']");
+        const href = anchor?.getAttribute("href") || "";
+        const roomMatch = href.match(/\/rooms\/([^/?#]+)/i);
+        if (roomMatch?.[1]) {
+          return String(roomMatch[1]).trim();
+        }
+        const listingMatch = href.match(/\/listings\/([^/?#]+)/i);
+        if (listingMatch?.[1]) {
+          return String(listingMatch[1]).trim();
+        }
+
+        if (meta.platform === "spareroom" && typeof threadId === "string") {
+          const sparseMatch = threadId.match(/^(\d+)_([0-9]+)$/);
+          if (sparseMatch?.[2]) {
+            return sparseMatch[2];
+          }
+        }
+
+        return null;
+      };
+
+      const parseLeadExternalId = (element, threadId) => {
+        const fromAttr = element.getAttribute("data-lead-id")
+          || element.getAttribute("data-user-id")
+          || element.getAttribute("data-profile-id");
+        if (fromAttr && String(fromAttr).trim()) {
+          return String(fromAttr).trim();
+        }
+
+        if (meta.platform === "spareroom" && typeof threadId === "string") {
+          const sparseMatch = threadId.match(/^(\d+)_([0-9]+)$/);
+          if (sparseMatch?.[1]) {
+            return sparseMatch[1];
+          }
+        }
+
+        return null;
+      };
+
+      const parseMessageId = (element, threadId, body, sentAtText, direction, index) => {
+        const idAttr = element.getAttribute("data-message-id")
+          || element.getAttribute("data-last-message-id")
+          || element.getAttribute("data-id");
+        if (idAttr && String(idAttr).trim()) {
+          return String(idAttr).trim();
+        }
+
+        const rawId = element.getAttribute("id") || "";
+        if (rawId) {
+          const match = rawId.match(/^(?:msg|message)[_-](.+)$/i);
+          if (match?.[1]) {
+            return String(match[1]).trim();
+          }
+          return rawId.trim();
+        }
+
+        const stableToken = [threadId, sentAtText || "", body.slice(0, 120), direction || "inbound"]
+          .join("|")
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .trim()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 120);
+        if (stableToken) {
+          return `preview-${stableToken}`;
+        }
+        return `message-${index + 1}`;
+      };
+
+      const rawRows = (meta.maxThreads > 0 ? orderedElements.slice(0, meta.maxThreads) : orderedElements)
+        .map((element, index) => {
+          const threadId = parseThreadId(element, index);
+          const className = String(element.getAttribute("class") || "").toLowerCase();
+          const direction = className.includes("thread_out")
+            || className.includes("outbound")
+            || className.includes("from-me")
+            || className.includes("message_out")
+            ? "outbound"
+            : "inbound";
+
+          const body = extractTextBySelectors(element, meta.bodySelectors)
+            || (element.textContent || "").replace(/\s+/g, " ").trim();
+          const sentAtText = extractTextBySelectors(element, meta.sentAtSelectors) || "";
+          const leadNameRaw = element.getAttribute("data-lead-name")
+            || extractTextBySelectors(element, meta.leadNameSelectors)
+            || "";
+          const threadLabel = extractTextBySelectors(element, meta.threadLabelSelectors);
+
+          const threadMessageCountMatch = leadNameRaw.match(/\((\d+)\)\s*$/);
+          const threadMessageCount = threadMessageCountMatch?.[1]
+            ? Number(threadMessageCountMatch[1])
+            : null;
+          const leadName = leadNameRaw ? leadNameRaw.replace(/\s*\(\d+\)\s*$/, "").trim() : null;
+
+          const listingExternalId = parseListingExternalId(element, threadId);
+          const leadExternalId = parseLeadExternalId(element, threadId);
+          const messageId = parseMessageId(element, threadId, body, sentAtText, direction, index);
+
+          return {
+            externalThreadId: threadId,
+            externalMessageId: messageId,
+            body,
+            leadName,
+            direction,
+            threadLabel: threadLabel || null,
+            threadMessageCount: Number.isFinite(threadMessageCount) ? threadMessageCount : null,
+            inboxSortRank: index + 1,
+            sentAtText: sentAtText || null,
+            channel: "in_app",
+            metadata: {
+              adapter: meta.platform,
+              source: "playwright_rpa",
+              ...(listingExternalId ? { listingExternalId } : {}),
+              ...(leadExternalId ? { leadExternalId } : {}),
+              inbox: {
+                sortRank: index + 1,
+                threadLabel: threadLabel || null,
+                threadMessageCount: Number.isFinite(threadMessageCount) ? threadMessageCount : null
+              }
+            }
+          };
+        })
+        .filter((row) => row.externalThreadId && row.externalMessageId);
+
+      const seenMessageIds = new Set();
+      return rawRows.filter((row) => {
+        if (seenMessageIds.has(row.externalMessageId)) {
+          return false;
+        }
+        seenMessageIds.add(row.externalMessageId);
+        return true;
+      });
     },
     {
-      bodySelector,
-      sentAtSelector,
-      leadNameSelector,
-      threadLabelSelector,
       platform: adapter.platform,
-      nowIso: now.toISOString(),
+      messageSelectors,
+      bodySelectors,
+      sentAtSelectors,
+      leadNameSelectors,
+      threadLabelSelectors,
       maxThreads: Number.isFinite(maxThreads) && maxThreads > 0 ? Math.round(maxThreads) : 0
     }
   );
@@ -761,39 +916,159 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
   const response = await page.goto(adapter.threadUrl(threadId), { waitUntil: "domcontentloaded" });
   await detectProtectionLayer(page, adapter, response);
 
-  if (adapter.platform !== "spareroom") {
-    throw createRunnerError("THREAD_SYNC_UNSUPPORTED", `Thread sync is not supported for ${adapter.platform}`, {
-      retryable: false
-    });
-  }
-
-  const selector = adapter.selectors?.threadMessageItems?.[0] || "li.message[id^='msg_']";
-  const bodySelector = adapter.selectors?.threadMessageBody?.[0] || "dd.message_body";
-  const sentAtSelector = adapter.selectors?.threadMessageSentAt?.[0] || "dd.message_date";
+  const threadMessageSelectors = toSelectorList(adapter.selectors?.threadMessageItems, [
+    "li.message[id^='msg_']",
+    "[data-message-id]",
+    "[data-testid='thread-message']",
+    "[class*='message' i]"
+  ]);
+  const bodySelectors = toSelectorList(adapter.selectors?.threadMessageBody, [
+    "dd.message_body",
+    "[data-testid='message-body']",
+    "[class*='message-body' i]",
+    "p"
+  ]);
+  const sentAtSelectors = toSelectorList(adapter.selectors?.threadMessageSentAt, [
+    "dd.message_date",
+    "time[datetime]",
+    "[data-testid='message-time']",
+    "[class*='time' i]",
+    "[class*='date' i]"
+  ]);
+  const composerSelectors = toSelectorList(adapter.selectors?.composer, ["textarea"]);
   const now = clock();
 
-  const rawMessages = await page.$$eval(
-    selector,
-    (elements, meta) => elements.map((element, index) => {
-      const idValue = element.getAttribute("id") || "";
-      const match = idValue.match(/^msg_(.+)$/);
-      const messageId = match?.[1] || element.getAttribute("data-message-id") || `message-${index + 1}`;
-      const bodyElement = element.querySelector(meta.bodySelector);
-      const body = bodyElement?.textContent?.trim() || "";
-      const sentAtText = element.querySelector(meta.sentAtSelector)?.textContent?.trim() || "";
-      const className = element.getAttribute("class") || "";
-      const isOutbound = className.includes("message_out");
+  const rawMessages = await page.evaluate(
+    (meta) => {
+      const dedupeElements = new Set();
+      const orderedElements = [];
 
-      return {
-        externalThreadId: meta.threadId,
-        externalMessageId: messageId,
-        direction: isOutbound ? "outbound" : "inbound",
-        body,
-        channel: "in_app",
-        sentAtText
+      const safeQueryAll = (selector) => {
+        try {
+          return Array.from(document.querySelectorAll(selector));
+        } catch {
+          return [];
+        }
       };
-    }),
-    { threadId, bodySelector, sentAtSelector }
+
+      const textBySelectors = (root, selectors) => {
+        for (const selector of selectors) {
+          try {
+            const node = root.querySelector(selector);
+            const value = node?.textContent?.replace(/\s+/g, " ").trim();
+            if (value) {
+              return value;
+            }
+          } catch {
+            continue;
+          }
+        }
+        return "";
+      };
+
+      const containsAnySelector = (root, selectors) => {
+        for (const selector of selectors) {
+          if (!selector) {
+            continue;
+          }
+          try {
+            if (root.matches(selector) || root.querySelector(selector)) {
+              return true;
+            }
+          } catch {
+            continue;
+          }
+        }
+        return false;
+      };
+
+      for (const selector of meta.threadMessageSelectors) {
+        const nodes = safeQueryAll(selector);
+        for (const node of nodes) {
+          if (!dedupeElements.has(node)) {
+            dedupeElements.add(node);
+            orderedElements.push(node);
+          }
+        }
+      }
+
+      const rows = [];
+      for (let index = 0; index < orderedElements.length; index += 1) {
+        const element = orderedElements[index];
+        if (containsAnySelector(element, meta.composerSelectors)) {
+          continue;
+        }
+
+        const className = String(element.getAttribute("class") || "").toLowerCase();
+        const dataDirection = String(element.getAttribute("data-direction") || "").toLowerCase();
+        const dataAuthor = String(element.getAttribute("data-author") || "").toLowerCase();
+        const isOutbound = className.includes("message_out")
+          || className.includes("outbound")
+          || className.includes("from-me")
+          || className.includes("sent")
+          || className.includes("self")
+          || className.includes("right")
+          || dataDirection === "outbound"
+          || dataAuthor === "me"
+          || dataAuthor === "self";
+
+        const body = textBySelectors(element, meta.bodySelectors)
+          || (element.childElementCount <= 8 ? (element.textContent || "").replace(/\s+/g, " ").trim() : "");
+        if (!body) {
+          continue;
+        }
+        if (body.length > 8_000) {
+          continue;
+        }
+
+        const sentAtText = textBySelectors(element, meta.sentAtSelectors) || "";
+        const idValue = element.getAttribute("id")
+          || element.getAttribute("data-message-id")
+          || element.getAttribute("data-id")
+          || "";
+        let externalMessageId = "";
+        if (idValue) {
+          const match = String(idValue).match(/^(?:msg|message)[_-](.+)$/i);
+          externalMessageId = (match?.[1] || idValue).trim();
+        }
+        if (!externalMessageId) {
+          const stableToken = [meta.threadId, sentAtText || "", body.slice(0, 120), isOutbound ? "outbound" : "inbound"]
+            .join("|")
+            .toLowerCase()
+            .replace(/\s+/g, " ")
+            .trim()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "")
+            .slice(0, 120);
+          externalMessageId = stableToken ? `thread-${stableToken}` : `message-${index + 1}`;
+        }
+
+        rows.push({
+          externalThreadId: meta.threadId,
+          externalMessageId,
+          direction: isOutbound ? "outbound" : "inbound",
+          body,
+          channel: "in_app",
+          sentAtText: sentAtText || null
+        });
+      }
+
+      const seenMessageIds = new Set();
+      return rows.filter((row) => {
+        if (seenMessageIds.has(row.externalMessageId)) {
+          return false;
+        }
+        seenMessageIds.add(row.externalMessageId);
+        return true;
+      });
+    },
+    {
+      threadId,
+      threadMessageSelectors,
+      bodySelectors,
+      sentAtSelectors,
+      composerSelectors
+    }
   );
 
   let threadListingExternalId = null;
@@ -819,7 +1094,7 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
           parsed = null;
         }
       }
-      const sentAt = parsed ? parsed.toISOString() : null;
+      const sentAt = parsed ? parsed.toISOString() : now.toISOString();
       return {
         ...message,
         body: sanitizeMessageBody(message.body),
@@ -827,7 +1102,7 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
         metadata: {
           adapter: adapter.platform,
           source: "playwright_rpa",
-          sentAtSource: "platform_thread",
+          sentAtSource: parsed ? "platform_thread" : "clock",
           ...(threadListingExternalId ? { listingExternalId: threadListingExternalId } : {}),
           ...(threadLeadExternalId ? { leadExternalId: threadLeadExternalId } : {}),
           ...(message.sentAtText ? { sentAtText: message.sentAtText } : {})
@@ -840,6 +1115,241 @@ async function defaultThreadSyncHandler({ adapter, page, payload, clock }) {
 }
 
 async function defaultListingSyncHandler({ adapter, page }) {
+  if (adapter.platform === "roomies") {
+    const listingSyncConfig = adapter.listingSync || {};
+    const maxPages = Math.max(
+      1,
+      Number(process.env.LEASE_BOT_RPA_LISTINGS_MAX_PAGES || listingSyncConfig.maxPages || 25)
+    );
+    const pageParam = typeof listingSyncConfig.pageParam === "string" && listingSyncConfig.pageParam.trim()
+      ? listingSyncConfig.pageParam.trim()
+      : "page";
+    const configuredPaths = Array.isArray(listingSyncConfig.paths)
+      ? listingSyncConfig.paths.filter((pathValue) => typeof pathValue === "string" && pathValue.trim())
+      : [];
+    const candidatePaths = configuredPaths.length > 0
+      ? configuredPaths
+      : ["/my-listings", "/listings", "/rooms"];
+    const listings = [];
+    const seenExternalIds = new Set();
+
+    const inboxResponse = await page.goto(adapter.inboxUrl, { waitUntil: "domcontentloaded" });
+    await detectProtectionLayer(page, adapter, inboxResponse);
+
+    const discoveredPaths = await page.evaluate(() => {
+      const result = new Set();
+      const nodes = Array.from(document.querySelectorAll("a[href]"));
+      for (const node of nodes) {
+        const href = node.getAttribute("href") || "";
+        if (!href) {
+          continue;
+        }
+        try {
+          const parsed = new URL(href, location.origin);
+          if (parsed.origin !== location.origin) {
+            continue;
+          }
+          const lowered = parsed.pathname.toLowerCase();
+          if (
+            lowered.includes("listing")
+            || lowered.includes("room")
+            || lowered.includes("manage")
+            || lowered.includes("landlord")
+          ) {
+            result.add(`${parsed.pathname}${parsed.search || ""}`);
+          }
+        } catch {
+          continue;
+        }
+      }
+      return Array.from(result).slice(0, 40);
+    });
+
+    const mergedPaths = [...new Set([...candidatePaths, ...discoveredPaths])];
+
+    for (const candidatePath of mergedPaths) {
+      let discoveredOnCandidate = false;
+      for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+        const url = new URL(candidatePath, adapter.baseUrl);
+        if (pageIndex > 0) {
+          url.searchParams.set(pageParam, String(pageIndex + 1));
+        }
+
+        const response = await page.goto(url.toString(), { waitUntil: "domcontentloaded" });
+        await detectProtectionLayer(page, adapter, response);
+
+        const pageListings = await page.evaluate((meta) => {
+          const safeQueryAll = (selector) => {
+            try {
+              return Array.from(document.querySelectorAll(selector));
+            } catch {
+              return [];
+            }
+          };
+          const textBySelectors = (root, selectors) => {
+            for (const selector of selectors) {
+              if (!selector) {
+                continue;
+              }
+              try {
+                const node = root.querySelector(selector);
+                const text = node?.textContent?.replace(/\s+/g, " ").trim();
+                if (text) {
+                  return text;
+                }
+              } catch {
+                continue;
+              }
+            }
+            return "";
+          };
+          const rootText = (document.body?.innerText || "").toLowerCase();
+          const hasManageMarkers = meta.managePageMarkers.some((marker) => rootText.includes(marker));
+          if (!hasManageMarkers) {
+            return [];
+          }
+
+          const dedupeCards = new Set();
+          const cards = [];
+
+          for (const selector of meta.listingItemSelectors) {
+            const nodes = safeQueryAll(selector);
+            for (const node of nodes) {
+              if (!dedupeCards.has(node)) {
+                dedupeCards.add(node);
+                cards.push(node);
+              }
+            }
+          }
+
+          const listingAnchors = safeQueryAll("a[href*='/rooms/'], a[href*='/listings/']");
+          for (const anchor of listingAnchors) {
+            const card = anchor.closest("article, li, div");
+            if (!card) {
+              continue;
+            }
+            if (!dedupeCards.has(card)) {
+              dedupeCards.add(card);
+              cards.push(card);
+            }
+          }
+
+          const normalized = [];
+          for (const card of cards) {
+            const linkElement = card.matches("a[href]")
+              ? card
+              : card.querySelector(meta.listingLinkSelectors.join(", "))
+              || card.querySelector("a[href*='/rooms/'], a[href*='/listings/']");
+            const href = linkElement?.getAttribute("href") || "";
+            const roomMatch = href.match(/\/rooms\/([^/?#]+)/i);
+            const listingMatch = href.match(/\/listings\/([^/?#]+)/i);
+            const attrExternalId = card.getAttribute("data-listing-id")
+              || card.getAttribute("data-room-id")
+              || card.getAttribute("data-id")
+              || "";
+            const listingExternalId = (roomMatch?.[1] || listingMatch?.[1] || attrExternalId || "").trim();
+            if (!listingExternalId) {
+              continue;
+            }
+
+            const title = textBySelectors(card, meta.listingTitleSelectors)
+              || linkElement?.textContent?.replace(/\s+/g, " ").trim()
+              || null;
+            const location = textBySelectors(card, meta.listingLocationSelectors) || null;
+            const priceText = textBySelectors(card, meta.listingPriceSelectors) || null;
+            const statusText = textBySelectors(card, meta.listingStatusSelectors)
+              || (card.textContent || "").replace(/\s+/g, " ").trim();
+            const statusLower = (statusText || "").toLowerCase();
+            const status = statusLower.includes("inactive")
+              || statusLower.includes("deactivate")
+              || statusLower.includes("paused")
+              || statusLower.includes("archiv")
+              || statusLower.includes("off market")
+              || statusLower.includes("draft")
+              ? "inactive"
+              : "active";
+
+            normalized.push({
+              listingExternalId,
+              status,
+              statusClasses: String(card.className || "")
+                .split(/\s+/g)
+                .map((value) => value.trim())
+                .filter(Boolean),
+              title,
+              location,
+              priceText,
+              href: href || null,
+              headerText: statusText || null
+            });
+          }
+
+          return normalized;
+        }, {
+          listingItemSelectors: toSelectorList(adapter.selectors?.listingItems, [
+            "[data-listing-id]",
+            "[data-room-id]",
+            "[data-testid='listing-card']"
+          ]),
+          listingTitleSelectors: toSelectorList(adapter.selectors?.listingTitle, [
+            "[data-testid='listing-title']",
+            "[class*='listing-title' i]",
+            "[class*='room-title' i]",
+            "h2",
+            "h3"
+          ]),
+          listingLocationSelectors: toSelectorList(adapter.selectors?.listingLocation, [
+            "[data-testid='listing-location']",
+            "[class*='location' i]"
+          ]),
+          listingPriceSelectors: toSelectorList(adapter.selectors?.listingPrice, [
+            "[data-testid='listing-price']",
+            "[class*='price' i]"
+          ]),
+          listingStatusSelectors: toSelectorList(adapter.selectors?.listingStatus, [
+            "[data-testid='listing-status']",
+            "[class*='status' i]",
+            ".badge"
+          ]),
+          listingLinkSelectors: toSelectorList(adapter.selectors?.listingLink, [
+            "a[href*='/rooms/']",
+            "a[href*='/listings/']"
+          ]),
+          managePageMarkers: Array.isArray(listingSyncConfig.managePageMarkers)
+            ? listingSyncConfig.managePageMarkers
+                .map((value) => String(value || "").toLowerCase().trim())
+                .filter(Boolean)
+            : ["my listings", "your listings", "manage listings", "edit listing", "deactivate", "my room"]
+        });
+
+        if (pageListings.length === 0) {
+          break;
+        }
+        discoveredOnCandidate = true;
+        let newCount = 0;
+        for (const item of pageListings) {
+          const externalId = typeof item?.listingExternalId === "string" ? item.listingExternalId.trim() : "";
+          if (!externalId || seenExternalIds.has(externalId)) {
+            continue;
+          }
+          seenExternalIds.add(externalId);
+          listings.push(item);
+          newCount += 1;
+        }
+        if (newCount === 0) {
+          break;
+        }
+      }
+      if (discoveredOnCandidate && listings.length > 0) {
+        break;
+      }
+    }
+
+    return {
+      listings
+    };
+  }
+
   if (adapter.platform !== "spareroom") {
     throw createRunnerError("LISTING_SYNC_UNSUPPORTED", `Listing sync is not supported for ${adapter.platform}`, {
       retryable: false
@@ -939,11 +1449,19 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
   const response = await page.goto(adapter.threadUrl(threadId), { waitUntil: "domcontentloaded" });
   await detectProtectionLayer(page, adapter, response);
 
+  const composerSelectors = toSelectorList(adapter.selectors?.composer, ["textarea[name='message']", "textarea"]);
+  const submitSelectors = toSelectorList(adapter.selectors?.submit, ["button[type='submit']"]);
+  const composerSelector = await pickFirstExistingSelector(page, composerSelectors);
+  if (!composerSelector) {
+    throw createRunnerError("OUTBOUND_COMPOSER_MISSING", `Could not find message composer on ${adapter.platform}`, {
+      retryable: false
+    });
+  }
+  const submitSelector = await pickFirstExistingSelector(page, submitSelectors);
+
   // SpareRoom: after sending, the thread page appends a new <li id="msg_<id>">. Capture it so
   // outbound records use the same externalMessageId as thread sync ingestion.
-  const threadMessageSelector = Array.isArray(adapter.selectors?.threadMessageItems)
-    ? adapter.selectors.threadMessageItems[0]
-    : "li.message[id^='msg_']";
+  const threadMessageSelector = toSelectorList(adapter.selectors?.threadMessageItems, ["li.message[id^='msg_']"])[0];
   let beforeMeta = null;
   if (adapter.platform === "spareroom" && typeof page?.evaluate === "function") {
     try {
@@ -960,8 +1478,16 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
     }
   }
 
-  await page.fill(adapter.selectors.composer, payload.body);
-  await page.click(adapter.selectors.submit);
+  await page.fill(composerSelector, payload.body);
+  if (submitSelector) {
+    await page.click(submitSelector);
+  } else if (typeof page?.keyboard?.press === "function") {
+    await page.keyboard.press("Enter");
+  } else {
+    throw createRunnerError("OUTBOUND_SUBMIT_MISSING", `Could not find send button on ${adapter.platform}`, {
+      retryable: false
+    });
+  }
 
   let capturedExternalMessageId = null;
   if (
@@ -1049,6 +1575,8 @@ export function createPlaywrightRpaRunner(options = {}) {
   const playwrightFactory = options.playwrightFactory || createDefaultPlaywrightFactory(logger);
   const spareroomHeadlessFallbackUserAgent =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
+  const roomiesHeadlessFallbackUserAgent =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
 
   function resolveHeadlessForPlatform(platform) {
     const normalizedPlatform = String(platform || "").trim().toLowerCase();
@@ -1087,6 +1615,10 @@ export function createPlaywrightRpaRunner(options = {}) {
     // Use a non-headless Chrome UA by default for headless runs unless explicitly overridden.
     if (normalizedPlatform === "spareroom" && runHeadless && !contextOptions.userAgent) {
       contextOptions.userAgent = spareroomHeadlessFallbackUserAgent;
+    }
+
+    if (normalizedPlatform === "roomies" && runHeadless && !contextOptions.userAgent) {
+      contextOptions.userAgent = roomiesHeadlessFallbackUserAgent;
     }
 
     return contextOptions;

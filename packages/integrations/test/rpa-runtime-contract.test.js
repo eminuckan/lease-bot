@@ -506,3 +506,143 @@ test("R7 runtime safety: production allows playwright runtime", () => {
   const runner = createRpaRunner({ runtimeMode: "playwright", appEnv: "production" });
   assert.equal(typeof runner.run, "function");
 });
+
+test("R13 roomies: default runtime supports thread_sync and listing_sync handlers", async () => {
+  const visitedUrls = [];
+
+  const rpaRunner = createPlaywrightRpaRunner({
+    playwrightFactory: createFakePlaywrightFactory(() => {
+      let currentUrl = "about:blank";
+      return {
+        async goto(url) {
+          currentUrl = url;
+          visitedUrls.push(url);
+          return { status: () => 200 };
+        },
+        url() {
+          return currentUrl;
+        },
+        async title() {
+          return "Roomies.com";
+        },
+        async $() {
+          return null;
+        },
+        async evaluate(fn, arg) {
+          if (arg && arg.threadId) {
+            return [
+              {
+                externalThreadId: arg.threadId,
+                externalMessageId: "roomies-thread-message-1",
+                direction: "inbound",
+                body: "Can we do a virtual tour?",
+                channel: "in_app",
+                sentAtText: "Today 3:30 PM EST"
+              }
+            ];
+          }
+
+          if (arg && arg.listingItemSelectors) {
+            return [
+              {
+                listingExternalId: "room-12345",
+                status: "active",
+                statusClasses: ["listing-active"],
+                title: "Private room in UWS",
+                location: "New York, NY",
+                priceText: "$1,950 / month",
+                href: "/rooms/room-12345",
+                headerText: "active"
+              }
+            ];
+          }
+
+          return ["/my-listings"];
+        },
+        async fill() {},
+        async click() {},
+        async content() {
+          return "<html><body>ok</body></html>";
+        },
+        async screenshot() {}
+      };
+    })
+  });
+
+  const threadSyncResult = await rpaRunner.run({
+    platform: "roomies",
+    action: "thread_sync",
+    account: { id: "roomies-account-1" },
+    payload: { externalThreadId: "roomies-thread-1" }
+  });
+  assert.equal(Array.isArray(threadSyncResult.messages), true);
+  assert.equal(threadSyncResult.messages.length, 1);
+  assert.equal(threadSyncResult.messages[0].externalThreadId, "roomies-thread-1");
+
+  const listingSyncResult = await rpaRunner.run({
+    platform: "roomies",
+    action: "listing_sync",
+    account: { id: "roomies-account-1" }
+  });
+  assert.equal(Array.isArray(listingSyncResult.listings), true);
+  assert.equal(listingSyncResult.listings.length, 1);
+  assert.equal(listingSyncResult.listings[0].listingExternalId, "room-12345");
+
+  assert.equal(visitedUrls.some((url) => url.includes("/messages/roomies-thread-1")), true);
+});
+
+test("R13 roomies: default send handler uses selector fallback for composer and submit", async () => {
+  let currentUrl = "about:blank";
+  const filledSelectors = [];
+  const clickedSelectors = [];
+
+  const rpaRunner = createPlaywrightRpaRunner({
+    playwrightFactory: createFakePlaywrightFactory(() => ({
+      async goto(url) {
+        currentUrl = url;
+        return { status: () => 200 };
+      },
+      url() {
+        return currentUrl;
+      },
+      async title() {
+        return "Roomies.com";
+      },
+      async $(selector) {
+        if (selector === "textarea[name='message']" || selector === "button[type='submit']") {
+          return {};
+        }
+        return null;
+      },
+      async fill(selector, value) {
+        filledSelectors.push({ selector, value });
+      },
+      async click(selector) {
+        clickedSelectors.push(selector);
+      },
+      async evaluate() {
+        return null;
+      },
+      async content() {
+        return "<html><body>ok</body></html>";
+      },
+      async screenshot() {}
+    }))
+  });
+
+  const result = await rpaRunner.run({
+    platform: "roomies",
+    action: "send",
+    account: { id: "roomies-account-1" },
+    payload: {
+      externalThreadId: "roomies-thread-1",
+      body: "Great, we can do a virtual showing."
+    }
+  });
+
+  assert.equal(result.status, "sent");
+  assert.equal(filledSelectors.length, 1);
+  assert.equal(filledSelectors[0].selector, "textarea[name='message']");
+  assert.equal(clickedSelectors.length, 1);
+  assert.equal(clickedSelectors[0], "button[type='submit']");
+});

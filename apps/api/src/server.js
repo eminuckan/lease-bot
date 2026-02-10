@@ -4904,9 +4904,12 @@ export async function routeApi(req, res, url) {
     }
 
     const withClientRunner = routeTestOverrides?.withClient || withClient;
+    const listingSyncPlatforms = process.env.LEASE_BOT_SYNC_LISTINGS_PLATFORMS
+      ? process.env.LEASE_BOT_SYNC_LISTINGS_PLATFORMS.split(",").map((value) => value.trim()).filter(Boolean)
+      : ["spareroom"];
     const result = await withClientRunner(async (client) => {
       const adapter = createPostgresQueueAdapter(client, { connectorRegistry });
-      return adapter.syncPlatformListings({ platforms: platform ? [platform] : ["spareroom"] });
+      return adapter.syncPlatformListings({ platforms: platform ? [platform] : listingSyncPlatforms });
     });
 
     json(res, 200, result);

@@ -37,13 +37,38 @@ const PLATFORM_ADAPTER_DEFINITIONS = {
     baseUrl: "https://www.roomies.com",
     inboxPath: "/messages",
     threadPath: (threadId) => `/messages/${encodeURIComponent(threadId)}`,
+    authRequiredUrlPatterns: ["/login", "/register", "/users/sign_in"],
+    authRequiredText: [
+      "please login",
+      "log in to continue",
+      "sign in to continue",
+      "to view this content you need to log in"
+    ],
+    listingSync: {
+      paths: ["/my-listings", "/listings", "/rooms/manage", "/rooms"],
+      pageParam: "page",
+      maxPages: 25,
+      managePageMarkers: ["my listings", "your listings", "manage listings", "edit listing", "deactivate", "my room"]
+    },
     selectors: {
       challenge: ["#challenge-stage", "[data-testid='challenge-page']"],
       captcha: ["iframe[src*='recaptcha']", "[name='cf-turnstile-response']"],
-      messageItems: ["[data-thread-id][data-message-id]", "[data-testid='message-row']"],
-      messageBody: ["[data-testid='message-preview']", ".message-snippet"],
-      composer: "textarea[name='body']",
-      submit: "button[data-testid='send-message']"
+      messageItems: ["[data-thread-id][data-message-id]", "[data-thread-id]", "[data-testid='message-row']", "a[href*='/messages/']"],
+      messageBody: ["[data-testid='message-preview']", ".message-snippet", "[class*='preview' i]", "[class*='snippet' i]"],
+      messageSentAt: ["time[datetime]", "[data-testid='message-time']", ".message-time", "[class*='time' i]", "[class*='date' i]"],
+      leadName: ["[data-testid='message-lead-name']", "[class*='lead-name' i]", "[class*='name' i]", "h3", "h4", "strong"],
+      threadLabel: ["[data-testid='message-thread-label']", "[class*='listing' i]", "[class*='room' i]", "[class*='title' i]"],
+      threadMessageItems: ["[data-message-id]", "[data-testid='thread-message']", "[class*='message-bubble' i]", "[class*='message' i]"],
+      threadMessageBody: ["[data-testid='message-body']", ".message-body", "[class*='message-content' i]", "p"],
+      threadMessageSentAt: ["time[datetime]", "[data-testid='message-time']", ".message-time", "[class*='time' i]", "[class*='date' i]"],
+      composer: ["textarea[name='body']", "textarea[name='message']", "textarea[data-testid='message-input']", "textarea"],
+      submit: ["button[data-testid='send-message']", "button[type='submit']"],
+      listingItems: ["[data-listing-id]", "[data-room-id]", "[data-testid='listing-card']"],
+      listingTitle: ["[data-testid='listing-title']", ".listing-title", "[class*='listing-title' i]", "[class*='room-title' i]", "h2", "h3"],
+      listingLocation: ["[data-testid='listing-location']", ".listing-location", "[class*='location' i]"],
+      listingPrice: ["[data-testid='listing-price']", ".listing-price", "[class*='price' i]"],
+      listingStatus: ["[data-testid='listing-status']", ".listing-status", "[class*='status' i]", ".badge"],
+      listingLink: ["a[href*='/rooms/']", "a[href*='/listings/']"]
     }
   },
   leasebreak: {

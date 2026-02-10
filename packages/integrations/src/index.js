@@ -2011,7 +2011,7 @@ export function createPostgresQueueAdapter(client, options = {}) {
       const threadSyncEnabled = process.env.WORKER_THREAD_SYNC_ON_NEW_INBOUND === "1";
       const threadSyncPlatforms = process.env.WORKER_THREAD_SYNC_PLATFORMS
         ? process.env.WORKER_THREAD_SYNC_PLATFORMS.split(",").map((value) => value.trim()).filter(Boolean)
-        : ["spareroom"];
+        : ["spareroom", "roomies"];
       const threadSyncMaxPerCycle = Number(process.env.WORKER_THREAD_SYNC_MAX_PER_CYCLE || 2);
       let threadSyncUsed = 0;
 
@@ -2034,10 +2034,12 @@ export function createPostgresQueueAdapter(client, options = {}) {
 
         const inboundWindow = inboundMessages.slice(0, limit);
 
-        // SpareRoom: inbox sort rank is only valid for threads present in the current inbox snapshot.
+        // Inbox sort rank is only valid for threads present in the current inbox snapshot.
         // When we limit scanned threads (e.g. to 20), previously-seen ranks become stale and can
         // incorrectly float older conversations to the top. Clear ranks for threads not present now.
-        if (account.platform === "spareroom" && Array.isArray(inboundWindow) && inboundWindow.length > 0) {
+        const hasInboxSortRanks = Array.isArray(inboundWindow)
+          && inboundWindow.some((msg) => Number.isFinite(Number(msg?.inboxSortRank)));
+        if (hasInboxSortRanks) {
           const seenThreadIds = [...new Set(inboundWindow.map((msg) => msg?.externalThreadId).filter(Boolean))];
           if (seenThreadIds.length > 0) {
             await client.query(
@@ -2052,7 +2054,12 @@ export function createPostgresQueueAdapter(client, options = {}) {
 
           // Optional dev-only behavior: archive conversations that disappear from the platform inbox,
           // but only for allowlisted lead names to avoid accidental churn on real leads.
-          if (process.env.NODE_ENV !== "production" && process.env.LEASE_BOT_DEV_ARCHIVE_MISSING_THREADS === "1") {
+          // Keep this scoped to SpareRoom for now until other platforms are validated in production.
+          if (
+            account.platform === "spareroom"
+            && process.env.NODE_ENV !== "production"
+            && process.env.LEASE_BOT_DEV_ARCHIVE_MISSING_THREADS === "1"
+          ) {
             const allowlistedLeads = parseCsvEnv(process.env.WORKER_AUTOREPLY_ALLOW_LEAD_NAMES);
             if (allowlistedLeads.length > 0 && seenThreadIds.length > 0) {
               const archived = await client.query(
