@@ -286,6 +286,32 @@ function parseHumanDateText(text, now = new Date()) {
     return base;
   }
 
+  // Relative hour/minute/day formats used by Roomies-like inboxes:
+  // - "8h ago"
+  // - "3 hours ago"
+  // - "15m ago"
+  // - "2d ago"
+  const relativeAgoMatch = normalized.match(/^(\d{1,3})\s*(m(?:in(?:ute)?s?)?|h(?:our)?s?|d(?:ay)?s?)\s+ago$/i);
+  if (relativeAgoMatch) {
+    const amount = Number(relativeAgoMatch[1]);
+    const unitToken = String(relativeAgoMatch[2] || "").toLowerCase();
+    if (!Number.isFinite(amount) || amount < 0) {
+      return null;
+    }
+
+    const date = new Date(now);
+    if (unitToken.startsWith("m")) {
+      date.setMinutes(date.getMinutes() - amount);
+    } else if (unitToken.startsWith("h")) {
+      date.setHours(date.getHours() - amount);
+    } else if (unitToken.startsWith("d")) {
+      date.setDate(date.getDate() - amount);
+    } else {
+      return null;
+    }
+    return date;
+  }
+
   // US-style "MM/DD/YYYY" (SpareRoom thread pages often use this).
   const slashMatch = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(.*))?$/);
   if (slashMatch) {
@@ -832,6 +858,14 @@ async function defaultIngestHandler({ adapter, page, clock }) {
 
           const body = extractTextBySelectors(element, meta.bodySelectors)
             || (element.textContent || "").replace(/\s+/g, " ").trim();
+          if (meta.platform === "roomies") {
+            if (!/^\d{5,}$/.test(String(threadId || "").trim())) {
+              return null;
+            }
+            if (!body || /^unread(?:\s+only)?$/i.test(body.trim())) {
+              return null;
+            }
+          }
           const sentAtText = extractTextBySelectors(element, meta.sentAtSelectors) || "";
           const leadNameRaw = element.getAttribute("data-lead-name")
             || extractTextBySelectors(element, meta.leadNameSelectors)
@@ -876,6 +910,9 @@ async function defaultIngestHandler({ adapter, page, clock }) {
 
       const seenMessageIds = new Set();
       return rawRows.filter((row) => {
+        if (!row) {
+          return false;
+        }
         if (seenMessageIds.has(row.externalMessageId)) {
           return false;
         }
@@ -913,6 +950,20 @@ async function defaultIngestHandler({ adapter, page, clock }) {
     return {
       ...message,
       body: sanitizeMessageBody(message.body),
+      leadName: (() => {
+        if (message.leadName) {
+          return message.leadName;
+        }
+        if (adapter.platform !== "roomies") {
+          return null;
+        }
+        const body = String(message.body || "").trim();
+        const youPrefix = body.match(/^([A-Z][A-Za-z' .-]{1,40})\s+You:/);
+        if (youPrefix?.[1]) {
+          return youPrefix[1].trim();
+        }
+        return null;
+      })(),
       sentAt,
       metadata: {
         ...(message.metadata || {}),

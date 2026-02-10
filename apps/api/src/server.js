@@ -2218,6 +2218,7 @@ function toMessageDto(row) {
   return {
     id: row.id,
     conversationId: row.conversation_id,
+    externalMessageId: row.external_message_id || null,
     senderType: row.sender_type,
     senderAgentId: row.sender_agent_id,
     direction: row.direction,
@@ -2458,6 +2459,7 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
   }
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+  const roomiesThreadGuard = `AND NOT (pa.platform = 'roomies' AND (c.external_thread_id IS NULL OR c.external_thread_id !~ '^[0-9]+$'))`;
   const orderByClause = `ORDER BY
                                 CASE WHEN c.external_inbox_sort_rank IS NULL THEN 1 ELSE 0 END ASC,
                                 c.external_inbox_sort_rank ASC NULLS LAST,
@@ -2530,6 +2532,7 @@ async function fetchInboxList(client, statusFilter = null, access = null, platfo
           WHERE m.conversation_id = c.id
        ) counts ON TRUE
        ${whereClause}
+       ${whereClause ? roomiesThreadGuard : `WHERE ${roomiesThreadGuard.replace(/^AND\s+/i, "")}`}
        ${orderByClause}`,
     params
   );
@@ -2644,10 +2647,10 @@ async function fetchConversationDetail(client, conversationId, access = null) {
   // SpareRoom inbox ingestion stores preview rows (sentAtSource=platform_inbox) and thread sync stores
   // canonical rows (sentAtSource=platform_thread). Do not blanket-drop inbox rows: keep them when they are
   // the only representation of a message, and dedupe by external_message_id preferring canonical sources.
-  const messagesSql = conversation.platform === "spareroom"
-    ? `WITH ranked AS (
+  const spareroomMessagesSql = `WITH ranked AS (
          SELECT m.id,
                 m.conversation_id,
+                m.external_message_id,
                 m.sender_type,
                 m.sender_agent_id,
                 m.direction,
@@ -2675,6 +2678,7 @@ async function fetchConversationDetail(client, conversationId, access = null) {
        )
        SELECT id,
               conversation_id,
+              external_message_id,
               sender_type,
               sender_agent_id,
               direction,
@@ -2685,8 +2689,64 @@ async function fetchConversationDetail(client, conversationId, access = null) {
          FROM deduped
         WHERE rn = 1
         ORDER BY sent_at ASC, created_at ASC`
-    : `SELECT id,
+  const spareroomMessagesSqlFallback = `WITH ranked AS (
+         SELECT m.id,
+                m.conversation_id,
+                NULL::text AS external_message_id,
+                m.sender_type,
+                m.sender_agent_id,
+                m.direction,
+                m.body,
+                m.metadata,
+                m.sent_at,
+                m.created_at,
+                '__row__' || m.id::text AS dedupe_key,
+                CASE
+                  WHEN COALESCE(m.metadata->>'sentAtSource', '') = 'platform_thread' THEN 0
+                  WHEN COALESCE(m.metadata->>'sentAtSource', '') = 'platform_outbound_send' THEN 1
+                  WHEN COALESCE(m.metadata->>'sentAtSource', '') = 'platform_inbox' THEN 2
+                  ELSE 3
+                END AS source_rank
+           FROM "Messages" m
+          WHERE m.conversation_id = $1::uuid
+       ),
+       deduped AS (
+         SELECT *,
+                ROW_NUMBER() OVER (
+                  PARTITION BY dedupe_key
+                  ORDER BY source_rank ASC, sent_at DESC, created_at DESC, id DESC
+                ) AS rn
+           FROM ranked
+       )
+       SELECT id,
               conversation_id,
+              external_message_id,
+              sender_type,
+              sender_agent_id,
+              direction,
+              body,
+              metadata,
+              sent_at,
+              created_at
+         FROM deduped
+        WHERE rn = 1
+        ORDER BY sent_at ASC, created_at ASC`;
+  const genericMessagesSql = `SELECT id,
+              conversation_id,
+              external_message_id,
+              sender_type,
+              sender_agent_id,
+              direction,
+              body,
+              metadata,
+              sent_at,
+              created_at
+         FROM "Messages"
+        WHERE conversation_id = $1::uuid
+        ORDER BY sent_at ASC, created_at ASC`;
+  const genericMessagesSqlFallback = `SELECT id,
+              conversation_id,
+              NULL::text AS external_message_id,
               sender_type,
               sender_agent_id,
               direction,
@@ -2698,7 +2758,22 @@ async function fetchConversationDetail(client, conversationId, access = null) {
         WHERE conversation_id = $1::uuid
         ORDER BY sent_at ASC, created_at ASC`;
 
-  const messagesResult = await client.query(messagesSql, [conversationId]);
+  const preferredMessagesSql = conversation.platform === "spareroom"
+    ? spareroomMessagesSql
+    : genericMessagesSql;
+  const fallbackMessagesSql = conversation.platform === "spareroom"
+    ? spareroomMessagesSqlFallback
+    : genericMessagesSqlFallback;
+
+  let messagesResult;
+  try {
+    messagesResult = await client.query(preferredMessagesSql, [conversationId]);
+  } catch (error) {
+    if (error?.code !== "42703") {
+      throw error;
+    }
+    messagesResult = await client.query(fallbackMessagesSql, [conversationId]);
+  }
 
   const templatesResult = await client.query(
     `SELECT id,

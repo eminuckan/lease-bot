@@ -293,7 +293,7 @@ export function LeaseBotProvider({ children }) {
 
   function shouldAutoSyncConversationThread(conversationId, detail) {
     const platform = detail?.conversation?.platform;
-    if (platform !== "spareroom") {
+    if (!["spareroom", "roomies", "leasebreak"].includes(platform)) {
       return false;
     }
 
@@ -309,8 +309,10 @@ export function LeaseBotProvider({ children }) {
     const syncedRecently = Number.isFinite(syncState?.lastSyncedAt)
       && nowMs - syncState.lastSyncedAt < conversationThreadSyncSuccessCooldownMs;
 
+    // If inbox preview rows exist, force a fast sync regardless of recent sync cooldown.
+    // Otherwise users can get "partial thread" states after new inbound messages.
     if (hasInboxPreviewMessages) {
-      return !syncedRecently && !syncState?.inFlight && canRetrySync;
+      return !syncState?.inFlight && canRetrySync;
     }
 
     return !syncedRecently && !syncState?.inFlight && canRetrySync && (hasNoThreadHistory || hasKnownThreadGap);
@@ -523,7 +525,19 @@ export function LeaseBotProvider({ children }) {
 
     if (!force && cached?.detail && isFresh(cached.fetchedAt, conversationCacheTtlMs)) {
       if (shouldAutoSyncConversationThread(conversationId, cached.detail)) {
-        triggerThreadSync();
+        if (!background) {
+          setConversationRefreshing(true);
+          await runConversationThreadSync(conversationId, requestId).catch(() => null);
+          if (requestId === conversationRequestSeq.current) {
+            const refreshed = conversationCacheRef.current.get(conversationId)?.detail || null;
+            if (refreshed) {
+              setConversationDetail((current) => mergeConversationDetail(current, refreshed));
+            }
+            setConversationRefreshing(false);
+          }
+        } else {
+          triggerThreadSync();
+        }
       }
       setConversationLoading(false);
       if (!syncTriggered) {
@@ -551,7 +565,19 @@ export function LeaseBotProvider({ children }) {
       setConversationDetail((current) => mergeConversationDetail(current, mergedDetail));
       conversationCacheRef.current.set(conversationId, { detail: mergedDetail, fetchedAt });
       if (shouldSyncThread) {
-        triggerThreadSync();
+        if (!background) {
+          setConversationRefreshing(true);
+          await runConversationThreadSync(conversationId, requestId).catch(() => null);
+          if (requestId === conversationRequestSeq.current) {
+            const refreshed = conversationCacheRef.current.get(conversationId)?.detail || null;
+            if (refreshed) {
+              setConversationDetail((current) => mergeConversationDetail(current, refreshed));
+            }
+            setConversationRefreshing(false);
+          }
+        } else {
+          triggerThreadSync();
+        }
       }
     } catch (error) {
       if (requestId === conversationRequestSeq.current) {
