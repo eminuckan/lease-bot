@@ -1912,6 +1912,11 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
   const composerSelectors = toSelectorList(adapter.selectors?.composer, ["textarea[name='message']", "textarea"]);
   const submitSelectors = toSelectorList(adapter.selectors?.submit, ["button[type='submit']"]);
   const threadMessageBodySelectors = toSelectorList(adapter.selectors?.threadMessageBody, ["[data-testid='message-body']", "p", "div"]);
+  const threadMessageItemSelectors = toSelectorList(adapter.selectors?.threadMessageItems, [
+    "li[x-data*='messageItem']",
+    "[data-message-id]",
+    "[data-testid='thread-message']"
+  ]);
   const composerTarget = await pickFirstSelectorTarget(page, composerSelectors);
   if (!composerTarget) {
     throw createRunnerError("OUTBOUND_COMPOSER_MISSING", `Could not find message composer on ${adapter.platform}`, {
@@ -1921,11 +1926,24 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
   const submitTarget = await pickFirstSelectorTarget(page, submitSelectors);
 
   const normalizedOutboundBody = String(payload.body || "").replace(/\s+/g, " ").trim().toLowerCase();
-  const countThreadBodyMatches = async () => {
-    if (!normalizedOutboundBody || typeof page?.evaluate !== "function") {
-      return 0;
+  const countRoomiesOutboundMatches = async () => {
+    if (adapter.platform !== "roomies" || !normalizedOutboundBody || typeof page?.evaluate !== "function") {
+      return {
+        outboundMatches: 0,
+        outboundCount: 0,
+        totalCount: 0
+      };
     }
-    return page.evaluate((meta) => {
+
+    const preferredItemSelectors = threadMessageItemSelectors.filter((selector) => {
+      const normalized = String(selector || "").toLowerCase();
+      return normalized.length > 0 && !normalized.includes("[class*='message'");
+    });
+    const roomiesItemSelectors = preferredItemSelectors.length > 0
+      ? preferredItemSelectors
+      : threadMessageItemSelectors;
+
+    const snapshot = await page.evaluate((meta) => {
       const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
       const isMatch = (text, expected) => {
         if (!text || !expected) {
@@ -1942,40 +1960,130 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
         }
         return false;
       };
+      const safeQueryAll = (selector) => {
+        try {
+          return Array.from(document.querySelectorAll(selector));
+        } catch {
+          return [];
+        }
+      };
+      const textBySelectors = (root, selectors) => {
+        for (const selector of selectors) {
+          if (!selector) {
+            continue;
+          }
+          try {
+            const node = root.querySelector(selector);
+            const text = normalize(node?.innerText || node?.textContent || "");
+            if (text) {
+              return text;
+            }
+          } catch {
+            continue;
+          }
+        }
+        return "";
+      };
+      const parseRow = (element) => {
+        const stack = element?._x_dataStack;
+        const alpineState = Array.isArray(stack) ? stack[0] : null;
+        const message = alpineState && typeof alpineState === "object" ? alpineState.message : null;
+        if (message && typeof message === "object") {
+          const body = normalize(typeof message.content === "string" ? message.content : "");
+          if (!body || message.system === true) {
+            return null;
+          }
+          return {
+            body,
+            outbound: Boolean(alpineState.isSender)
+          };
+        }
 
-      const seen = new Set();
-      let matches = 0;
-      for (const selector of meta.selectors) {
+        let outbound = false;
+        let body = textBySelectors(element, meta.bodySelectors);
+        const bubble = element.querySelector("div.inline-block.px-4.py-2.rounded-lg");
+        if (!body && bubble) {
+          body = normalize(bubble.innerText || bubble.textContent || "");
+        }
+        if (!body) {
+          return null;
+        }
+
+        const className = String(element.getAttribute("class") || "").toLowerCase();
+        const dataDirection = String(element.getAttribute("data-direction") || "").toLowerCase();
+        const dataAuthor = String(element.getAttribute("data-author") || "").toLowerCase();
+        outbound = className.includes("message_out")
+          || className.includes("outbound")
+          || className.includes("from-me")
+          || className.includes("sent")
+          || className.includes("self")
+          || className.includes("right")
+          || dataDirection === "outbound"
+          || dataAuthor === "me"
+          || dataAuthor === "self";
+
+        if (bubble) {
+          const bubbleClassName = String(bubble.getAttribute("class") || "").toLowerCase();
+          if (bubbleClassName.includes("bg-teal") || bubbleClassName.includes("text-white")) {
+            outbound = true;
+          }
+        }
+
+        return { body, outbound };
+      };
+
+      const dedupeElements = new Set();
+      const orderedElements = [];
+      for (const selector of meta.itemSelectors) {
         if (!selector) {
           continue;
         }
-        let nodes = [];
-        try {
-          nodes = Array.from(document.querySelectorAll(selector));
-        } catch {
-          nodes = [];
-        }
+        const nodes = safeQueryAll(selector);
         for (const node of nodes) {
-          if (seen.has(node)) {
+          if (dedupeElements.has(node)) {
             continue;
           }
-          seen.add(node);
-          const text = normalize(node.innerText || node.textContent || "");
-          if (isMatch(text, meta.expectedBody)) {
-            matches += 1;
+          dedupeElements.add(node);
+          orderedElements.push(node);
+        }
+      }
+
+      let totalCount = 0;
+      let outboundCount = 0;
+      let outboundMatches = 0;
+      for (const element of orderedElements) {
+        const row = parseRow(element);
+        if (!row) {
+          continue;
+        }
+        totalCount += 1;
+        if (row.outbound) {
+          outboundCount += 1;
+          if (isMatch(row.body, meta.expectedBody)) {
+            outboundMatches += 1;
           }
         }
       }
-      return matches;
+
+      return {
+        totalCount,
+        outboundCount,
+        outboundMatches
+      };
     }, {
-      selectors: threadMessageBodySelectors,
+      itemSelectors: roomiesItemSelectors,
+      bodySelectors: threadMessageBodySelectors,
       expectedBody: normalizedOutboundBody
     });
+
+    return {
+      totalCount: Number.isFinite(Number(snapshot?.totalCount)) ? Number(snapshot.totalCount) : 0,
+      outboundCount: Number.isFinite(Number(snapshot?.outboundCount)) ? Number(snapshot.outboundCount) : 0,
+      outboundMatches: Number.isFinite(Number(snapshot?.outboundMatches)) ? Number(snapshot.outboundMatches) : 0
+    };
   };
 
-  const bodyMatchesBeforeSend = adapter.platform === "roomies"
-    ? await countThreadBodyMatches()
-    : 0;
+  const roomiesBeforeSnapshot = await countRoomiesOutboundMatches();
 
   // SpareRoom: after sending, the thread page appends a new <li id="msg_<id>">. Capture it so
   // outbound records use the same externalMessageId as thread sync ingestion.
@@ -2013,62 +2121,22 @@ async function defaultSendHandler({ adapter, page, payload, clock }) {
     && typeof page?.waitForFunction === "function"
   ) {
     try {
-      await page.waitForFunction(
-        (meta) => {
-          const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
-          const isMatch = (text, expected) => {
-            if (!text || !expected) {
-              return false;
-            }
-            if (text === expected) {
-              return true;
-            }
-            if (expected.length >= 16 && text.includes(expected)) {
-              return true;
-            }
-            if (text.length >= 16 && expected.includes(text)) {
-              return true;
-            }
-            return false;
-          };
-
-          const seen = new Set();
-          let matches = 0;
-          for (const selector of meta.selectors) {
-            if (!selector) {
-              continue;
-            }
-            let nodes = [];
-            try {
-              nodes = Array.from(document.querySelectorAll(selector));
-            } catch {
-              nodes = [];
-            }
-            for (const node of nodes) {
-              if (seen.has(node)) {
-                continue;
-              }
-              seen.add(node);
-              const text = normalize(node.innerText || node.textContent || "");
-              if (isMatch(text, meta.expectedBody)) {
-                matches += 1;
-              }
-            }
-          }
-
-          return matches > meta.beforeMatches;
-        },
-        {
-          selectors: threadMessageBodySelectors,
-          expectedBody: normalizedOutboundBody,
-          beforeMatches: bodyMatchesBeforeSend
-        },
-        { timeout: 15000 }
-      );
+      await page.waitForFunction(() => document.readyState === "complete" || document.readyState === "interactive", null, {
+        timeout: 3000
+      }).catch(() => {});
     } catch {
       throw createRunnerError(
         "OUTBOUND_DELIVERY_UNCONFIRMED",
         "Roomies send action could not be confirmed on thread after submit",
+        { retryable: false }
+      );
+    }
+
+    const roomiesAfterSnapshot = await countRoomiesOutboundMatches();
+    if (roomiesAfterSnapshot.outboundMatches <= roomiesBeforeSnapshot.outboundMatches) {
+      throw createRunnerError(
+        "OUTBOUND_DELIVERY_UNCONFIRMED",
+        "Roomies send action was not persisted in thread",
         { retryable: false }
       );
     }
